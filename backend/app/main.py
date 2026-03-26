@@ -11,6 +11,7 @@ from app.api.routes_prompts import router as prompts_router
 from app.api.routes_agents import router as agents_router
 from app.api.routes_exceptions import router as exceptions_router
 from app.api.routes_vendors import router as vendors_router
+from app.api.routes_pi_demo import router as pi_demo_router
 from app.services.data_cache_service import get_data_cache_service
 from app.config import settings
 
@@ -35,6 +36,7 @@ app.include_router(prompts_router, prefix="/api", tags=["Prompts"])
 app.include_router(agents_router, prefix="/api", tags=["Agents"])
 app.include_router(exceptions_router, prefix="/api", tags=["Exceptions"])
 app.include_router(vendors_router, prefix="/api", tags=["Vendors"])
+app.include_router(pi_demo_router, prefix="/api", tags=["PI Demo"])
 
 
 @app.get("/")
