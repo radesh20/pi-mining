@@ -7,6 +7,9 @@ from app.services.azure_openai_service import AzureOpenAIService
 from app.services.agent_recommendation_service import AgentRecommendationService
 from app.services.data_cache_service import get_data_cache_service
 from app.config import settings
+import pandas as pd
+
+from app.services.prompt_generation_service import PromptGenerationService
 
 router = APIRouter()
 
@@ -167,6 +170,19 @@ def vendor_stats():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Vendor stats endpoint failed: {str(e)}")
 
+@router.get("/process/case-table")
+def get_case_table_export():
+    """
+    Export full purchasing document header table.
+    Used by frontend for detailed PO/vendor drilldowns.
+    """
+    cache = get_data_cache_service()
+    data = cache.get_case_table()
+    return {
+        "success": True,
+        "row_count": len(data),
+        "data": jsonable_encoder(data)
+    }
 
 @router.get("/process/vendor/{vendor_id}/paths")
 def vendor_paths(vendor_id: str):
@@ -222,6 +238,74 @@ def get_celonis_context_layer():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch Celonis context layer: {str(e)}")
 
+@router.get("/cache/debug-columns")
+def debug_columns():
+    """Temporary debug endpoint - REMOVE after fixing."""
+    from app.services.data_cache_service import get_data_cache_service
+
+    # Try to import _GLOBAL_CACHE - might fail depending on your structure
+    try:
+        from app.services.data_cache_service import _GLOBAL_CACHE
+        global_cache_exists = _GLOBAL_CACHE is not None
+        global_cache_id = id(_GLOBAL_CACHE) if _GLOBAL_CACHE else None
+    except ImportError:
+        global_cache_exists = "IMPORT_FAILED"
+        global_cache_id = None
+
+    result = {
+        "global_cache_exists": global_cache_exists,
+        "global_cache_id": global_cache_id,
+    }
+
+    cache = get_data_cache_service()
+    result["cache_from_getter_id"] = id(cache)
+
+    # Check raw attributes before ensure_loaded
+    result["_is_loaded"] = getattr(cache, "_is_loaded", "MISSING")
+    result["last_error"] = getattr(cache, "last_error", "MISSING")
+    result["last_refreshed_at"] = getattr(cache, "last_refreshed_at", "MISSING")
+
+    # Check if DataFrames are None
+    event_log = getattr(cache, "event_log_df", None)
+    case_level = getattr(cache, "case_level_df", None)
+    pc = getattr(cache, "process_context", None)
+
+    result["event_log_df_is_none"] = event_log is None
+    result["case_level_df_is_none"] = case_level is None
+    result["process_context_is_none"] = pc is None
+
+    # Get details if they exist
+    if event_log is not None and hasattr(event_log, "__len__"):
+        result["event_log_row_count"] = len(event_log)
+        if hasattr(event_log, "columns"):
+            result["event_log_columns"] = list(event_log.columns)[:20]
+    else:
+        result["event_log_row_count"] = 0
+        result["event_log_columns"] = []
+
+    if case_level is not None and hasattr(case_level, "__len__"):
+        result["case_level_row_count"] = len(case_level)
+        if hasattr(case_level, "columns"):
+            result["case_level_columns"] = list(case_level.columns)[:20]
+    else:
+        result["case_level_row_count"] = 0
+        result["case_level_columns"] = []
+
+    if pc is not None and isinstance(pc, dict):
+        result["process_context_keys"] = list(pc.keys())
+        result["process_context_total_cases"] = pc.get("total_cases")
+        result["process_context_total_events"] = pc.get("total_events")
+        result["process_context_variants_count"] = len(pc.get("variants", []))
+        result["process_context_activities"] = pc.get("activities", [])[:10]
+    else:
+        result["process_context_keys"] = []
+        result["process_context_total_cases"] = None
+
+    # Cache meta
+    cache_meta = getattr(cache, "cache_meta", None)
+    result["cache_meta"] = cache_meta if cache_meta else {}
+
+    return result
 
 @router.get("/process/validate/wcm-context")
 def validate_wcm_context():
@@ -430,6 +514,30 @@ def refresh_cache(background: bool = Query(True, description="Run refresh asynch
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to refresh cache: {str(e)}")
 
+
+@router.get("/agents/{agent_name}/deep-dive/{case_id}")
+def agent_deep_dive(agent_name: str, case_id: str):
+    """Get deep-dive context with PI evidence for agent-case interaction."""
+    cache = get_data_cache_service()
+    case_data = cache.get_invoice_case(case_id)
+    process_context = cache.get_process_context()
+    exceptions = cache.get_exception_records("*")  # Get all exceptions
+
+    if not case_data:
+        return {"error": "Case not found", "success": False}, 404
+
+    llm = AzureOpenAIService()
+    service = PromptGenerationService(llm)
+    prompt = service.generate_prompt_for_agent(agent_name, case_data, process_context, exceptions)
+    evidence = service.generate_agent_evidence_context(case_data, process_context, exceptions)
+
+    return {
+        "success": True,
+        "case_id": case_id,
+        "agent_name": agent_name,
+        "prompt": prompt,
+        "evidence": evidence
+    }
 
 @router.post("/cache/reset-lock")
 def reset_cache_refresh_lock():

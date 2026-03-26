@@ -191,12 +191,20 @@ Each agent must be justified by specific Celonis process mining evidence.
         covered_stages = {a.get("lifecycle_stage") for a in normalized_agents}
         for default_agent in lifecycle_defaults:
             if default_agent["lifecycle_stage"] not in covered_stages:
-                normalized_agents.append(default_agent)
+                # 🐛 BUG FIXED from original code: removed leak of internal stage_detail object
+                clean_default = default_agent.copy()
+                clean_default.pop("stage_detail", None)
+                normalized_agents.append(clean_default)
 
         normalized_agents = normalized_agents[:6]
+
+        # --- New logic added here ---
+        top_recommendation = self._get_top_recommendation_summary(normalized_agents, process_context)
         lifecycle_map = self._build_lifecycle_map(normalized_agents, process_context)
+
         return {
             "recommended_agents": normalized_agents,
+            "top_recommendation": top_recommendation,
             "rationale": result.get(
                 "rationale",
                 "Recommendations derived from Celonis process mining statistics and flow patterns.",
@@ -210,9 +218,11 @@ Each agent must be justified by specific Celonis process mining evidence.
 
     def _fallback_result(self, process_context: dict, reason: str) -> Dict[str, Any]:
         agents = self._build_lifecycle_agents(process_context)
+        top_recommendation = self._get_top_recommendation_summary(agents, process_context)
 
         return {
             "recommended_agents": agents,
+            "top_recommendation": top_recommendation,
             "rationale": (
                 "Fallback recommendation generated from deterministic Celonis insights because the LLM response "
                 f"was unavailable or invalid ({reason})."
@@ -470,4 +480,56 @@ Each agent must be justified by specific Celonis process mining evidence.
                 "BI sees due date and open amount, but PI contributes transition-level turnaround needed for action timing."
             ),
             "safe_buffer_days": safe_buffer_days,
+        }
+
+    def _get_top_recommendation_summary(self, agents: List[Dict[str, Any]], process_context: dict) -> Dict[str, Any]:
+        """
+        Extract the highest-priority agent as the top recommendation with condensed PI evidence.
+        """
+        if not agents:
+            return {}
+
+        # Sort by priority (HIGH > MEDIUM > LOW), then by variant_confidence
+        priority_map = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
+        sorted_agents = sorted(
+            agents,
+            key=lambda a: (
+                priority_map.get(a.get("priority", "MEDIUM"), 2),
+                a.get("variant_confidence", 0)
+            ),
+            reverse=True
+        )
+
+        top_agent = sorted_agents[0]
+
+        # Compute aggregate metrics
+        variants = process_context.get("variants", []) or []
+        exceptions = process_context.get("exception_patterns", []) or []
+        total_cases = process_context.get("total_cases", 1)
+
+        matching_cases = sum(v.get("frequency", 0) for v in variants[:3])  # Top 3 variants
+        exc_cases = sum(e.get("case_count", 0) for e in exceptions)
+
+        variant_frequency_pct = (matching_cases / max(total_cases, 1)) * 100
+        exception_rate_pct = (exc_cases / max(total_cases, 1)) * 100
+
+        bottleneck = process_context.get("bottleneck", {}) or {}
+
+        return {
+            "agent_name": top_agent.get("agent_name", ""),
+            "agent_id": top_agent.get("agent_id", ""),
+            "confidence_score": top_agent.get("variant_confidence", 0),
+            "priority": top_agent.get("priority", "MEDIUM"),
+            "reason": top_agent.get("purpose", ""),
+            "pi_evidence": {
+                "variant_frequency_pct": round(variant_frequency_pct, 1),
+                "exception_rate_pct": round(exception_rate_pct, 1),
+                "turnaround_bottleneck": bottleneck.get("activity", "N/A"),
+                "bottleneck_duration_days": round(float(bottleneck.get("duration_days", 0) or 0), 2),
+                "affected_case_count": int(matching_cases),
+                "total_impact_value": float(process_context.get("total_invoice_value", 0.0) or 0.0),
+                "expected_turnaround_days": top_agent.get("expected_turnaround_days", 0),
+            },
+            "timing_decision": top_agent.get("timing_decision", ""),
+            "action_impact": top_agent.get("action_impact", ""),
         }

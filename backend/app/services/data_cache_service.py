@@ -42,6 +42,7 @@ class DataCacheService:
         self.purchasing_header_df = pd.DataFrame()
         self.enriched_event_log_df = pd.DataFrame()
         self.case_level_df = pd.DataFrame()
+        self.case_table_full_df = pd.DataFrame()
         self.wcm_olap_df = pd.DataFrame()
         self.wcm_grouped_extract: Dict[str, Any] = {}
         self.process_context: Dict[str, Any] = {}
@@ -187,7 +188,13 @@ class DataCacheService:
             event_log = celonis.get_event_log().copy()
             case_attrs = celonis.get_case_attributes().copy()
             case_table_full = celonis.get_table_data(celonis.case_table, use_cache=False).copy()
+
+            # ============================================================
+            # PHASE 1: Build initial process_context from Celonis
+            #   (needed as input to _build_case_level_dataset)
+            # ============================================================
             process_context = insight_service.build_process_context()
+
             wcm_mode = getattr(settings, "WCM_CONTEXT_MODE", "full")
 
             grouped_extract = {}
@@ -230,10 +237,82 @@ class DataCacheService:
             case_level = self._enrich_case_level_with_olap(case_level, detailed_olap_df)
             case_level = self._backfill_invoice_amounts_from_aux_tables(case_level, celonis)
 
+            # ============================================================
+            # 🔥 PHASE 2: UPDATE process_context with REAL enriched data
+            #   This is where the fix actually happens
+            # ============================================================
+            process_context["total_cases"] = int(len(case_level))
+            process_context["total_events"] = int(len(event_log))
+
+            # 🔥 Rebuild variants from case_level if empty/missing
+            if not process_context.get("variants"):
+                logger.warning("process_context had empty variants, rebuilding from case_level...")
+                if "activity_sequence" in case_level.columns:
+                    variant_counts = case_level["activity_sequence"].value_counts()
+                    total = max(len(case_level), 1)
+                    process_context["variants"] = [
+                        {
+                            "variant": str(v),
+                            "frequency": int(c),
+                            "percentage": round((c / total) * 100, 1),
+                        }
+                        for v, c in variant_counts.head(15).items()
+                    ]
+                elif "variant" in case_level.columns:
+                    variant_counts = case_level["variant"].value_counts()
+                    total = max(len(case_level), 1)
+                    process_context["variants"] = [
+                        {
+                            "variant": str(v),
+                            "frequency": int(c),
+                            "percentage": round((c / total) * 100, 1),
+                        }
+                        for v, c in variant_counts.head(15).items()
+                    ]
+
+            # 🔥 Rebuild exception_rate if zero
+            if not process_context.get("exception_rate"):
+                exc_col = None
+                for col_name in ["has_exception", "is_exception", "exception_flag"]:
+                    if col_name in case_level.columns:
+                        exc_col = col_name
+                        break
+                if exc_col:
+                    exc_count = int(case_level[exc_col].sum())
+                    total = max(len(case_level), 1)
+                    process_context["exception_rate"] = round((exc_count / total) * 100, 2)
+                    logger.info("Rebuilt exception_rate from case_level: %.2f%%", process_context["exception_rate"])
+
+            # 🔥 Rebuild golden_path_percentage if zero
+            if not process_context.get("golden_path_percentage") and process_context.get("variants"):
+                process_context["golden_path_percentage"] = process_context["variants"][0].get("percentage", 0)
+
+            # 🔥 Update avg_end_to_end_days from case_level if available
+            if not process_context.get("avg_end_to_end_days"):
+                for col_name in ["end_to_end_days", "cycle_time_days", "duration_days"]:
+                    if col_name in case_level.columns:
+                        avg_days = case_level[col_name].mean()
+                        if pd.notna(avg_days):
+                            process_context["avg_end_to_end_days"] = round(float(avg_days), 2)
+                            break
+
+            logger.info(
+                "Phase 2 process_context update: total_cases=%d, total_events=%d, variants=%d, exception_rate=%.2f%%",
+                process_context.get("total_cases", 0),
+                process_context.get("total_events", 0),
+                len(process_context.get("variants", [])),
+                process_context.get("exception_rate", 0),
+            )
+            # ============================================================
+            # END PHASE 2
+            # ============================================================
+
             exception_records_map = self._build_exception_records_map(case_level, process_context)
             vendor_stats = self._build_vendor_stats(case_level, detailed_olap_df, process_context)
             process_context["vendor_stats"] = vendor_stats
             vendor_records_map = self._build_vendor_records_map(case_level, exception_records_map)
+            vendor_records_map = self._build_vendor_records_map(case_level, exception_records_map)
+            vendor_paths_map = self._build_vendor_paths_map(celonis, case_level)
             vendor_paths_map = self._build_vendor_paths_map(celonis, case_level)
             exception_categories = self._build_exception_categories(exception_records_map)
             profile_summary = self._build_profile_summary(case_level, detailed_olap_df)
@@ -252,7 +331,8 @@ class DataCacheService:
                 "grouped_extract_group_count": int(grouped_extract.get("group_count", 0) if grouped_extract else 0),
                 "grouped_extract_tables": int(grouped_extract.get("tables_extracted", 0) if grouped_extract else 0),
                 "grouped_selected_tables": grouped_extract.get("selected_tables", []) if grouped_extract else [],
-                "grouped_include_event_tables": grouped_extract.get("include_event_tables", False) if grouped_extract else False,
+                "grouped_include_event_tables": grouped_extract.get("include_event_tables",
+                                                                    False) if grouped_extract else False,
                 "grouped_max_tables": grouped_extract.get("max_tables", 0) if grouped_extract else 0,
                 "olap_rows": int(len(detailed_olap_df)),
                 "includes_open_and_closed": True,
@@ -272,6 +352,7 @@ class DataCacheService:
                 "event_rows": int(len(event_log)),
                 "enriched_event_rows": int(len(enriched)),
                 "case_rows": int(len(case_level)),
+                "case_table_full_rows": int(len(case_table_full)),
                 "wcm_olap_rows": int(len(detailed_olap_df)),
                 "wcm_group_count": int(grouped_extract.get("group_count", 0) if grouped_extract else 0),
                 "wcm_olap_source_table": detailed_olap_payload.get("source_table"),
@@ -295,11 +376,13 @@ class DataCacheService:
         with self._lock:
             self.event_log_df = event_log
             self.purchasing_header_df = case_attrs
+            self.case_table_full_df = case_table_full
             self.enriched_event_log_df = enriched
             self.case_level_df = case_level
             self.wcm_olap_df = detailed_olap_df
             self.wcm_grouped_extract = grouped_extract
             self.vendor_stats = vendor_stats
+            self.vendor_records_map = vendor_records_map
             self.process_context = process_context
             self.exception_records_map = exception_records_map
             self.vendor_records_map = vendor_records_map
@@ -322,6 +405,18 @@ class DataCacheService:
     def is_stale(self) -> bool:
         with self._lock:
             return self._is_stale_locked()
+
+    def get_case_table(self) -> List[Dict[str, Any]]:
+        """Return full purchasing document header table for detailed views."""
+        try:
+            self.ensure_loaded()
+        except Exception as e:
+            logger.warning("Serving empty case table due to refresh/load error: %s", str(e))
+            return []
+        with self._lock:
+            return self.case_table_full_df.where(
+                pd.notnull(self.case_table_full_df), None
+            ).to_dict(orient="records")
 
     def get_cache_status(self) -> Dict[str, Any]:
         with self._lock:
@@ -388,6 +483,15 @@ class DataCacheService:
             logger.warning("Serving empty event log due to refresh/load error: %s", str(e))
         with self._lock:
             return self.event_log_df.where(pd.notnull(self.event_log_df), None).to_dict(orient="records")
+
+    def get_vendor_stats_api(self) -> List[Dict[str, Any]]:
+        """API-ready vendor stats with computed payment behavior from OLAP."""
+        try:
+            self.ensure_loaded()
+        except Exception as e:
+            logger.warning("Serving empty vendor stats due to refresh/load error: %s", str(e))
+        with self._lock:
+            return self.vendor_stats  # This already has correct payment_behavior from _build_vendor_olap_summary
 
     def get_vendor_stats(self) -> List[Dict[str, Any]]:
         try:
@@ -456,6 +560,36 @@ class DataCacheService:
             return self.vendor_paths_map.get(
                 normalized, {"vendor_id": vendor_id, "happy_paths": [], "exception_paths": []}
             )
+
+    def _build_vendor_records_map(
+            self,
+            case_level: pd.DataFrame,
+            exception_records_map: Dict[str, List[Dict[str, Any]]],
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Build a map of vendor_id -> list of case records for fast vendor lookup."""
+        vendor_map: Dict[str, List[Dict[str, Any]]] = {}
+
+        # Add case level records per vendor
+        for _, row in case_level.iterrows():
+            vid = str(row.get("vendor_id", "UNKNOWN") or "UNKNOWN").strip().upper()
+            if not vid:
+                vid = "UNKNOWN"
+            vendor_map.setdefault(vid, []).append(self._to_jsonable(row.to_dict()))
+
+        # Also add exception records per vendor
+        for records in exception_records_map.values():
+            for rec in records:
+                vid = str(rec.get("vendor_id", "UNKNOWN") or "UNKNOWN").strip().upper()
+                if not vid:
+                    vid = "UNKNOWN"
+                # Avoid duplicates — only add if not already present by case_id
+                existing_case_ids = {
+                    str(r.get("case_id", "")) for r in vendor_map.get(vid, [])
+                }
+                if str(rec.get("case_id", "")) not in existing_case_ids:
+                    vendor_map.setdefault(vid, []).append(rec)
+
+        return vendor_map
 
     def get_vendors(self) -> List[Dict[str, Any]]:
         try:

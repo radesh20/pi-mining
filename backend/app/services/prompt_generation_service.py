@@ -104,10 +104,24 @@ class PromptGenerationService:
     def __init__(self, llm: AzureOpenAIService):
         self.llm = llm
 
-    def generate_deep_dive(self, agent_name: str, process_context: dict) -> dict:
+    def generate_deep_dive(self, agent_name: str, process_context: dict,case_data:Dict[str, Any],exception_records: List[Dict[str, Any]]) -> dict:
         user_prompt = f"""
 Generate comprehensive prompts for: {agent_name}
 Data source: Celonis Process Mining
+
+=== CASE LEVEL PI EVIDENCE ===
+
+Case ID: {case_data.get("case_id")}
+Activity Trace: {case_data.get("activity_trace_text", "")}
+Actual Duration: {case_data.get("actual_dpo", 0.0)}
+
+Exceptions for this case:
+{json.dumps(
+    [e for e in exception_records if str(e.get("case_id")) == str(case_data.get("case_id"))],
+    indent=2
+)}
+
+=== END CASE CONTEXT ===
 
 === CELONIS PROCESS MINING CONTEXT ===
 
@@ -426,4 +440,50 @@ Exception Rate: {process_context["exception_rate"]}%
                 "Process mining includes transition-level timing and bottleneck context.",
                 f"Fallback comparison generated from deterministic Celonis data ({reason}).",
             ],
+        }
+
+    def generate_agent_evidence_context(
+            self,
+            case_data: Dict[str, Any],
+            process_context: Dict[str, Any],
+            exception_records: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Build PI-specific evidence context to inject into prompt.
+        Shows why BI alone would miss process insights.
+        """
+        case_id = case_data.get("case_id")
+        activity_trace = case_data.get("activity_trace_text", "")
+        duration_days = case_data.get("duration_days", 0.0)
+
+        # Get avg turnaround from process context
+        avg_tat = float(process_context.get("avg_end_to_end_days", 0.0) or 0.0)
+
+        # Check if case matches exception patterns
+        matching_exceptions = [
+            e for e in exception_records
+            if str(e.get("case_id")) == str(case_id)
+        ]
+
+        # Identify deviations
+        deviations = []
+        if duration_days > avg_tat * 1.5:
+            deviations.append(f"50% slower than golden path ({duration_days:.1f}d vs {avg_tat:.1f}d baseline)")
+        if matching_exceptions:
+            deviations.append(f"{len(matching_exceptions)} exception flags detected")
+        if "moved out" in activity_trace.lower():
+            deviations.append("Moved out of VIM (indicates processing complication)")
+
+        return {
+            "case_id": case_id,
+            "activity_trace_highlight": activity_trace,
+            "expected_turnaround_days": avg_tat,
+            "actual_turnaround_days": duration_days,
+            "deviations_from_golden_path": deviations,
+            "exception_flags_present": [e.get("exception_type") for e in matching_exceptions],
+            "pi_insight": (
+                f"BI tools see: invoice #{case_id}, activity sequence, duration. "
+                f"Process Intelligence sees: {len(deviations)} deviations from optimal path, "
+                f"suggesting resource/process bottleneck, not data quality."
+            )
         }
