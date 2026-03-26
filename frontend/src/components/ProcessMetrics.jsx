@@ -40,10 +40,10 @@ export default function ProcessMetrics({ context }) {
           <MetricCard label="Total Events" value={context.total_events} />
         </Grid>
         <Grid item xs={6} md={3}>
-          <MetricCard label="Avg E2E Duration" value={context.avg_end_to_end_days} unit="days" color="#2e7d32" />
+          <MetricCard label="Observed Process Duration" value={context.avg_end_to_end_days} unit="days" color="#2e7d32" />
         </Grid>
         <Grid item xs={6} md={3}>
-          <MetricCard label="Exception Rate" value={`${context.exception_rate}%`} color="#d32f2f" />
+          <MetricCard label="Process Failure Rate" value={`${context.exception_rate}%`} color="#d32f2f" />
         </Grid>
       </Grid>
       {context.bottleneck && (

@@ -1,6 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Alert, Box, Button, Card, CardContent, Chip, CircularProgress, Grid, Snackbar, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography } from "@mui/material";
 import { analyzeExceptionRecord, fetchExceptionCategories, fetchExceptionRecords, fetchNextBestAction, sendExceptionToTeams } from "../api/client";
+import ProcessSignalsPanel from "../components/ProcessSignalsPanel";
+import PredictionPanel from "../components/PredictionPanel";
+import DecisionPanel from "../components/DecisionPanel";
+import WhyThisActionPanel from "../components/WhyThisActionPanel";
+import CaseIntelligencePanel from "../components/CaseIntelligencePanel";
 
 const S = "'Instrument Serif', Georgia, serif";
 const G = "'Geist', system-ui, sans-serif";
@@ -196,13 +201,26 @@ export default function ExceptionsWorkbench() {
                   <InfoRow label="Turnaround Risk" value={`${analysis.turnaround_risk?.risk_level || "N/A"} · ETA ${analysis.turnaround_risk?.estimated_processing_days ?? 0} days`} />
                   <InfoRow label="Recommended Role" value={analysis.recommended_resolution_role} />
                   <InfoRow label="Automation Decision" value={analysis.automation_decision} />
-                  <Box sx={{ pt: 1 }}>
-                    <span className="evidence-tag">Celonis Evidence: {analysis.root_cause_analysis?.celonis_evidence || "Available"}</span>
+
+                  <Box sx={{ pt: 1.5 }}>
+                    <ProcessSignalsPanel
+                      currentStage={analysis.root_cause_analysis?.process_stage || analysis.exception_context_from_celonis?.category_summary}
+                      observedDuration={analysis.turnaround_risk?.estimated_processing_days}
+                      percentile75={analysis.turnaround_risk?.percentile75_days}
+                    />
+                    <PredictionPanel
+                      expectedCompletion={analysis.turnaround_risk?.estimated_processing_days != null ? `${analysis.turnaround_risk.estimated_processing_days} days` : null}
+                      remainingSla={analysis.sla_remaining || null}
+                      breachProbability={analysis.breach_probability || null}
+                      onFailureTrajectory={analysis.on_failure_trajectory || false}
+                    />
+                    <DecisionPanel action={analysis.next_best_action?.action || analysis.automation_decision} />
+                    <WhyThisActionPanel reason={analysis.root_cause_analysis?.most_likely_cause} />
                   </Box>
 
                   {analysis.exception_context_from_celonis && (
                     <Box sx={{ mt: 1.5, background: "#EBF2FC", border: "1px solid #90B8E8", borderLeft: "3px solid #1E4E8C", borderRadius: "0 10px 10px 0", p: 1.5 }}>
-                      <Typography sx={{ fontSize: "0.72rem", fontWeight: 700, color: "#1E4E8C", textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: G, mb: 0.8 }}>Celonis Context Used</Typography>
+                      <Typography sx={{ fontSize: "0.72rem", fontWeight: 700, color: "#1E4E8C", textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: G, mb: 0.8 }}>Process Signals</Typography>
                       <Typography sx={{ fontSize: "0.78rem", color: "#1E3A6B", mb: 0.6, fontFamily: G }}>{analysis.exception_context_from_celonis.category_summary}</Typography>
                       {[["Process Steps", analysis.exception_context_from_celonis.process_step_signals], ["Variants", analysis.exception_context_from_celonis.variant_signals], ["Cycle Time", analysis.exception_context_from_celonis.cycle_time_signals]].map(([k, v]) => v?.length ? (
                         <Typography key={k} sx={{ fontSize: "0.72rem", color: "#2E5090", fontFamily: G, mb: 0.3 }}><strong>{k}:</strong> {(v || []).slice(0, 2).join(" | ")}</Typography>
@@ -213,6 +231,22 @@ export default function ExceptionsWorkbench() {
               )}
             </CardContent>
           </Card>
+
+          {/* Case Intelligence Panel */}
+          {analysis && (
+            <Box sx={{ mb: 2 }}>
+              <CaseIntelligencePanel
+                caseId={selectedRecord?.invoice_id || selectedRecord?.exception_id}
+                currentStage={analysis.root_cause_analysis?.process_stage || analysis.exception_context_from_celonis?.category_summary}
+                timeInStage={analysis.turnaround_risk?.estimated_processing_days}
+                historicalAvg={analysis.turnaround_risk?.historical_avg_days}
+                percentile75={analysis.turnaround_risk?.percentile75_days}
+                remainingSla={analysis.sla_remaining}
+                breachProbability={analysis.breach_probability}
+                rootCause={analysis.root_cause_analysis?.most_likely_cause}
+              />
+            </Box>
+          )}
 
           {/* Next Best Action */}
           <Card sx={{ mb: 2, border: "1px solid #DEC48A !important" }}>
