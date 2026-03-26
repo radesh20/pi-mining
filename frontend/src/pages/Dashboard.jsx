@@ -11,7 +11,7 @@ import Stack from "@mui/material/Stack";
 import ProcessMetrics from "../components/ProcessMetrics";
 import LoadingSpinner from "../components/LoadingSpinner";
 import ProcessTrajectoryView from "../components/ProcessTrajectoryView";
-import { fetchCelonisContextLayer, fetchContextCoverage, fetchProcessInsights, refreshCache, validateWcmContext } from "../api/client";
+import { fetchCelonisContextLayer, fetchContextCoverage, fetchProcessInsights, refreshCache, validateWcmContext, waitForCacheReady } from "../api/client";
 
 const S = "'Instrument Serif', Georgia, serif";
 const G = "'Geist', system-ui, sans-serif";
@@ -40,8 +40,23 @@ export default function Dashboard() {
   const [validationMessage, setValidationMessage] = useState("");
   const [error, setError] = useState(null);
 
-  const loadAll = async () => {
+  const hasUsableAnalytics = (insights, coverageData, layer) => {
+    const totalCases = Number(insights?.data?.total_cases ?? 0);
+    const coverageCases = Number(coverageData?.data?.coverage?.total_cases ?? 0);
+    const contextReady = Boolean(layer?.data?.context_ready);
+    return totalCases > 0 || coverageCases > 0 || contextReady;
+  };
+
+  const loadAll = async (retryIfCacheCold = true) => {
     const [insightsRes, coverageRes, layerRes] = await Promise.all([fetchProcessInsights(), fetchContextCoverage(), fetchCelonisContextLayer()]);
+    if (retryIfCacheCold && !hasUsableAnalytics(insightsRes, coverageRes, layerRes)) {
+      try {
+        await waitForCacheReady();
+        return await loadAll(false);
+      } catch (_) {
+        // Fall through and render the best available snapshot.
+      }
+    }
     setContext(insightsRes.data);
     setCoverage(coverageRes.data || null);
     setContextLayer(layerRes.data || insightsRes.data?.celonis_context_layer || null);
@@ -138,7 +153,7 @@ export default function Dashboard() {
                 <Stack direction="row" spacing={1} flexWrap="wrap" gap={0.8}>
                   <Chip size="small" label={`Mode: ${coverage.ingestion_scope?.wcm_context_mode || "full"}`} sx={{ background: "#F0EDE6", color: "#5C5650", border: "1px solid #E8E3DA", fontSize: "0.68rem" }} />
                   <Chip size="small" label={`Open/Closed: ${Object.keys(coverage.status_coverage?.open_closed_status || {}).length}`} sx={{ background: "#F0EDE6", color: "#5C5650", border: "1px solid #E8E3DA", fontSize: "0.68rem" }} />
-                  <Chip size="small" label={`Payment states: ${Object.keys(coverage.status_coverage?.payment_status || {}).length}`} color="success" size="small" />
+                  <Chip size="small" label={`Payment states: ${Object.keys(coverage.status_coverage?.payment_status || {}).length}`} color="success" />
                 </Stack>
               </Box>
             </CardContent>

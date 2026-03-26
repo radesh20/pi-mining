@@ -287,6 +287,13 @@ F) Open Invoices at Risk:
             logger.exception("AI exception analysis failed.")
             analysis = self._fallback_analysis(cfg["id"], exception_payload, process_context, str(e))
 
+        analysis = self._clarify_analysis(
+            analysis=analysis,
+            payload=exception_payload,
+            process_context=process_context,
+            cfg=cfg,
+        )
+
         try:
             nba = self.next_best_action(analysis, process_context)
             analysis["next_best_action"] = nba
@@ -298,6 +305,13 @@ F) Open Invoices at Risk:
                 "confidence": 0.0,
             }
 
+        analysis = self._clarify_analysis(
+            analysis=analysis,
+            payload=exception_payload,
+            process_context=process_context,
+            cfg=cfg,
+        )
+
         analysis["exception_context_from_celonis"] = self._build_exception_context_from_celonis(
             analysis=analysis,
             process_context=process_context,
@@ -306,6 +320,7 @@ F) Open Invoices at Risk:
             analysis=analysis,
             process_context=process_context,
         )
+        analysis["classifier_agent"] = self._build_classifier_agent(analysis)
         analysis["prompt_for_next_agents"] = self._build_prompt_for_next_agents(
             analysis=analysis,
             process_context=process_context,
@@ -320,39 +335,35 @@ F) Open Invoices at Risk:
 
     def next_best_action(self, exception_analysis: dict, process_context: dict) -> dict:
         """
-        AI-driven next best action recommendation from completed exception analysis.
+        Deterministic next best action recommendation from completed exception analysis.
+        This avoids a second LLM call per exception and greatly reduces rate-limit pressure.
         """
-        system_prompt = """
-You are a decisioning assistant for P2P exception handling.
-Given an exception analysis and Celonis context, produce the next best action.
-Return strict JSON:
-{
-  "action": "...",
-  "why": "...",
-  "confidence": 0.0
-}
-"""
-        user_prompt = f"""
-Exception analysis:
-{json.dumps(exception_analysis, indent=2, default=str)}
+        turnaround = exception_analysis.get("turnaround_risk", {}) or {}
+        root_cause = exception_analysis.get("root_cause_analysis", {}) or {}
+        classifier = exception_analysis.get("classifier_agent", {}) or {}
+        label = str(exception_analysis.get("exception_type", "invoice_exception"))
+        estimated_days = float(turnaround.get("estimated_processing_days", 0) or 0)
+        days_until_due = float(turnaround.get("days_until_due", 0) or 0)
+        risk_level = str(turnaround.get("risk_level", "MEDIUM") or "MEDIUM").upper()
+        automation_decision = str(exception_analysis.get("automation_decision", "") or "").upper()
+        confidence = float(classifier.get("confidence", 0.72) or 0.72)
 
-Celonis process context:
-{json.dumps(process_context, indent=2, default=str)}
-"""
-        try:
-            result = self.llm.chat_json(system_prompt, user_prompt)
-            return {
-                "action": result.get("action", "Escalate to specialist"),
-                "why": result.get("why", "Derived from exception analysis and process risk context."),
-                "confidence": float(result.get("confidence", 0.0) or 0.0),
-            }
-        except Exception as e:
-            logger.exception("AI next best action failed.")
-            return {
-                "action": "Escalate to specialist",
-                "why": f"Fallback due to AI error: {str(e)}",
-                "confidence": 0.0,
-            }
+        action = self._default_next_action(label, exception_analysis)
+        why_parts = []
+        if risk_level:
+            why_parts.append(f"Risk level is {risk_level}")
+        if estimated_days or days_until_due:
+            why_parts.append(f"estimated processing time is {estimated_days:.1f}d vs due-date buffer {days_until_due:.1f}d")
+        if root_cause.get("most_likely_cause"):
+            why_parts.append(f"root cause points to {root_cause.get('most_likely_cause')}")
+        if automation_decision in {"HUMAN_REVIEW", "ESCALATE"}:
+            why_parts.append("manual intervention is safer than automatic closure")
+
+        return {
+            "action": action,
+            "why": ". ".join(why_parts) if why_parts else "Derived from exception analysis and process risk context.",
+            "confidence": confidence,
+        }
 
     def _maybe_notify_teams(self, analysis: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if not self.auto_notify_human_review:
@@ -416,6 +427,16 @@ Celonis process context:
             ),
             "recommended_resolution_role": analysis.get("recommended_resolution_role", ""),
             "automation_decision": analysis.get("automation_decision", ""),
+            "classifier_agent": analysis.get(
+                "classifier_agent",
+                {
+                    "decision": "MONITOR",
+                    "recommended_mode": "auto_resolve",
+                    "confidence": 0.0,
+                    "rationale": "",
+                    "owner": "",
+                },
+            ),
             "exception_context_from_celonis": analysis.get(
                 "exception_context_from_celonis",
                 {
@@ -479,6 +500,13 @@ Celonis process context:
             },
             "recommended_resolution_role": "",
             "automation_decision": "MONITOR",
+            "classifier_agent": {
+                "decision": "HUMAN_REVIEW",
+                "recommended_mode": "human_review",
+                "confidence": 0.42,
+                "rationale": "Fallback mode prefers human review so unresolved exceptions are not silently automated.",
+                "owner": "Human-in-the-Loop Agent",
+            },
             "exception_context_from_celonis": {
                 "category_summary": "Fallback context generated from available Celonis process context.",
                 "process_step_signals": [str(payload.get("exception_path", ""))],
@@ -503,6 +531,179 @@ Celonis process context:
             },
             "next_best_action": {"action": "Escalate for review", "why": "Fallback mode", "confidence": 0.0},
             "send_to_human_review": True,
+        }
+
+    def _clarify_analysis(
+        self,
+        analysis: Dict[str, Any],
+        payload: Dict[str, Any],
+        process_context: Dict[str, Any],
+        cfg: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        analysis = analysis if isinstance(analysis, dict) else {}
+        extra_context = payload.get("extra_context", {}) if isinstance(payload.get("extra_context"), dict) else {}
+        invoice_id = analysis.get("invoice_id") or payload.get("invoice_id") or extra_context.get("invoice_id") or extra_context.get("document_number") or extra_context.get("case_id") or "unknown invoice"
+        vendor_id = analysis.get("vendor_id") or payload.get("vendor_id") or extra_context.get("vendor_id") or "unknown vendor"
+        vendor_name = analysis.get("vendor_name") or payload.get("vendor_name") or extra_context.get("vendor_name") or vendor_id
+        label = cfg.get("label") or analysis.get("exception_type") or payload.get("exception_type") or "Exception"
+        avg_e2e = float(process_context.get("avg_end_to_end_days", 0) or 0)
+        estimated_days = float((analysis.get("turnaround_risk", {}) or {}).get("estimated_processing_days", 0) or 0)
+        happy_path = analysis.get("happy_path", {}) if isinstance(analysis.get("happy_path"), dict) else {}
+        exception_path = analysis.get("exception_path", {}) if isinstance(analysis.get("exception_path"), dict) else {}
+        root_cause = analysis.get("root_cause_analysis", {}) if isinstance(analysis.get("root_cause_analysis"), dict) else {}
+        next_best_action = analysis.get("next_best_action", {}) if isinstance(analysis.get("next_best_action"), dict) else {}
+        analysis["vendor_name"] = vendor_name
+
+        if not analysis.get("summary"):
+            analysis["summary"] = (
+                f"{label} detected for invoice {invoice_id} and vendor {vendor_name}. "
+                f"Use process timing and exception context to route the case."
+            )
+
+        if not happy_path.get("path"):
+            analysis["happy_path"] = {
+                **happy_path,
+                "path": process_context.get("golden_path") or "Invoice received in VIM -> Validate invoice -> Clear invoice",
+                "avg_duration_days": float(happy_path.get("avg_duration_days", 0) or avg_e2e),
+            }
+
+        fallback_exception_path = (
+            extra_context.get("variant_path")
+            or extra_context.get("activity_trace_text")
+            or extra_context.get("summary")
+            or label
+        )
+        if not exception_path.get("path"):
+            analysis["exception_path"] = {
+                **exception_path,
+                "path": fallback_exception_path,
+                "extra_days": max(estimated_days - avg_e2e, 0),
+                "exception_stage": exception_path.get("exception_stage") or self._infer_exception_stage(label, fallback_exception_path),
+            }
+
+        if not root_cause.get("most_likely_cause"):
+            analysis["root_cause_analysis"] = {
+                **root_cause,
+                "most_likely_cause": self._default_root_cause(label),
+                "why": root_cause.get("why") or "Derived from the selected exception type and observed process path.",
+                "vendor_pattern": root_cause.get("vendor_pattern") or f"Vendor {vendor_id} follows the selected exception path.",
+                "celonis_evidence": root_cause.get("celonis_evidence") or "Process step signals and cycle-time context were used to build this assessment.",
+            }
+
+        if not analysis.get("recommended_resolution_role"):
+            analysis["recommended_resolution_role"] = self._default_resolution_role(label)
+
+        if not analysis.get("automation_decision"):
+            analysis["automation_decision"] = "HUMAN_REVIEW" if analysis.get("send_to_human_review") else "AUTO_RESOLVE"
+
+        if not next_best_action.get("action"):
+            action = self._default_next_action(label, analysis)
+            analysis["next_best_action"] = {
+                "action": action,
+                "why": (
+                    f"{label} requires a clear remediation step using the current due-date buffer "
+                    f"and process lead-time context."
+                ),
+                "confidence": float(next_best_action.get("confidence", 0.64) or 0.64),
+            }
+
+        return analysis
+
+    @staticmethod
+    def _default_root_cause(label: str) -> str:
+        txt = str(label or "").lower()
+        if "payment terms" in txt:
+            return "Payment terms differ across invoice, PO, or vendor master data."
+        if "early payment" in txt:
+            return "Invoice is being cleared earlier than the working-capital baseline."
+        if "short payment" in txt:
+            return "Payment terms are shorter than expected for this invoice flow."
+        if "late" in txt or "risk" in txt:
+            return "Current process lead time exceeds the available due-date buffer."
+        return "Invoice has entered an exception path that requires targeted resolution."
+
+    @staticmethod
+    def _default_resolution_role(label: str) -> str:
+        txt = str(label or "").lower()
+        if "payment terms" in txt:
+            return "AP Master Data Analyst"
+        if "early payment" in txt or "short payment" in txt:
+            return "Working Capital Analyst"
+        if "late" in txt or "risk" in txt:
+            return "AP Operations Lead"
+        return "Exception Specialist"
+
+    @staticmethod
+    def _infer_exception_stage(label: str, path: str) -> str:
+        text = f"{label} {path}".lower()
+        if "invoice exception start" in text:
+            return "Invoice Exception Start"
+        if "moved out" in text:
+            return "Moved Out of VIM"
+        if "payment" in text:
+            return "Payment Handling"
+        if "approve" in text:
+            return "Approval Routing"
+        return "Invoice Exception Handling"
+
+    def _default_next_action(self, label: str, analysis: Dict[str, Any]) -> str:
+        txt = str(label or "").lower()
+        if "payment terms" in txt:
+            return "Reconcile invoice, PO, and vendor master payment terms, then revalidate the invoice."
+        if "early payment" in txt:
+            return "Hold payment and reschedule to the optimal date unless discount economics justify early release."
+        if "short payment" in txt:
+            return "Correct the payment terms and route the case back through approval before payment execution."
+        if "late" in txt or "risk" in txt:
+            return "Escalate to AP operations and prioritize the case before the due-date buffer is exhausted."
+        return (
+            "Route the invoice to the exception specialist with the Celonis context package and "
+            "close the exception path."
+        )
+
+    def _build_classifier_agent(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
+        turnaround = analysis.get("turnaround_risk", {}) or {}
+        next_best_action = analysis.get("next_best_action", {}) or {}
+        automation_decision = str(analysis.get("automation_decision", "") or "").upper()
+        owner = str(analysis.get("recommended_resolution_role", "") or "Exception Specialist")
+        risk_level = str(turnaround.get("risk_level", "MEDIUM") or "MEDIUM").upper()
+        estimated_days = float(turnaround.get("estimated_processing_days", 0) or 0)
+        days_until_due = float(turnaround.get("days_until_due", 0) or 0)
+        human_required = bool(analysis.get("send_to_human_review", False))
+
+        if human_required or automation_decision in {"ESCALATE", "HUMAN_REVIEW"}:
+            return {
+                "decision": "HUMAN_REVIEW",
+                "recommended_mode": "human_review",
+                "confidence": 0.88 if human_required else 0.74,
+                "rationale": (
+                    f"{risk_level} turnaround risk with owner '{owner}' and action "
+                    f"'{next_best_action.get('action', 'Escalate')}' indicates manual intervention is safer."
+                ),
+                "owner": owner,
+            }
+
+        if automation_decision in {"AUTO_RESOLVE", "AUTOMATE", "APPROVE"}:
+            return {
+                "decision": "AUTO_RESOLVE",
+                "recommended_mode": "auto_resolve",
+                "confidence": 0.82,
+                "rationale": "Current process context supports automated remediation with contained execution risk.",
+                "owner": owner,
+            }
+
+        mode = "auto_resolve" if days_until_due > max(estimated_days, 1) and risk_level in {"LOW", "MEDIUM"} else "human_review"
+        decision = "AUTO_RESOLVE" if mode == "auto_resolve" else "HUMAN_REVIEW"
+        confidence = 0.71 if mode == "auto_resolve" else 0.67
+        return {
+            "decision": decision,
+            "recommended_mode": mode,
+            "confidence": confidence,
+            "rationale": (
+                f"Derived from due-date buffer ({days_until_due:.1f}d) versus estimated processing time "
+                f"({estimated_days:.1f}d) under {risk_level} risk."
+            ),
+            "owner": owner,
         }
 
     def _build_exception_context_from_celonis(

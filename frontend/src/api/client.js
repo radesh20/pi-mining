@@ -5,6 +5,14 @@ const api = axios.create({
   timeout: 300000,
 });
 
+export const unwrapApiData = (payload) => {
+  if (payload == null) return payload;
+  if (payload.data?.data !== undefined) return payload.data.data;
+  if (payload.success !== undefined && payload.data !== undefined) return payload.data;
+  if (payload.data !== undefined && !Array.isArray(payload)) return payload.data;
+  return payload;
+};
+
 // -----------------------------
 // Celonis Connection APIs
 // -----------------------------
@@ -76,8 +84,27 @@ export const validateWcmContext = async () => {
 };
 
 export const refreshCache = async () => {
-  const res = await api.post("/cache/refresh");
+  const res = await api.post("/cache/refresh", null, {
+    params: { background: false },
+  });
   return res.data;
+};
+
+export const fetchCacheStatus = async () => {
+  const res = await api.get("/cache/status");
+  return res.data;
+};
+
+export const waitForCacheReady = async ({ timeoutMs = 120000, pollMs = 2000 } = {}) => {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const status = unwrapApiData(await fetchCacheStatus()) || {};
+    if (status.is_loaded && !status.refresh_in_progress) {
+      return status;
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  throw new Error("Timed out waiting for analytics cache to finish loading.");
 };
 
 // -----------------------------
@@ -139,6 +166,13 @@ export const fetchExceptionCategories = async () => {
 export const fetchExceptionRecords = async (exceptionType) => {
   const res = await api.get("/exceptions/records", {
     params: { type: exceptionType },
+  });
+  return res.data;
+};
+
+export const fetchAllExceptionRecords = async () => {
+  const res = await api.get("/exceptions/records", {
+    params: { type: "*" },
   });
   return res.data;
 };

@@ -76,13 +76,12 @@ class AzureOpenAIService:
                 return cached
 
         if self._use_sdk:
-            response = self.client.chat.completions.create(**kwargs)
-            content = response.choices[0].message.content
+            content = self._chat_via_sdk_with_retry(**kwargs)
             if cache_key:
                 self._cache_set(cache_key, content)
             return content
 
-        content = self._chat_via_rest(**kwargs)
+        content = self._chat_via_rest_with_retry(**kwargs)
         if cache_key:
             self._cache_set(cache_key, content)
         return content
@@ -147,6 +146,47 @@ class AzureOpenAIService:
         except (KeyError, IndexError, TypeError) as e:
             logger.error("Unexpected Azure OpenAI REST response format: %s", data)
             raise ValueError(f"Invalid Azure OpenAI REST response format: {e}")
+
+    def _chat_via_sdk_with_retry(self, **kwargs) -> str:
+        retries = max(int(getattr(settings, "AZURE_OPENAI_RETRY_COUNT", 2) or 2), 0)
+        delay_seconds = max(float(getattr(settings, "AZURE_OPENAI_RETRY_DELAY_SECONDS", 1.0) or 1.0), 0.1)
+        last_error = None
+        for attempt in range(retries + 1):
+            try:
+                response = self.client.chat.completions.create(**kwargs)
+                return response.choices[0].message.content
+            except Exception as e:
+                last_error = e
+                if not self._is_rate_limit_error(e) or attempt >= retries:
+                    raise
+                logger.warning("Azure OpenAI rate limit hit; retrying in %.1fs (attempt %s/%s).", delay_seconds, attempt + 1, retries + 1)
+                time.sleep(delay_seconds)
+        raise last_error
+
+    def _chat_via_rest_with_retry(self, **kwargs) -> str:
+        retries = max(int(getattr(settings, "AZURE_OPENAI_RETRY_COUNT", 2) or 2), 0)
+        delay_seconds = max(float(getattr(settings, "AZURE_OPENAI_RETRY_DELAY_SECONDS", 1.0) or 1.0), 0.1)
+        last_error = None
+        for attempt in range(retries + 1):
+            try:
+                return self._chat_via_rest(**kwargs)
+            except Exception as e:
+                last_error = e
+                if not self._is_rate_limit_error(e) or attempt >= retries:
+                    raise
+                logger.warning("Azure OpenAI REST rate limit hit; retrying in %.1fs (attempt %s/%s).", delay_seconds, attempt + 1, retries + 1)
+                time.sleep(delay_seconds)
+        raise last_error
+
+    @staticmethod
+    def _is_rate_limit_error(error: Exception) -> bool:
+        status_code = getattr(error, "status_code", None)
+        if status_code == 429:
+            return True
+        response = getattr(error, "response", None)
+        if getattr(response, "status_code", None) == 429:
+            return True
+        return "ratelimit" in str(error).lower() or "429" in str(error)
 
     def _build_cache_key(self, kwargs: dict) -> str:
         serialized = json.dumps(

@@ -7,7 +7,7 @@ import ProcessSignalsPanel from "../components/ProcessSignalsPanel";
 import PredictionPanel from "../components/PredictionPanel";
 import DecisionPanel from "../components/DecisionPanel";
 import WhyThisActionPanel from "../components/WhyThisActionPanel";
-import { fetchProcessAgents } from "../api/client";
+import { fetchProcessAgents, waitForCacheReady } from "../api/client";
 
 const S = "'Instrument Serif', Georgia, serif";
 const G = "'Geist', system-ui, sans-serif";
@@ -33,20 +33,45 @@ export default function ProcessAgentsView() {
   const [lifecycleMap, setLifecycleMap] = useState([]);
   const [piVsBiMessage, setPiVsBiMessage] = useState("");
   const [criticalScenario, setCriticalScenario] = useState(null);
+  const [topRecommendation, setTopRecommendation] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    fetchProcessAgents()
-      .then((res) => {
-        setAgents(res.data?.recommended_agents || []);
-        setLifecycleMap(res.data?.lifecycle_map || []);
-        setPiVsBiMessage(res.data?.pi_vs_bi_message || "");
-        setCriticalScenario(res.data?.critical_timing_scenario || null);
-        setContext(res.process_context);
-      })
-      .catch((e) => setError(e.response?.data?.detail || e.message))
-      .finally(() => setLoading(false));
+    let active = true;
+    const load = async (retryIfCacheCold = true) => {
+      try {
+        const res = await fetchProcessAgents();
+        const payload = res.data || {};
+        const processContext = res.process_context || {};
+        const recommendedAgents = payload.recommended_agents || [];
+
+        if (
+          retryIfCacheCold &&
+          recommendedAgents.length === 0 &&
+          Number(processContext.total_cases || 0) === 0
+        ) {
+          await waitForCacheReady();
+          return await load(false);
+        }
+
+        if (!active) return;
+        setAgents(recommendedAgents);
+        setLifecycleMap(payload.lifecycle_map || []);
+        setPiVsBiMessage(payload.pi_vs_bi_message || "");
+        setCriticalScenario(payload.critical_timing_scenario || null);
+        setTopRecommendation(payload.top_recommendation || null);
+        setContext(processContext);
+      } catch (e) {
+        if (!active) return;
+        setError(e.response?.data?.detail || e.message);
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+
+    load();
+    return () => { active = false; };
   }, []);
 
   if (loading) return <LoadingSpinner message="Analyzing Celonis data and recommending agents via Azure OpenAI..." />;
@@ -80,6 +105,28 @@ export default function ProcessAgentsView() {
           <CardContent>
             <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#9C9690", fontFamily: G, mb: 0.8 }}>Process Intelligence Advantage</Typography>
             <Typography sx={{ fontSize: "0.875rem", color: "#5C5650", fontFamily: G }}>{piVsBiMessage}</Typography>
+          </CardContent>
+        </Card>
+      )}
+
+      {topRecommendation && (
+        <Card sx={{ mb: 2.5, background: "#F7FBF9 !important", border: "1px solid #CFE5DA !important", borderLeft: "3px solid #1A6B5E !important" }}>
+          <CardContent>
+            <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#1A6B5E", fontFamily: G, mb: 0.8 }}>Agent Selection Logic</Typography>
+            <Typography sx={{ fontSize: "0.95rem", color: "#17140F", fontFamily: G, mb: 1 }}>
+              {topRecommendation.agent_name} is the lead process agent for the current Celonis snapshot.
+            </Typography>
+            <Stack direction="row" spacing={1} flexWrap="wrap" gap={0.8} sx={{ mb: 1 }}>
+              <Chip size="small" label={`Priority: ${topRecommendation.priority || "MEDIUM"}`} sx={{ background: "#DCF0EB", color: "#1A6B5E", border: "1px solid #8FCFC5" }} />
+              <Chip size="small" label={`Confidence: ${Number(topRecommendation.confidence_score || 0).toFixed(2)}`} sx={{ background: "#EBF2FC", color: "#1E4E8C", border: "1px solid #90B8E8" }} />
+              <Chip size="small" label={`Turnaround: ${Number(topRecommendation.pi_evidence?.expected_turnaround_days || 0).toFixed(2)}d`} sx={{ background: "#F0EDE6", color: "#5C5650", border: "1px solid #E8E3DA" }} />
+              <Chip size="small" label={`Exception rate: ${Number(topRecommendation.pi_evidence?.exception_rate_pct || 0).toFixed(1)}%`} sx={{ background: "#FAEAEA", color: "#B03030", border: "1px solid #E0A0A0" }} />
+            </Stack>
+            <Typography sx={{ fontSize: "0.82rem", color: "#5C5650", fontFamily: G, mb: 0.4 }}>{topRecommendation.reason}</Typography>
+            <Typography sx={{ fontSize: "0.76rem", color: "#1A6B5E", fontFamily: G, mb: 0.3 }}>
+              Variant coverage {Number(topRecommendation.pi_evidence?.variant_frequency_pct || 0).toFixed(1)}% of observed cases; bottleneck at {topRecommendation.pi_evidence?.turnaround_bottleneck || "N/A"}.
+            </Typography>
+            <Typography sx={{ fontSize: "0.76rem", color: "#1E4E8C", fontFamily: G }}>{topRecommendation.timing_decision}</Typography>
           </CardContent>
         </Card>
       )}

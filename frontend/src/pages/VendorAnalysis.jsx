@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Alert, Box, Button, Card, CardContent, Chip, CircularProgress, Divider, Grid, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography } from "@mui/material";
-import api from "../api/client";
+import api, { waitForCacheReady } from "../api/client";
 
 const S = "'Instrument Serif', Georgia, serif";
 const G = "'Geist', system-ui, sans-serif";
@@ -24,6 +24,7 @@ const EXCEPTION_META = [
 const currency = (v) => { const n = Number(v || 0); if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M $`; if (n >= 1000) return `${(n / 1000).toFixed(1)}K $`; return `${n.toFixed(0)} $`; };
 const pct = (v) => `${Number(v || 0).toFixed(1)}%`;
 const pickData = (r) => { if (!r) return null; if (r.data?.data !== undefined) return r.data.data; if (r.data !== undefined) return r.data; return r; };
+const normalizeKey = (value) => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
 
 const withFallbackRisk = (row) => {
   const dpo = Number(row.avg_dpo ?? row.avg_duration_days ?? 0);
@@ -85,12 +86,16 @@ export default function VendorAnalysis() {
 
   useEffect(() => {
     let active = true;
-    (async () => {
+    const load = async (retryIfCacheCold = true) => {
       setLoading(true); setError("");
       try {
         const res = await api.get("/process/vendor-stats");
         const data = pickData(res);
         const rows = Array.isArray(data) ? data : data?.vendors || [];
+        if (retryIfCacheCold && rows.length === 0) {
+          await waitForCacheReady();
+          return await load(false);
+        }
         const normalized = rows.length ? rows.map(r => ({ vendor_id: r.vendor_id || r.vendor || "UNKNOWN", vendor_lifnr: r.vendor_lifnr || r.lifnr || "", total_cases: Number(r.total_cases ?? r.case_count ?? 0), total_value: Number(r.total_value ?? r.value_usd ?? 0), exception_rate: Number(r.exception_rate ?? r.exception_rate_pct ?? 0), avg_dpo: Number(r.avg_dpo ?? r.avg_duration_days ?? 0), payment_behavior: r.payment_behavior || null, risk_score: r.risk_score || withFallbackRisk(r) })) : FALLBACK_VENDORS.map(v => ({ ...v, exception_rate: 100, avg_dpo: 15, payment_behavior: null, risk_score: "CRITICAL" }));
         if (active) { setVendors(normalized); setSelectedVendorId(normalized[0]?.vendor_id || "D4"); }
       } catch (e) {
@@ -101,7 +106,8 @@ export default function VendorAnalysis() {
           setSelectedVendorId(fallback[0]?.vendor_id || "D4");
         }
       } finally { if (active) setLoading(false); }
-    })();
+    };
+    load();
     return () => { active = false; };
   }, []);
 
@@ -124,7 +130,48 @@ export default function VendorAnalysis() {
     return { on_time_pct: 29.7, early_pct: 29.7, late_pct: 29.7, open_pct: 10.8 };
   }, [selectedVendor]);
 
-  const exceptionBreakdown = useMemo(() => aiResult?.vendor_analysis?.exception_breakdown || selectedVendor?.exception_breakdown || {}, [aiResult, selectedVendor]);
+  const derivedExceptionBreakdown = useMemo(() => {
+    const current = selectedVendor?.exception_breakdown || {};
+    const hasAnyCurrentData = Object.values(current).some((entry) => Number(entry?.count || 0) > 0 || Number(entry?.value || entry?.optimization_value || 0) > 0);
+    if (hasAnyCurrentData) return current;
+
+    const exceptionPaths = Array.isArray(vendorPaths.exception_paths) ? vendorPaths.exception_paths : [];
+    if (exceptionPaths.length === 0) return current;
+
+    const base = {
+      payment_terms_mismatch: { count: 0, percentage: 0, value: 0 },
+      invoice_exception: { count: 0, percentage: 0, avg_dpo: 0, value: 0, time_stuck_days: 0 },
+      short_payment_terms: { count: 0, percentage: 0, value: 0, risk_level: "LOW" },
+      early_payment: { count: 0, percentage: 0, optimization_value: 0, value: 0 },
+    };
+
+    exceptionPaths.forEach((path) => {
+      const key = normalizeKey(path.exception_type);
+      if (key.includes("payment_terms")) {
+        base.payment_terms_mismatch.count += Number(path.frequency || path.count || 0);
+        base.payment_terms_mismatch.percentage += Number(path.percentage || 0);
+      } else if (key.includes("short_payment")) {
+        base.short_payment_terms.count += Number(path.frequency || path.count || 0);
+        base.short_payment_terms.percentage += Number(path.percentage || 0);
+        base.short_payment_terms.risk_level = "HIGH";
+      } else if (key.includes("early_payment")) {
+        base.early_payment.count += Number(path.frequency || path.count || 0);
+        base.early_payment.percentage += Number(path.percentage || 0);
+      } else {
+        base.invoice_exception.count += Number(path.frequency || path.count || 0);
+        base.invoice_exception.percentage += Number(path.percentage || 0);
+        base.invoice_exception.avg_dpo = Math.max(base.invoice_exception.avg_dpo, Number(path.avg_dpo || path.avg_duration_days || 0));
+        base.invoice_exception.time_stuck_days = Math.max(base.invoice_exception.time_stuck_days, Number(path.avg_dpo || path.avg_duration_days || 0));
+      }
+    });
+
+    return base;
+  }, [selectedVendor, vendorPaths]);
+
+  const exceptionBreakdown = useMemo(
+    () => aiResult?.vendor_analysis?.exception_breakdown || derivedExceptionBreakdown || {},
+    [aiResult, derivedExceptionBreakdown],
+  );
 
   const runAiAnalysis = async () => {
     if (!selectedVendor) return;
@@ -250,7 +297,7 @@ export default function VendorAnalysis() {
             <CardContent>
               <Typography sx={{ fontFamily: S, fontSize: "1.1rem", color: "#1A6B5E", mb: 1.5 }}>Happy Paths</Typography>
               {pathsLoading ? <CircularProgress size={18} /> : vendorPaths.happy_paths.length === 0 ? (
-                <Typography sx={{ fontSize: "0.82rem", color: "#9C9690", fontFamily: G, py: 2, textAlign: "center" }}>No happy path variants for this vendor.</Typography>
+                <Typography sx={{ fontSize: "0.82rem", color: "#9C9690", fontFamily: G, py: 2, textAlign: "center" }}>No clean happy path variants were found for this vendor.</Typography>
               ) : (
                 <Stack spacing={1}>
                   {vendorPaths.happy_paths.map((p, i) => (
@@ -271,7 +318,7 @@ export default function VendorAnalysis() {
             <CardContent>
               <Typography sx={{ fontFamily: S, fontSize: "1.1rem", color: "#B03030", mb: 1.5 }}>Exception Paths</Typography>
               {pathsLoading ? <CircularProgress size={18} /> : vendorPaths.exception_paths.length === 0 ? (
-                <Typography sx={{ fontSize: "0.82rem", color: "#9C9690", fontFamily: G, py: 2, textAlign: "center" }}>No exception path variants for this vendor.</Typography>
+                <Typography sx={{ fontSize: "0.82rem", color: "#9C9690", fontFamily: G, py: 2, textAlign: "center" }}>No exception path variants were found for this vendor.</Typography>
               ) : (
                 <Stack spacing={1}>
                   {vendorPaths.exception_paths.map((p, i) => (

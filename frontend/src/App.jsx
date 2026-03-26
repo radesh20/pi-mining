@@ -1,13 +1,12 @@
 import React from "react";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider, createTheme } from "@mui/material/styles";
 import CssBaseline from "@mui/material/CssBaseline";
 import Navbar from "./components/Navbar";
 import Dashboard from "./pages/Dashboard";
 import CelonisSetup from "./pages/CelonisSetup";
-import ProcessAgentsView from "./pages/ProcessAgentsView";
 import ExceptionsWorkbench from "./pages/ExceptionsWorkbench";
-import AgentDeepDive from "./pages/AgentDeepDive";
+import ExceptionIntelligence from "./pages/ExceptionIntelligence";
 import CrossAgentInteraction from "./pages/CrossAgentInteraction";
 import VendorAnalysis from "./pages/VendorAnalysis";
 import "./App.css";
@@ -182,11 +181,12 @@ export default function App() {
             <Routes>
               <Route path="/" element={<Dashboard />} />
               <Route path="/setup" element={<CelonisSetup />} />
-              <Route path="/process-agents" element={<ProcessAgentsView />} />
               <Route path="/exceptions-workbench" element={<ExceptionsWorkbench />} />
-              <Route path="/deep-dive" element={<AgentDeepDive />} />
+              <Route path="/exception-intelligence" element={<ExceptionIntelligence />} />
               <Route path="/vendor-analysis" element={<VendorAnalysis />} />
               <Route path="/interaction" element={<CrossAgentInteraction />} />
+              <Route path="/process-agents" element={<Navigate to="/" replace />} />
+              <Route path="/deep-dive" element={<Navigate to="/" replace />} />
             </Routes>
           </div>
         </main>

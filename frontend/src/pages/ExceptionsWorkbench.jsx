@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Box, Button, Card, CardContent, Chip, CircularProgress, Grid, Snackbar, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography } from "@mui/material";
 import { analyzeExceptionRecord, fetchExceptionCategories, fetchExceptionRecords, fetchNextBestAction, sendExceptionToTeams } from "../api/client";
 import ProcessSignalsPanel from "../components/ProcessSignalsPanel";
@@ -6,6 +6,7 @@ import PredictionPanel from "../components/PredictionPanel";
 import DecisionPanel from "../components/DecisionPanel";
 import WhyThisActionPanel from "../components/WhyThisActionPanel";
 import CaseIntelligencePanel from "../components/CaseIntelligencePanel";
+import { analyzeExceptionRecord, fetchExceptionCategories, fetchExceptionRecords, sendExceptionToTeams, waitForCacheReady } from "../api/client";
 
 const S = "'Instrument Serif', Georgia, serif";
 const G = "'Geist', system-ui, sans-serif";
@@ -14,6 +15,7 @@ const money = (v) => { const n = Number(v || 0); if (!n) return "N/A"; if (n >= 
 const pickData = (r) => { if (!r) return null; if (r.data !== undefined) return r.data; return r; };
 const riskColor = (r) => { const v = String(r || "").toUpperCase(); if (v === "CRITICAL") return "error"; if (v === "HIGH" || v === "MEDIUM") return "warning"; return "success"; };
 const quickBadge = (rec) => { const t = `${rec.summary || ""} ${rec.exception_type || ""}`.toLowerCase(); if (t.includes("mismatch")) return "Mismatch"; if (t.includes("late") || t.includes("due")) return "Late"; if (t.includes("early") || t.includes("optim")) return "Optimization"; if (t.includes("short")) return "Short Terms"; return "Exception"; };
+const vendorDisplay = (rec) => rec?.vendor_name || rec?.vendor_id || rec?.recurring_vendor_hint || "—";
 
 function RiskBadge({ risk }) {
   const map = { CRITICAL: { bg: "#FAEAEA", color: "#B03030", border: "#E0A0A0" }, HIGH: { bg: "#FEF3DC", color: "#A05A10", border: "#F0C870" }, MEDIUM: { bg: "#FEF3DC", color: "#A05A10", border: "#F0C870" }, LOW: { bg: "#E0F0E8", color: "#1D5C3A", border: "#80C0A0" } };
@@ -51,37 +53,99 @@ export default function ExceptionsWorkbench() {
   const [loadingTeams, setLoadingTeams] = useState(false);
   const [error, setError] = useState("");
   const [toast, setToast] = useState({ open: false, message: "", severity: "success" });
+  const recordsRequestRef = useRef(0);
+  const analysisRequestRef = useRef(0);
+
+  const runAnalysis = async (record, categoryOverride = null) => {
+    const requestId = ++analysisRequestRef.current;
+    const category = categoryOverride || selectedCategoryObject;
+    setLoadingAnalysis(true); setSelectedRecord(record); setAnalysis(null); setNextAction(null);
+    try {
+      const payload = {
+        exception_type: category?.category_label || selectedCategoryId,
+        exception_id: record.exception_id,
+        invoice_id: record.invoice_id || record.document_number || record.case_id || "",
+        vendor_id: record.vendor_id || record.recurring_vendor_hint || "",
+        vendor_name: vendorDisplay(record),
+        invoice_amount: record.invoice_amount || record.value_at_risk || 0,
+        currency: record.currency || "USD",
+        days_until_due: record.days_until_due || 0,
+        extra_context: record,
+      };
+      const aData = pickData(await analyzeExceptionRecord(payload));
+      if (analysisRequestRef.current !== requestId) return;
+      setAnalysis(aData);
+      setNextAction(aData?.next_best_action || null);
+    } catch (e) { setError(e?.response?.data?.detail || e.message || "Failed to analyze"); }
+    finally {
+      if (analysisRequestRef.current === requestId) setLoadingAnalysis(false);
+    }
+  };
 
   useEffect(() => {
     let active = true;
-    fetchExceptionCategories()
-      .then((res) => { const rows = Array.isArray(pickData(res)) ? pickData(res) : []; if (!active) return; setCategories(rows); if (rows.length > 0) setSelectedCategoryId(rows[0].category_id || ""); })
-      .catch((e) => { if (!active) return; setError(e?.response?.data?.detail || e.message || "Failed to load categories"); })
-      .finally(() => { if (active) setLoadingCategories(false); });
+    const loadCategories = async (retryIfCacheCold = true) => {
+      try {
+        const res = await fetchExceptionCategories();
+        const rows = (Array.isArray(pickData(res)) ? pickData(res) : []).filter((row) => Number(row.case_count || 0) > 0);
+        if (retryIfCacheCold && rows.every((row) => Number(row.case_count || 0) === 0)) {
+          await waitForCacheReady();
+          return await loadCategories(false);
+        }
+        if (!active) return;
+        setCategories(rows);
+        const preferred = rows.find((row) => Number(row.case_count || 0) > 0) || rows[0];
+        if (preferred) setSelectedCategoryId(preferred.category_id || "");
+      } catch (e) {
+        if (!active) return;
+        setError(e?.response?.data?.detail || e.message || "Failed to load categories");
+      } finally {
+        if (active) setLoadingCategories(false);
+      }
+    };
+    loadCategories();
     return () => { active = false; };
   }, []);
 
   useEffect(() => {
     if (!selectedCategoryId) return;
+    const requestId = ++recordsRequestRef.current;
     setLoadingRecords(true); setRecords([]); setSelectedRecord(null); setAnalysis(null); setNextAction(null);
-    fetchExceptionRecords(selectedCategoryId)
-      .then((res) => setRecords(Array.isArray(pickData(res)) ? pickData(res) : []))
-      .catch((e) => setError(e?.response?.data?.detail || e.message || "Failed to load records"))
-      .finally(() => setLoadingRecords(false));
-  }, [selectedCategoryId]);
+    const loadRecords = async () => {
+      try {
+        let res = await fetchExceptionRecords(selectedCategoryId);
+        if (recordsRequestRef.current !== requestId) return;
+        let rows = Array.isArray(pickData(res)) ? pickData(res) : [];
+        const currentCategory = categories.find((c) => c.category_id === selectedCategoryId) || null;
+
+        if (rows.length === 0 && Number(currentCategory?.case_count || 0) > 0) {
+          await waitForCacheReady();
+          if (recordsRequestRef.current !== requestId) return;
+          res = await fetchExceptionRecords(selectedCategoryId);
+          if (recordsRequestRef.current !== requestId) return;
+          rows = Array.isArray(pickData(res)) ? pickData(res) : [];
+        }
+
+        setRecords(rows);
+        if (rows.length > 0) {
+          await runAnalysis(rows[0], currentCategory);
+        } else {
+          setCategories((prev) => prev.map((cat) => (
+            cat.category_id === selectedCategoryId
+              ? { ...cat, case_count: 0, total_value: 0 }
+              : cat
+          )));
+        }
+      } catch (e) {
+        setError(e?.response?.data?.detail || e.message || "Failed to load records");
+      } finally {
+        if (recordsRequestRef.current === requestId) setLoadingRecords(false);
+      }
+    };
+    loadRecords();
+  }, [selectedCategoryId, categories]);
 
   const selectedCategoryObject = useMemo(() => categories.find(c => c.category_id === selectedCategoryId), [categories, selectedCategoryId]);
-
-  const runAnalysis = async (record) => {
-    setLoadingAnalysis(true); setSelectedRecord(record); setAnalysis(null); setNextAction(null);
-    try {
-      const payload = { exception_type: selectedCategoryObject?.category_label || selectedCategoryId, exception_id: record.exception_id, invoice_id: record.invoice_id || "", vendor_id: record.vendor_id || record.recurring_vendor_hint || "", vendor_name: record.vendor_name || "", invoice_amount: record.invoice_amount || 0, currency: record.currency || "USD", extra_context: record };
-      const aData = pickData(await analyzeExceptionRecord(payload));
-      setAnalysis(aData);
-      setNextAction(pickData(await fetchNextBestAction(aData)));
-    } catch (e) { setError(e?.response?.data?.detail || e.message || "Failed to analyze"); }
-    finally { setLoadingAnalysis(false); }
-  };
 
   const sendToTeams = async () => {
     if (!analysis) return;
@@ -163,7 +227,7 @@ export default function ExceptionsWorkbench() {
                         return (
                           <TableRow key={rec.exception_id} hover onClick={() => runAnalysis(rec)} sx={{ cursor: "pointer", background: isSel ? "#F5ECD9 !important" : "transparent" }}>
                             <TableCell sx={{ fontWeight: isSel ? 600 : 400, color: isSel ? "#B5742A !important" : "inherit" }}>{rec.invoice_id || rec.exception_id}</TableCell>
-                            <TableCell>{rec.vendor_id || rec.recurring_vendor_hint || "—"}</TableCell>
+                            <TableCell>{vendorDisplay(rec)}</TableCell>
                             <TableCell>{money(rec.invoice_amount || rec.value_at_risk || 0)}</TableCell>
                             <TableCell>{Number(dpo || 0).toFixed(1)}</TableCell>
                             <TableCell><Box sx={{ background: "#FEF3DC", color: "#A05A10", border: "1px solid #F0C870", px: 0.8, py: 0.1, borderRadius: "99px", fontSize: "0.65rem", fontWeight: 600, fontFamily: G, display: "inline-block" }}>{quickBadge(rec)}</Box></TableCell>
@@ -262,7 +326,7 @@ export default function ExceptionsWorkbench() {
                   <InfoRow label="Action" value={nextAction.action || analysis?.next_best_action?.action} />
                   <InfoRow label="Why" value={nextAction.why || analysis?.next_best_action?.why} />
                   <InfoRow label="Confidence" value={Number(nextAction.confidence ?? analysis?.next_best_action?.confidence ?? 0).toFixed(2)} />
-                  <InfoRow label="Owner" value={analysis?.recommended_resolution_role} />
+                  <InfoRow label="Owner" value={analysis?.vendor_name || analysis?.vendor_id || vendorDisplay(selectedRecord)} />
                   <InfoRow label="ETA / Urgency" value={`${analysis?.turnaround_risk?.estimated_processing_days ?? 0} days / ${analysis?.turnaround_risk?.risk_level || "N/A"}`} />
 
                   {Array.isArray(analysis?.next_best_actions) && analysis.next_best_actions.length > 0 && (
