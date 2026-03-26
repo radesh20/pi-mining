@@ -7,15 +7,27 @@ import Grid from "@mui/material/Grid";
 import Chip from "@mui/material/Chip";
 import Button from "@mui/material/Button";
 import Alert from "@mui/material/Alert";
+import Stack from "@mui/material/Stack";
 import ProcessMetrics from "../components/ProcessMetrics";
 import LoadingSpinner from "../components/LoadingSpinner";
-import {
-  fetchCelonisContextLayer,
-  fetchContextCoverage,
-  fetchProcessInsights,
-  refreshCache,
-  validateWcmContext,
-} from "../api/client";
+import { fetchCelonisContextLayer, fetchContextCoverage, fetchProcessInsights, refreshCache, validateWcmContext } from "../api/client";
+
+const S = "'Instrument Serif', Georgia, serif";
+const G = "'Geist', system-ui, sans-serif";
+
+function SectionHeader({ label, meta }) {
+  return (
+    <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, mb: 2, mt: 3.5 }}>
+      <Typography sx={{ fontFamily: S, fontSize: "1.35rem", fontWeight: 400, color: "#17140F", letterSpacing: "-0.015em", whiteSpace: "nowrap" }}>
+        {label}
+      </Typography>
+      {meta && <Box sx={{ background: "#F0EDE6", border: "1px solid #E8E3DA", borderRadius: "99px", px: 1.2, py: 0.2 }}>
+        <Typography sx={{ fontSize: "0.69rem", fontWeight: 600, color: "#9C9690", fontFamily: G }}>{meta}</Typography>
+      </Box>}
+      <Box sx={{ flex: 1, height: "1px", background: "#E8E3DA" }} />
+    </Box>
+  );
+}
 
 export default function Dashboard() {
   const [context, setContext] = useState(null);
@@ -28,267 +40,258 @@ export default function Dashboard() {
   const [error, setError] = useState(null);
 
   const loadAll = async () => {
-    const [insightsRes, coverageRes, layerRes] = await Promise.all([
-      fetchProcessInsights(),
-      fetchContextCoverage(),
-      fetchCelonisContextLayer(),
-    ]);
+    const [insightsRes, coverageRes, layerRes] = await Promise.all([fetchProcessInsights(), fetchContextCoverage(), fetchCelonisContextLayer()]);
     setContext(insightsRes.data);
     setCoverage(coverageRes.data || null);
     setContextLayer(layerRes.data || insightsRes.data?.celonis_context_layer || null);
   };
 
   useEffect(() => {
-    loadAll()
-      .catch((err) => setError(err.response?.data?.detail || err.message))
-      .finally(() => setLoading(false));
+    loadAll().catch((e) => setError(e.response?.data?.detail || e.message)).finally(() => setLoading(false));
   }, []);
 
   const handleRefresh = async () => {
-    setRefreshing(true);
-    setRefreshMessage("");
-    setError(null);
-    try {
-      await refreshCache();
-      await loadAll();
-      setRefreshMessage("Cache refreshed and coverage reloaded.");
-    } catch (err) {
-      setError(err.response?.data?.detail || err.message || "Refresh failed");
-    } finally {
-      setRefreshing(false);
-    }
+    setRefreshing(true); setRefreshMessage(""); setError(null);
+    try { await refreshCache(); await loadAll(); setRefreshMessage("Cache refreshed and coverage reloaded."); }
+    catch (e) { setError(e.response?.data?.detail || e.message || "Refresh failed"); }
+    finally { setRefreshing(false); }
   };
 
   const handleValidate = async () => {
-    setValidationMessage("");
-    setError(null);
+    setValidationMessage(""); setError(null);
     try {
       const res = await validateWcmContext();
-      const data = res.data || {};
-      if (data.overall_passed) {
-        setValidationMessage("WCM validation passed.");
-      } else {
-        const first = (data.recommendations || [])[0] || "Validation found mapping/coverage gaps.";
-        setValidationMessage(`WCM validation found issues: ${first}`);
-      }
-    } catch (err) {
-      setError(err.response?.data?.detail || err.message || "Validation failed");
-    }
+      const d = res.data || {};
+      setValidationMessage(d.overall_passed ? "WCM validation passed." : `WCM validation found issues: ${(d.recommendations || [])[0] || "Mapping/coverage gaps."}`);
+    } catch (e) { setError(e.response?.data?.detail || e.message || "Validation failed"); }
   };
 
   if (loading) return <LoadingSpinner message="Extracting process insights from Celonis..." />;
-
-  if (error) {
-    return (
-      <div className="page-container">
+  if (error) return (
+    <div className="page-container">
+      <Box sx={{ pt: 4 }}>
         <div className="error-box">
-          <Typography variant="h6">Celonis Connection Required</Typography>
-          <Typography variant="body2">{error}</Typography>
-          <Typography variant="body2" sx={{ mt: 1 }}>
-            Go to Celonis Setup page to verify connection.
-          </Typography>
+          <Typography sx={{ fontFamily: S, fontSize: "1.1rem", mb: 0.5 }}>Celonis Connection Required</Typography>
+          <Typography sx={{ fontSize: "0.875rem", mb: 1 }}>{error}</Typography>
+          <Typography sx={{ fontSize: "0.82rem" }}>Go to Celonis Setup page to verify connection.</Typography>
         </div>
-      </div>
-    );
-  }
+      </Box>
+    </div>
+  );
 
   return (
     <div className="page-container">
-      <Typography variant="h4" sx={{ fontWeight: 700, mb: 1, color: "#fff" }}>
-        Process Mining → AI Agents
-      </Typography>
-      <Typography variant="body1" sx={{ color: "#888", mb: 3 }}>
-        All data sourced live from Celonis Process Mining
-      </Typography>
-
-      <Box sx={{ mb: 2, display: "flex", alignItems: "center", gap: 1 }}>
-        <Button variant="contained" onClick={handleRefresh} disabled={refreshing}>
-          {refreshing ? "Refreshing..." : "Refresh Cache + Coverage"}
-        </Button>
-        <Button variant="outlined" onClick={handleValidate} disabled={refreshing}>
-          Validate WCM Context
-        </Button>
-        {coverage?.refresh?.last_refreshed_at && (
-          <Typography variant="caption" sx={{ color: "#94a3b8" }}>
-            Last refresh: {coverage.refresh.last_refreshed_at}
-          </Typography>
-        )}
+      {/* Header */}
+      <Box sx={{ pt: 4, pb: 3, borderBottom: "1px solid #E8E3DA", mb: 3 }}>
+        <Box sx={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 2 }}>
+          <Box>
+            <Typography sx={{ fontFamily: S, fontSize: "2.2rem", fontWeight: 400, color: "#17140F", letterSpacing: "-0.025em", lineHeight: 1.15, mb: 0.5 }}>
+              Process Mining → AI Agents
+            </Typography>
+            <Typography sx={{ fontSize: "0.875rem", color: "#9C9690", fontFamily: G }}>
+              All data sourced live from Celonis Process Mining
+            </Typography>
+          </Box>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" gap={1}>
+            <Button variant="contained" size="small" onClick={handleRefresh} disabled={refreshing}>
+              {refreshing ? "Refreshing…" : "Refresh Cache + Coverage"}
+            </Button>
+            <Button variant="outlined" size="small" onClick={handleValidate} disabled={refreshing}>
+              Validate WCM Context
+            </Button>
+            {coverage?.refresh?.last_refreshed_at && (
+              <Typography sx={{ fontSize: "0.72rem", color: "#9C9690", fontFamily: G }}>
+                Last refresh: {coverage.refresh.last_refreshed_at}
+              </Typography>
+            )}
+          </Stack>
+        </Box>
+        {refreshMessage && <Alert severity="success" sx={{ mt: 2 }}>{refreshMessage}</Alert>}
+        {validationMessage && <Alert severity={validationMessage.includes("issues") ? "warning" : "success"} sx={{ mt: 2 }}>{validationMessage}</Alert>}
       </Box>
-
-      {refreshMessage && (
-        <Alert severity="success" sx={{ mb: 2 }}>
-          {refreshMessage}
-        </Alert>
-      )}
-      {validationMessage && (
-        <Alert severity={validationMessage.includes("issues") ? "warning" : "success"} sx={{ mb: 2 }}>
-          {validationMessage}
-        </Alert>
-      )}
 
       <ProcessMetrics context={context} />
 
+      {/* WCM Coverage — light */}
       {coverage && (
-        <Card sx={{ mt: 2, border: "1px solid #334155", background: "#0f172a" }}>
-          <CardContent>
-            <Typography variant="h6" sx={{ color: "#93c5fd", fontWeight: 700, mb: 1 }}>
-              WCM Context Coverage
-            </Typography>
-            <Grid container spacing={1}>
-              <Grid item xs={12} md={4}>
-                <Typography variant="body2" sx={{ color: "#cbd5e1" }}>
-                  Cases: {coverage.coverage?.total_cases ?? 0} | Events: {coverage.coverage?.total_events ?? 0}
-                </Typography>
-                <Typography variant="body2" sx={{ color: "#cbd5e1" }}>
-                  OLAP Rows: {coverage.coverage?.olap_rows ?? 0} | Tables: {coverage.coverage?.tables_extracted ?? 0}
-                </Typography>
+        <>
+          <SectionHeader label="WCM Context Coverage" />
+          <Card sx={{ background: "#FFFFFF !important", border: "1px solid #E8E3DA !important" }}>
+            <CardContent>
+              <Grid container spacing={3}>
+                {[
+                  { label: "Cases", value: coverage.coverage?.total_cases ?? 0, sub: `${coverage.coverage?.total_events ?? 0} events`, color: "#17140F" },
+                  { label: "Exception Categories", value: coverage.coverage?.exception_category_count ?? 0, sub: `${coverage.coverage?.exception_record_count ?? 0} records`, color: "#17140F" },
+                  { label: "OLAP Rows", value: coverage.coverage?.olap_rows ?? 0, sub: `${coverage.coverage?.tables_extracted ?? 0} tables`, color: "#17140F" },
+                ].map((s) => (
+                  <Grid item xs={12} sm={4} key={s.label}>
+                    <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#9C9690", mb: 1, fontFamily: G }}>
+                      {s.label}
+                    </Typography>
+                    <Typography sx={{ fontFamily: S, fontSize: "2.2rem", color: s.color, lineHeight: 1, mb: 0.5 }}>{s.value}</Typography>
+                    <Typography sx={{ fontSize: "0.75rem", color: "#9C9690", fontFamily: G }}>{s.sub}</Typography>
+                  </Grid>
+                ))}
               </Grid>
-              <Grid item xs={12} md={4}>
-                <Typography variant="body2" sx={{ color: "#cbd5e1" }}>
-                  Exception Categories: {coverage.coverage?.exception_category_count ?? 0}
-                </Typography>
-                <Typography variant="body2" sx={{ color: "#cbd5e1" }}>
-                  Exception Records: {coverage.coverage?.exception_record_count ?? 0}
-                </Typography>
-              </Grid>
-              <Grid item xs={12} md={4}>
-                <Typography variant="body2" sx={{ color: "#cbd5e1", mb: 0.5 }}>
-                  Mode: {coverage.ingestion_scope?.wcm_context_mode || "full"}
-                </Typography>
-                <Typography variant="caption" sx={{ display: "block", color: "#94a3b8", mb: 0.4 }}>
-                  OLAP table: {coverage.mapping_diagnostics?.olap_source_table || "N/A"} ({coverage.mapping_diagnostics?.olap_selection_mode || "auto"})
-                </Typography>
-                {coverage.mapping_diagnostics?.has_missing_olap_mappings && (
-                  <Typography variant="caption" sx={{ display: "block", color: "#fca5a5", mb: 0.4 }}>
-                    Missing required mappings: {(coverage.mapping_diagnostics?.olap_missing_required_fields || []).join(", ")}
-                  </Typography>
-                )}
-                <Chip
-                  size="small"
-                  label={`Open/Closed states: ${Object.keys(coverage.status_coverage?.open_closed_status || {}).length}`}
-                  sx={{ mr: 0.5, mb: 0.5, background: "#1e293b", color: "#93c5fd" }}
-                />
-                <Chip
-                  size="small"
-                  label={`Payment states: ${Object.keys(coverage.status_coverage?.payment_status || {}).length}`}
-                  sx={{ mb: 0.5, background: "#1e293b", color: "#86efac" }}
-                />
-              </Grid>
-            </Grid>
-          </CardContent>
-        </Card>
+              <Box sx={{ mt: 2, pt: 2, borderTop: "1px solid #E8E3DA" }}>
+                <Stack direction="row" spacing={1} flexWrap="wrap" gap={0.8}>
+                  <Chip size="small" label={`Mode: ${coverage.ingestion_scope?.wcm_context_mode || "full"}`} sx={{ background: "#F0EDE6", color: "#5C5650", border: "1px solid #E8E3DA", fontSize: "0.68rem" }} />
+                  <Chip size="small" label={`Open/Closed: ${Object.keys(coverage.status_coverage?.open_closed_status || {}).length}`} sx={{ background: "#F0EDE6", color: "#5C5650", border: "1px solid #E8E3DA", fontSize: "0.68rem" }} />
+                  <Chip size="small" label={`Payment states: ${Object.keys(coverage.status_coverage?.payment_status || {}).length}`} color="success" size="small" />
+                </Stack>
+              </Box>
+            </CardContent>
+          </Card>
+        </>
       )}
 
+      {/* Context Layer — light green tint */}
       {contextLayer?.context_ready && (
-        <Card sx={{ mt: 2, border: "1px solid #22c55e", background: "#052e16" }}>
-          <CardContent>
-            <Typography variant="h6" sx={{ color: "#bbf7d0", fontWeight: 700, mb: 1 }}>
-              Celonis Context Layer (Leadership View)
-            </Typography>
-            <Grid container spacing={1}>
-              <Grid item xs={12} md={4}>
-                <Typography variant="caption" sx={{ display: "block", color: "#dcfce7" }}>
-                  Golden Path Coverage: {contextLayer.process_map?.golden_path_percentage ?? 0}%
-                </Typography>
-                <Typography variant="caption" sx={{ display: "block", color: "#dcfce7" }}>
-                  Avg E2E Cycle Time: {contextLayer.cycle_time?.avg_end_to_end_days ?? 0} days
-                </Typography>
-                <Typography variant="caption" sx={{ display: "block", color: "#dcfce7" }}>
-                  Exception Rate: {contextLayer.cycle_time?.exception_rate_pct ?? 0}%
-                </Typography>
+        <>
+          <SectionHeader label="Celonis Context Layer" meta="Leadership View" />
+          <Card sx={{ background: "#F2FAF6 !important", border: "1px solid #B8DFD0 !important" }}>
+            <CardContent>
+              <Grid container spacing={3}>
+                <Grid item xs={12} md={4}>
+                  <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#1A6B5E", mb: 1.5, fontFamily: G }}>Performance</Typography>
+                  {[
+                    ["Golden Path", `${contextLayer.process_map?.golden_path_percentage ?? 0}%`],
+                    ["Avg E2E Cycle", `${contextLayer.cycle_time?.avg_end_to_end_days ?? 0} days`],
+                    ["Exception Rate", `${contextLayer.cycle_time?.exception_rate_pct ?? 0}%`],
+                  ].map(([k, v]) => (
+                    <Box key={k} sx={{ display: "flex", justifyContent: "space-between", mb: 1 }}>
+                      <Typography sx={{ fontSize: "0.78rem", color: "#5C5650", fontFamily: G }}>{k}</Typography>
+                      <Typography sx={{ fontSize: "0.78rem", color: "#17140F", fontWeight: 700, fontFamily: G }}>{v}</Typography>
+                    </Box>
+                  ))}
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#1A6B5E", mb: 1.5, fontFamily: G }}>Top Transitions</Typography>
+                  {(contextLayer.process_map?.top_transitions || []).slice(0, 3).map((t, i) => (
+                    <Box key={i} sx={{ mb: 1.2 }}>
+                      <Typography sx={{ fontSize: "0.75rem", color: "#17140F", fontFamily: G }}>{t.from_step} → {t.to_step}</Typography>
+                      <Typography sx={{ fontSize: "0.68rem", color: "#9C9690", fontFamily: G }}>{t.avg_transition_days}d average</Typography>
+                    </Box>
+                  ))}
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#1A6B5E", mb: 1.5, fontFamily: G }}>Exception Contexts</Typography>
+                  <Stack spacing={0.8}>
+                    {(contextLayer.exception_contexts || []).slice(0, 3).map((ex) => (
+                      <Box key={ex.exception_category_id} sx={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <Typography sx={{ fontSize: "0.75rem", color: "#5C5650", fontFamily: G }}>{ex.exception_category_label}</Typography>
+                        <Box sx={{ background: "#1A6B5E", px: 1.2, py: 0.2, borderRadius: "99px" }}>
+                          <Typography sx={{ fontSize: "0.7rem", color: "#FFFFFF", fontWeight: 700, fontFamily: G }}>{ex.case_count}</Typography>
+                        </Box>
+                      </Box>
+                    ))}
+                  </Stack>
+                </Grid>
               </Grid>
-              <Grid item xs={12} md={4}>
-                <Typography variant="caption" sx={{ display: "block", color: "#dcfce7", mb: 0.5 }}>
-                  Top Process Steps:
-                </Typography>
-                {(contextLayer.process_map?.top_transitions || []).slice(0, 3).map((t, idx) => (
-                  <Typography key={idx} variant="caption" sx={{ display: "block", color: "#bbf7d0" }}>
-                    {t.from_step} → {t.to_step} ({t.avg_transition_days}d)
-                  </Typography>
-                ))}
-              </Grid>
-              <Grid item xs={12} md={4}>
-                <Typography variant="caption" sx={{ display: "block", color: "#dcfce7", mb: 0.5 }}>
-                  Exception Contexts:
-                </Typography>
-                {(contextLayer.exception_contexts || []).slice(0, 3).map((ex) => (
-                  <Chip
-                    key={ex.exception_category_id}
-                    size="small"
-                    label={`${ex.exception_category_label}: ${ex.case_count}`}
-                    sx={{ mr: 0.5, mb: 0.5, background: "#14532d", color: "#dcfce7" }}
-                  />
-                ))}
-              </Grid>
-            </Grid>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        </>
       )}
 
+      {/* Golden Path */}
       {context?.golden_path && (
-        <Box sx={{ mt: 3 }}>
-          <Typography variant="h6" sx={{ color: "#6C63FF", fontWeight: 600 }}>
-            🏆 Golden Path ({context.golden_path_percentage}% of cases)
-          </Typography>
-          <Typography variant="body2" sx={{ color: "#ccc", mt: 1 }}>
-            {context.golden_path}
-          </Typography>
-        </Box>
+        <>
+          <SectionHeader label="Golden Path" meta={`${context.golden_path_percentage}% of cases`} />
+          <Card>
+            <CardContent>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+                {context.golden_path.split("→").map((step, i, arr) => (
+                  <React.Fragment key={i}>
+                    <Box sx={{ background: "#F5ECD9", border: "1px solid #DEC48A", color: "#B5742A", px: 1.5, py: 0.5, borderRadius: "8px", fontSize: "0.78rem", fontWeight: 500, fontFamily: G }}>
+                      {step.trim()}
+                    </Box>
+                    {i < arr.length - 1 && <Typography sx={{ color: "#C4BDB0", fontSize: "0.9rem" }}>→</Typography>}
+                  </React.Fragment>
+                ))}
+              </Box>
+            </CardContent>
+          </Card>
+        </>
       )}
 
+      {/* Turnaround Times */}
       {context?.activity_durations && Object.keys(context.activity_durations).length > 0 && (
-        <Box sx={{ mt: 3 }}>
-          <Typography variant="h6" sx={{ color: "#6C63FF", fontWeight: 600, mb: 1 }}>
-            ⏱ Turnaround Times (from Celonis Process Explorer)
-          </Typography>
-          {Object.entries(context.activity_durations).map(([key, val]) => (
-            <Typography key={key} variant="body2" sx={{ color: "#aaa", ml: 1 }}>
-              {key}: <strong style={{ color: "#00D4AA" }}>{val} days</strong>
-            </Typography>
-          ))}
-        </Box>
+        <>
+          <SectionHeader label="Turnaround Times" meta="Celonis Process Explorer" />
+          <Grid container spacing={2}>
+            {Object.entries(context.activity_durations).map(([key, val]) => (
+              <Grid item xs={12} sm={6} md={4} key={key}>
+                <Card>
+                  <CardContent sx={{ py: "16px !important" }}>
+                    <Typography sx={{ fontSize: "0.78rem", color: "#9C9690", mb: 1, lineHeight: 1.4, fontFamily: G }}>{key}</Typography>
+                    <Typography sx={{ fontFamily: S, fontSize: "1.9rem", color: "#1A6B5E", letterSpacing: "-0.03em" }}>
+                      {val}<span style={{ fontSize: "0.85rem", color: "#9C9690", marginLeft: "4px" }}>days</span>
+                    </Typography>
+                  </CardContent>
+                </Card>
+              </Grid>
+            ))}
+          </Grid>
+        </>
       )}
 
-      {context?.exception_patterns && context.exception_patterns.length > 0 && (
-        <Box sx={{ mt: 3 }}>
-          <Typography variant="h6" sx={{ color: "#ff5252", fontWeight: 600, mb: 1 }}>
-            ⚠️ Exception Patterns Discovered
-          </Typography>
-          {context.exception_patterns.map((ep, i) => (
-            <Box key={i} className="step-card" sx={{ mb: 1, borderLeftColor: "#ff5252" }}>
-              <Typography variant="subtitle2" sx={{ color: "#ff5252" }}>
-                {ep.exception_type} ({ep.frequency_percentage}%)
-              </Typography>
-              <Typography variant="body2" sx={{ color: "#aaa" }}>
-                Trigger: {ep.trigger_condition}
-              </Typography>
-              <Typography variant="body2" sx={{ color: "#aaa" }}>
-                Resolution: {ep.typical_resolution} by {ep.resolution_role}
-              </Typography>
-              <Typography variant="caption" sx={{ color: "#00D4AA" }}>
-                Avg resolution: {ep.avg_resolution_time_days} days
-              </Typography>
-            </Box>
-          ))}
-        </Box>
+      {/* Exception Patterns */}
+      {context?.exception_patterns?.length > 0 && (
+        <>
+          <SectionHeader label="Exception Patterns Discovered" meta={`${context.exception_patterns.length} found`} />
+          <Grid container spacing={2}>
+            {context.exception_patterns.map((ep, i) => (
+              <Grid item xs={12} md={6} key={i}>
+                <Card sx={{ borderLeft: "3px solid #B03030 !important" }}>
+                  <CardContent>
+                    <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", mb: 1.5 }}>
+                      <Typography sx={{ fontWeight: 600, color: "#B03030", fontSize: "0.875rem", fontFamily: G }}>{ep.exception_type}</Typography>
+                      <Box sx={{ background: "#FAEAEA", border: "1px solid #E0A0A0", px: 1, py: 0.2, borderRadius: "99px" }}>
+                        <Typography sx={{ fontSize: "0.68rem", fontWeight: 700, color: "#B03030", fontFamily: G }}>{ep.frequency_percentage}%</Typography>
+                      </Box>
+                    </Box>
+                    <Grid container spacing={1.5}>
+                      {[["Trigger", ep.trigger_condition], ["Resolution", ep.typical_resolution], ["Role", ep.resolution_role]].map(([k, v]) => (
+                        <Grid item xs={12} key={k}>
+                          <Typography sx={{ fontSize: "0.68rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "#9C9690", fontFamily: G }}>{k}</Typography>
+                          <Typography sx={{ fontSize: "0.8rem", color: "#5C5650", fontFamily: G }}>{v}</Typography>
+                        </Grid>
+                      ))}
+                    </Grid>
+                    <Box sx={{ mt: 1.5, background: "#DCF0EB", border: "1px solid #8FCFC5", borderRadius: "8px", px: 1.5, py: 0.7, display: "inline-block" }}>
+                      <Typography sx={{ fontSize: "0.72rem", fontWeight: 600, color: "#1A6B5E", fontFamily: G }}>Avg resolution: {ep.avg_resolution_time_days} days</Typography>
+                    </Box>
+                  </CardContent>
+                </Card>
+              </Grid>
+            ))}
+          </Grid>
+        </>
       )}
 
-      {context?.conformance_violations && context.conformance_violations.length > 0 && (
-        <Box sx={{ mt: 3 }}>
-          <Typography variant="h6" sx={{ color: "#ffaa00", fontWeight: 600, mb: 1 }}>
-            🚨 Conformance Violations
-          </Typography>
-          {context.conformance_violations.map((v, i) => (
-            <Box key={i} className="step-card" sx={{ mb: 1, borderLeftColor: "#ffaa00" }}>
-              <Typography variant="subtitle2" sx={{ color: "#ffaa00" }}>
-                {v.rule}
-              </Typography>
-              <Typography variant="body2" sx={{ color: "#aaa" }}>
-                {v.violation_description} — {v.violation_rate}% of cases ({v.affected_cases} cases)
-              </Typography>
-            </Box>
-          ))}
-        </Box>
+      {/* Conformance Violations */}
+      {context?.conformance_violations?.length > 0 && (
+        <>
+          <SectionHeader label="Conformance Violations" meta={`${context.conformance_violations.length} detected`} />
+          <Stack spacing={1.5}>
+            {context.conformance_violations.map((v, i) => (
+              <Card key={i} sx={{ borderLeft: "3px solid #A05A10 !important" }}>
+                <CardContent sx={{ py: "14px !important" }}>
+                  <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 2 }}>
+                    <Box sx={{ flex: 1 }}>
+                      <Typography sx={{ fontWeight: 600, color: "#A05A10", fontSize: "0.875rem", mb: 0.4, fontFamily: G }}>{v.rule}</Typography>
+                      <Typography sx={{ fontSize: "0.82rem", color: "#5C5650", fontFamily: G }}>{v.violation_description}</Typography>
+                    </Box>
+                    <Box sx={{ textAlign: "right", flexShrink: 0 }}>
+                      <Typography sx={{ fontFamily: S, fontSize: "1.7rem", color: "#A05A10", lineHeight: 1 }}>{v.violation_rate}%</Typography>
+                      <Typography sx={{ fontSize: "0.68rem", color: "#9C9690", fontFamily: G }}>{v.affected_cases} cases</Typography>
+                    </Box>
+                  </Box>
+                </CardContent>
+              </Card>
+            ))}
+          </Stack>
+        </>
       )}
     </div>
   );

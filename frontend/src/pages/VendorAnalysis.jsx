@@ -1,24 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
-import {
-  Alert,
-  Box,
-  Button,
-  Card,
-  CardContent,
-  Chip,
-  CircularProgress,
-  Divider,
-  Grid,
-  Stack,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
-  Typography,
-} from "@mui/material";
+import { Alert, Box, Button, Card, CardContent, Chip, CircularProgress, Divider, Grid, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography } from "@mui/material";
 import api from "../api/client";
+
+const S = "'Instrument Serif', Georgia, serif";
+const G = "'Geist', system-ui, sans-serif";
 
 const FALLBACK_VENDORS = [
   { vendor_id: "D4", vendor_lifnr: "7003198830", total_cases: 3, total_value: 5700000 },
@@ -27,39 +12,18 @@ const FALLBACK_VENDORS = [
   { vendor_id: "F6", vendor_lifnr: "", total_cases: 2, total_value: 3300000 },
   { vendor_id: "H8", vendor_lifnr: "7003204990", total_cases: 1, total_value: 2900000 },
   { vendor_id: "C3", vendor_lifnr: "7003205015", total_cases: 1, total_value: 1500000 },
-  { vendor_id: "I9", vendor_lifnr: "7003255948", total_cases: 1, total_value: 0 },
-  { vendor_id: "V22", vendor_lifnr: "7003204531", total_cases: 1, total_value: 0 },
 ];
-
-const GLOBAL_PAYMENT_BEHAVIOR = {
-  open: { count: 4, value: 2960000, pct: 10.8, color: "#90a4ae" },
-  paid_early: { count: 11, value: 9550000, pct: 29.7, color: "#42a5f5" },
-  paid_late: { count: 11, value: 5410000, pct: 29.7, color: "#ef5350" },
-  paid_on_time: { count: 11, value: 4590000, pct: 29.7, color: "#66bb6a" },
-};
 
 const EXCEPTION_META = [
-  { key: "payment_terms_mismatch", title: "Payment Terms Mismatch", color: "#f44336" },
-  { key: "invoice_exception", title: "Invoice Exception", color: "#ff9800" },
-  { key: "short_payment_terms", title: "Short Payment Terms", color: "#fdd835" },
-  { key: "early_payment", title: "Early Payment", color: "#42a5f5" },
+  { key: "payment_terms_mismatch", title: "Payment Terms Mismatch", color: "#B03030", subtle: "#FAEAEA", border: "#E0A0A0" },
+  { key: "invoice_exception", title: "Invoice Exception", color: "#A05A10", subtle: "#FEF3DC", border: "#F0C870" },
+  { key: "short_payment_terms", title: "Short Payment Terms", color: "#1E4E8C", subtle: "#EBF2FC", border: "#90B8E8" },
+  { key: "early_payment", title: "Early Payment", color: "#1A6B5E", subtle: "#DCF0EB", border: "#8FCFC5" },
 ];
 
-const currency = (value) => {
-  const num = Number(value || 0);
-  if (num >= 1000000) return `${(num / 1000000).toFixed(2)}M $`;
-  if (num >= 1000) return `${(num / 1000).toFixed(1)}K $`;
-  return `${num.toFixed(0)} $`;
-};
-
-const pct = (value) => `${Number(value || 0).toFixed(1)}%`;
-
-const pickData = (res) => {
-  if (!res) return null;
-  if (res.data?.data !== undefined) return res.data.data;
-  if (res.data !== undefined) return res.data;
-  return res;
-};
+const currency = (v) => { const n = Number(v || 0); if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M $`; if (n >= 1000) return `${(n / 1000).toFixed(1)}K $`; return `${n.toFixed(0)} $`; };
+const pct = (v) => `${Number(v || 0).toFixed(1)}%`;
+const pickData = (r) => { if (!r) return null; if (r.data?.data !== undefined) return r.data.data; if (r.data !== undefined) return r.data; return r; };
 
 const withFallbackRisk = (row) => {
   const dpo = Number(row.avg_dpo ?? row.avg_duration_days ?? 0);
@@ -71,58 +35,37 @@ const withFallbackRisk = (row) => {
   return "LOW";
 };
 
-const inferPaymentBehavior = (vendorRow) => {
-  if (vendorRow?.payment_behavior && typeof vendorRow.payment_behavior === "object") {
-    return vendorRow.payment_behavior;
-  }
-  return {
-    on_time_pct: GLOBAL_PAYMENT_BEHAVIOR.paid_on_time.pct,
-    early_pct: GLOBAL_PAYMENT_BEHAVIOR.paid_early.pct,
-    late_pct: GLOBAL_PAYMENT_BEHAVIOR.paid_late.pct,
-    open_pct: GLOBAL_PAYMENT_BEHAVIOR.open.pct,
-  };
-};
+function RiskChip({ risk }) {
+  const map = { CRITICAL: { bg: "#FAEAEA", color: "#B03030", border: "#E0A0A0" }, HIGH: { bg: "#FEF3DC", color: "#A05A10", border: "#F0C870" }, MEDIUM: { bg: "#FEF3DC", color: "#A05A10", border: "#F0C870" }, LOW: { bg: "#E0F0E8", color: "#1D5C3A", border: "#80C0A0" } };
+  const s = map[String(risk).toUpperCase()] || map.LOW;
+  return (
+    <Box sx={{ display: "inline-block", background: s.bg, color: s.color, border: `1px solid ${s.border}`, px: 1.2, py: 0.2, borderRadius: "99px" }}>
+      <Typography sx={{ fontSize: "0.68rem", fontWeight: 700, fontFamily: G, letterSpacing: "0.04em" }}>{risk}</Typography>
+    </Box>
+  );
+}
 
-function PaymentBehaviorPie({ behavior }) {
-  const onTime = Number(behavior?.on_time_pct || 0);
+function PaymentPie({ behavior }) {
+  const on = Number(behavior?.on_time_pct || 0);
   const early = Number(behavior?.early_pct || 0);
   const late = Number(behavior?.late_pct || 0);
   const open = Number(behavior?.open_pct || 0);
-
   const slices = [
-    { label: "Paid on Time", value: onTime, color: GLOBAL_PAYMENT_BEHAVIOR.paid_on_time.color },
-    { label: "Paid Early", value: early, color: GLOBAL_PAYMENT_BEHAVIOR.paid_early.color },
-    { label: "Paid Late", value: late, color: GLOBAL_PAYMENT_BEHAVIOR.paid_late.color },
-    { label: "Open", value: open, color: GLOBAL_PAYMENT_BEHAVIOR.open.color },
+    { label: "On Time", value: on, color: "#1A6B5E" },
+    { label: "Early", value: early, color: "#1E4E8C" },
+    { label: "Late", value: late, color: "#B03030" },
+    { label: "Open", value: open, color: "#9C9690" },
   ];
-
-  let cursor = 0;
-  const gradient = slices
-    .map((s) => {
-      const start = cursor;
-      cursor += s.value;
-      return `${s.color} ${start}% ${cursor}%`;
-    })
-    .join(", ");
-
+  let cur = 0;
+  const grad = slices.map(s => { const st = cur; cur += s.value; return `${s.color} ${st}% ${cur}%`; }).join(", ");
   return (
-    <Box sx={{ display: "flex", gap: 2, alignItems: "center", flexWrap: "wrap" }}>
-      <Box
-        sx={{
-          width: 150,
-          height: 150,
-          borderRadius: "50%",
-          background: `conic-gradient(${gradient || "#90a4ae 0 100%"})`,
-          border: "1px solid #dbe3ee",
-        }}
-      />
-      <Stack spacing={0.7}>
-        {slices.map((s) => (
+    <Box sx={{ display: "flex", gap: 3, alignItems: "center", flexWrap: "wrap" }}>
+      <Box sx={{ width: 120, height: 120, borderRadius: "50%", background: `conic-gradient(${grad || "#9C9690 0 100%"})`, border: "3px solid #F0EDE6", flexShrink: 0 }} />
+      <Stack spacing={0.8}>
+        {slices.map(s => (
           <Box key={s.label} sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-            <Box sx={{ width: 10, height: 10, borderRadius: "50%", background: s.color }} />
-            <Typography variant="body2" sx={{ color: "#1f2937" }}>
-              {s.label}: {pct(s.value)}
-            </Typography>
+            <Box sx={{ width: 8, height: 8, borderRadius: "50%", background: s.color, flexShrink: 0 }} />
+            <Typography sx={{ fontSize: "0.78rem", color: "#5C5650", fontFamily: G }}>{s.label}: <strong>{pct(s.value)}</strong></Typography>
           </Box>
         ))}
       </Stack>
@@ -142,213 +85,97 @@ export default function VendorAnalysis() {
 
   useEffect(() => {
     let active = true;
-    const loadVendorStats = async () => {
-      setLoading(true);
-      setError("");
+    (async () => {
+      setLoading(true); setError("");
       try {
         const res = await api.get("/process/vendor-stats");
         const data = pickData(res);
         const rows = Array.isArray(data) ? data : data?.vendors || [];
-        const normalized = rows.length
-          ? rows.map((r) => ({
-              vendor_id: r.vendor_id || r.vendor || "UNKNOWN",
-              vendor_lifnr: r.vendor_lifnr || r.lifnr || "",
-              total_cases: Number(r.total_cases ?? r.case_count ?? r.invoices ?? 0),
-              total_value: Number(r.total_value ?? r.value_usd ?? r.value ?? 0),
-              exception_rate: Number(r.exception_rate ?? r.exception_rate_pct ?? 0),
-              avg_dpo: Number(r.avg_dpo ?? r.avg_duration_days ?? 0),
-              payment_behavior: r.payment_behavior || null,
-              risk_score: r.risk_score || withFallbackRisk(r),
-            }))
-          : FALLBACK_VENDORS.map((v) => ({
-              ...v,
-              exception_rate: 0,
-              avg_dpo: 0,
-              payment_behavior: null,
-              risk_score: "MEDIUM",
-            }));
-
-        if (active) {
-          setVendors(normalized);
-          if (!normalized.some((v) => v.vendor_id === selectedVendorId)) {
-            setSelectedVendorId(normalized[0]?.vendor_id || "D4");
-          }
-        }
+        const normalized = rows.length ? rows.map(r => ({ vendor_id: r.vendor_id || r.vendor || "UNKNOWN", vendor_lifnr: r.vendor_lifnr || r.lifnr || "", total_cases: Number(r.total_cases ?? r.case_count ?? 0), total_value: Number(r.total_value ?? r.value_usd ?? 0), exception_rate: Number(r.exception_rate ?? r.exception_rate_pct ?? 0), avg_dpo: Number(r.avg_dpo ?? r.avg_duration_days ?? 0), payment_behavior: r.payment_behavior || null, risk_score: r.risk_score || withFallbackRisk(r) })) : FALLBACK_VENDORS.map(v => ({ ...v, exception_rate: 100, avg_dpo: 15, payment_behavior: null, risk_score: "CRITICAL" }));
+        if (active) { setVendors(normalized); setSelectedVendorId(normalized[0]?.vendor_id || "D4"); }
       } catch (e) {
         if (active) {
-          setError(e?.response?.data?.detail || e.message || "Failed to load vendor stats");
-          setVendors(
-            FALLBACK_VENDORS.map((v) => ({
-              ...v,
-              exception_rate: 0,
-              avg_dpo: 0,
-              payment_behavior: null,
-              risk_score: "MEDIUM",
-            }))
-          );
+          setError(e?.response?.data?.detail || e.message || "Failed to load vendors");
+          setVendors(FALLBACK_VENDORS.map(v => ({ ...v, exception_rate: 100, avg_dpo: 15, payment_behavior: null, risk_score: "CRITICAL" })));
         }
-      } finally {
-        if (active) setLoading(false);
-      }
-    };
-    loadVendorStats();
-    return () => {
-      active = false;
-    };
+      } finally { if (active) setLoading(false); }
+    })();
+    return () => { active = false; };
   }, []);
 
   useEffect(() => {
     if (!selectedVendorId) return;
     let active = true;
-    const loadPaths = async () => {
-      setPathsLoading(true);
-      try {
-        const res = await api.get(`/process/vendor/${encodeURIComponent(selectedVendorId)}/paths`);
-        const data = pickData(res) || {};
-        const happy = Array.isArray(data.happy_paths) ? data.happy_paths : data.happy || [];
-        const exception = Array.isArray(data.exception_paths) ? data.exception_paths : data.exceptions || [];
-        if (active) {
-          setVendorPaths({
-            happy_paths: happy,
-            exception_paths: exception,
-          });
-        }
-      } catch {
-        if (active) {
-          setVendorPaths({
-            happy_paths: [],
-            exception_paths: [],
-          });
-        }
-      } finally {
-        if (active) setPathsLoading(false);
-      }
-    };
-    loadPaths();
+    setPathsLoading(true);
+    api.get(`/process/vendor/${encodeURIComponent(selectedVendorId)}/paths`)
+      .then(res => { const d = pickData(res) || {}; if (active) setVendorPaths({ happy_paths: Array.isArray(d.happy_paths) ? d.happy_paths : [], exception_paths: Array.isArray(d.exception_paths) ? d.exception_paths : [] }); })
+      .catch(() => { if (active) setVendorPaths({ happy_paths: [], exception_paths: [] }); })
+      .finally(() => { if (active) setPathsLoading(false); });
     setAiResult(null);
-    return () => {
-      active = false;
-    };
+    return () => { active = false; };
   }, [selectedVendorId]);
 
-  const selectedVendor = useMemo(
-    () => vendors.find((v) => v.vendor_id === selectedVendorId) || null,
-    [vendors, selectedVendorId]
-  );
+  const selectedVendor = useMemo(() => vendors.find(v => v.vendor_id === selectedVendorId) || null, [vendors, selectedVendorId]);
 
-  const behavior = useMemo(() => inferPaymentBehavior(selectedVendor), [selectedVendor]);
+  const behavior = useMemo(() => {
+    if (selectedVendor?.payment_behavior && typeof selectedVendor.payment_behavior === "object") return selectedVendor.payment_behavior;
+    return { on_time_pct: 29.7, early_pct: 29.7, late_pct: 29.7, open_pct: 10.8 };
+  }, [selectedVendor]);
 
-  const exceptionBreakdown = useMemo(() => {
-    if (aiResult?.vendor_analysis?.exception_breakdown) {
-      return aiResult.vendor_analysis.exception_breakdown;
-    }
-    if (selectedVendor?.exception_breakdown) {
-      return selectedVendor.exception_breakdown;
-    }
-    return {
-      payment_terms_mismatch: { count: 0, percentage: 0, value: 0 },
-      invoice_exception: { count: 0, percentage: 0, avg_dpo: 0, value: 0, time_stuck_days: 0 },
-      short_payment_terms: { count: 0, percentage: 0, value: 0, risk_level: "N/A" },
-      early_payment: { count: 0, percentage: 0, optimization_value: 0, value: 0 },
-    };
-  }, [aiResult, selectedVendor]);
+  const exceptionBreakdown = useMemo(() => aiResult?.vendor_analysis?.exception_breakdown || selectedVendor?.exception_breakdown || {}, [aiResult, selectedVendor]);
 
   const runAiAnalysis = async () => {
     if (!selectedVendor) return;
-    setAiLoading(true);
-    setError("");
+    setAiLoading(true); setError("");
     try {
-      const res = await api.post("/agents/vendor-intelligence", {
-        vendor_id: selectedVendor.vendor_id,
-        vendor_lifnr: selectedVendor.vendor_lifnr,
-        vendor_context: selectedVendor,
-        include_comparison_to_overall: true,
-        include_financial_impact: true,
-      });
-      const data = pickData(res);
-      setAiResult(data);
-    } catch (e) {
-      setError(e?.response?.data?.detail || e.message || "Vendor AI analysis failed");
-      setAiResult(null);
-    } finally {
-      setAiLoading(false);
-    }
+      const d = pickData(await api.post("/agents/vendor-intelligence", { vendor_id: selectedVendor.vendor_id, vendor_lifnr: selectedVendor.vendor_lifnr, vendor_context: selectedVendor, include_comparison_to_overall: true, include_financial_impact: true }));
+      setAiResult(d);
+    } catch (e) { setError(e?.response?.data?.detail || e.message || "Vendor AI analysis failed"); }
+    finally { setAiLoading(false); }
   };
 
-  if (loading) {
-    return (
-      <Box className="page-container" sx={{ p: 2 }}>
-        <CircularProgress />
-      </Box>
-    );
-  }
+  if (loading) return <div className="page-container"><Box sx={{ pt: 6, display: "flex", justifyContent: "center" }}><CircularProgress /></Box></div>;
 
   return (
-    <Box className="page-container">
-      <Typography variant="h4" sx={{ fontWeight: 700, mb: 1, color: "#1f2937" }}>
-        Vendor Analysis
-      </Typography>
-      <Typography variant="body2" sx={{ color: "#6b7280", mb: 2 }}>
-        External Suppliers under Company Code AC33
-      </Typography>
+    <div className="page-container">
+      {/* Header */}
+      <Box sx={{ pt: 4, pb: 3, borderBottom: "1px solid #E8E3DA", mb: 3 }}>
+        <Typography sx={{ fontFamily: S, fontSize: "2.2rem", fontWeight: 400, color: "#17140F", letterSpacing: "-0.025em", mb: 0.5 }}>
+          Vendor Analysis
+        </Typography>
+        <Typography sx={{ fontSize: "0.875rem", color: "#9C9690", fontFamily: G }}>
+          External Suppliers under Company Code AC33
+        </Typography>
+      </Box>
 
       {error && <Alert severity="warning" sx={{ mb: 2 }}>{error}</Alert>}
 
-      <Card sx={{ background: "#ffffff", border: "1px solid #e5e7eb", mb: 2 }}>
+      {/* Vendor Table */}
+      <Card sx={{ mb: 2.5 }}>
         <CardContent>
-          <Typography variant="h6" sx={{ color: "#1f2937", mb: 1.2, fontWeight: 700 }}>
-            1) Vendor Overview
-          </Typography>
+          <Typography sx={{ fontFamily: S, fontSize: "1.15rem", color: "#17140F", mb: 1.5 }}>Vendor Overview</Typography>
           <TableContainer>
             <Table size="small">
               <TableHead>
                 <TableRow>
-                  <TableCell sx={{ color: "#6b7280", fontWeight: 700 }}>Vendor</TableCell>
-                  <TableCell sx={{ color: "#6b7280", fontWeight: 700 }}># Invoices</TableCell>
-                  <TableCell sx={{ color: "#6b7280", fontWeight: 700 }}>Total Value</TableCell>
-                  <TableCell sx={{ color: "#6b7280", fontWeight: 700 }}>Exception Rate</TableCell>
-                  <TableCell sx={{ color: "#6b7280", fontWeight: 700 }}>Avg DPO</TableCell>
-                  <TableCell sx={{ color: "#6b7280", fontWeight: 700 }}>Payment Behavior</TableCell>
-                  <TableCell sx={{ color: "#6b7280", fontWeight: 700 }}>Risk Score</TableCell>
+                  {["Vendor", "# Invoices", "Total Value", "Exception Rate", "Avg DPO", "Payment Behavior", "Risk"].map(h => <TableCell key={h}>{h}</TableCell>)}
                 </TableRow>
               </TableHead>
               <TableBody>
-                {vendors.map((v) => (
-                  <TableRow
-                    key={v.vendor_id}
-                    hover
-                    onClick={() => setSelectedVendorId(v.vendor_id)}
-                    sx={{
-                      cursor: "pointer",
-                      background: selectedVendorId === v.vendor_id ? "#eff6ff" : "transparent",
-                    }}
-                  >
-                    <TableCell sx={{ color: "#1f2937" }}>
+                {vendors.map(v => (
+                  <TableRow key={v.vendor_id} hover onClick={() => setSelectedVendorId(v.vendor_id)} sx={{ cursor: "pointer", background: selectedVendorId === v.vendor_id ? "#F5ECD9 !important" : "transparent" }}>
+                    <TableCell>
                       <Stack direction="row" spacing={1} alignItems="center">
-                        <strong>{v.vendor_id}</strong>
-                        {v.vendor_lifnr ? <Chip size="small" label={`LIFNR ${v.vendor_lifnr}`} /> : null}
+                        <Typography sx={{ fontWeight: 600, fontSize: "0.875rem", color: selectedVendorId === v.vendor_id ? "#B5742A" : "#17140F", fontFamily: G }}>{v.vendor_id}</Typography>
+                        {v.vendor_lifnr && <Box sx={{ background: "#F0EDE6", border: "1px solid #E8E3DA", px: 0.8, py: 0.1, borderRadius: "4px", fontSize: "0.65rem", color: "#9C9690", fontFamily: G }}>LIFNR {v.vendor_lifnr}</Box>}
                       </Stack>
                     </TableCell>
-                    <TableCell sx={{ color: "#374151" }}>{v.total_cases}</TableCell>
-                    <TableCell sx={{ color: "#374151" }}>{currency(v.total_value)}</TableCell>
-                    <TableCell sx={{ color: "#374151" }}>{pct(v.exception_rate)}</TableCell>
-                    <TableCell sx={{ color: "#374151" }}>{Number(v.avg_dpo || 0).toFixed(2)} days</TableCell>
-                    <TableCell sx={{ color: "#374151" }}>
-                      {v.payment_behavior ? "Vendor-specific" : "Global baseline"}
-                    </TableCell>
-                    <TableCell>
-                      <Chip
-                        label={v.risk_score}
-                        size="small"
-                        color={
-                          String(v.risk_score).toUpperCase() === "CRITICAL"
-                            ? "error"
-                            : String(v.risk_score).toUpperCase() === "HIGH"
-                              ? "warning"
-                              : "success"
-                        }
-                      />
-                    </TableCell>
+                    <TableCell>{v.total_cases}</TableCell>
+                    <TableCell sx={{ fontWeight: 500 }}>{currency(v.total_value)}</TableCell>
+                    <TableCell><Typography sx={{ color: v.exception_rate >= 80 ? "#B03030" : v.exception_rate >= 40 ? "#A05A10" : "#1D5C3A", fontWeight: 600, fontSize: "0.875rem", fontFamily: G }}>{pct(v.exception_rate)}</Typography></TableCell>
+                    <TableCell>{Number(v.avg_dpo || 0).toFixed(2)}d</TableCell>
+                    <TableCell sx={{ color: "#9C9690", fontSize: "0.78rem !important", fontStyle: "italic" }}>{v.payment_behavior ? "Vendor-specific" : "Global baseline"}</TableCell>
+                    <TableCell><RiskChip risk={v.risk_score} /></TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -357,82 +184,46 @@ export default function VendorAnalysis() {
         </CardContent>
       </Card>
 
-      <Grid container spacing={2}>
+      {/* Paths */}
+      <Grid container spacing={2} sx={{ mb: 2.5 }}>
         <Grid item xs={12} md={6}>
-          <Card sx={{ background: "#ffffff", border: "1px solid #d9efe2", minHeight: 260 }}>
+          <Card sx={{ height: "100%", borderLeft: "3px solid #1A6B5E !important" }}>
             <CardContent>
-              <Typography variant="h6" sx={{ color: "#2e7d32", mb: 1, fontWeight: 700 }}>
-                2) Happy Paths
-              </Typography>
-              {pathsLoading ? (
-                <CircularProgress size={20} />
+              <Typography sx={{ fontFamily: S, fontSize: "1.1rem", color: "#1A6B5E", mb: 1.5 }}>Happy Paths</Typography>
+              {pathsLoading ? <CircularProgress size={18} /> : vendorPaths.happy_paths.length === 0 ? (
+                <Typography sx={{ fontSize: "0.82rem", color: "#9C9690", fontFamily: G, py: 2, textAlign: "center" }}>No happy path variants for this vendor.</Typography>
               ) : (
                 <Stack spacing={1}>
-                  {(vendorPaths.happy_paths || []).length === 0 && (
-                    <Typography variant="body2" sx={{ color: "#6b7280" }}>
-                      No happy path variants returned for this vendor.
-                    </Typography>
-                  )}
-                  {(vendorPaths.happy_paths || []).map((p, i) => (
-                    <Card key={`happy-${i}`} sx={{ background: "#f7fcf9", border: "1px solid #ddf0e3" }}>
-                      <CardContent sx={{ p: 1.2 }}>
-                        <Typography variant="body2" sx={{ color: "#1f2937" }}>
-                          {p.path || p.variant || "Variant"}
-                        </Typography>
-                        <Typography variant="caption" sx={{ color: "#2e7d32", display: "block" }}>
-                          Freq: {p.frequency ?? p.count ?? 0} | {pct(p.percentage)} | Avg: {Number(p.avg_duration_days || p.avg_duration || 0).toFixed(2)} days
-                        </Typography>
-                      </CardContent>
-                    </Card>
+                  {vendorPaths.happy_paths.map((p, i) => (
+                    <Box key={i} sx={{ p: 1.5, background: "#F7FBF9", border: "1px solid #DCF0EB", borderRadius: "10px" }}>
+                      <Typography sx={{ fontSize: "0.78rem", color: "#17140F", mb: 0.5, fontFamily: G }}>{p.path || p.variant || "Variant"}</Typography>
+                      <Typography sx={{ fontSize: "0.7rem", color: "#1A6B5E", fontFamily: G }}>
+                        {p.frequency ?? p.count ?? 0} cases · {pct(p.percentage)} · {Number(p.avg_duration_days || 0).toFixed(1)}d avg
+                      </Typography>
+                    </Box>
                   ))}
                 </Stack>
               )}
             </CardContent>
           </Card>
         </Grid>
-
         <Grid item xs={12} md={6}>
-          <Card sx={{ background: "#ffffff", border: "1px solid #f1d7d7", minHeight: 260 }}>
+          <Card sx={{ height: "100%", borderLeft: "3px solid #B03030 !important" }}>
             <CardContent>
-              <Typography variant="h6" sx={{ color: "#d32f2f", mb: 1, fontWeight: 700 }}>
-                2) Exception Paths
-              </Typography>
-              {pathsLoading ? (
-                <CircularProgress size={20} />
+              <Typography sx={{ fontFamily: S, fontSize: "1.1rem", color: "#B03030", mb: 1.5 }}>Exception Paths</Typography>
+              {pathsLoading ? <CircularProgress size={18} /> : vendorPaths.exception_paths.length === 0 ? (
+                <Typography sx={{ fontSize: "0.82rem", color: "#9C9690", fontFamily: G, py: 2, textAlign: "center" }}>No exception path variants for this vendor.</Typography>
               ) : (
                 <Stack spacing={1}>
-                  {(vendorPaths.exception_paths || []).length === 0 && (
-                    <Typography variant="body2" sx={{ color: "#6b7280" }}>
-                      No exception path variants returned for this vendor.
-                    </Typography>
-                  )}
-                  {(vendorPaths.exception_paths || []).map((p, i) => {
-                    const type = String(p.exception_type || p.type || "").toLowerCase();
-                    const emoji = type.includes("payment")
-                      ? "🔴"
-                      : type.includes("invoice")
-                        ? "🟠"
-                        : type.includes("short")
-                          ? "🟡"
-                          : "🔵";
-                    return (
-                      <Card key={`exc-${i}`} sx={{ background: "#fff8f8", border: "1px solid #f3d6d6" }}>
-                        <CardContent sx={{ p: 1.2 }}>
-                          <Typography variant="body2" sx={{ color: "#1f2937" }}>
-                            {emoji} {p.path || p.variant || "Exception Variant"}
-                          </Typography>
-                          <Typography variant="caption" sx={{ color: "#d32f2f", display: "block" }}>
-                            Type: {p.exception_type || "unknown"} | Freq: {p.frequency ?? p.count ?? 0} | {pct(p.percentage)}
-                          </Typography>
-                          {p.avg_dpo || p.dpo ? (
-                            <Typography variant="caption" sx={{ color: "#ed6c02", display: "block" }}>
-                              DPO: {Number(p.avg_dpo || p.dpo || 0).toFixed(2)} days
-                            </Typography>
-                          ) : null}
-                        </CardContent>
-                      </Card>
-                    );
-                  })}
+                  {vendorPaths.exception_paths.map((p, i) => (
+                    <Box key={i} sx={{ p: 1.5, background: "#FDF7F7", border: "1px solid #FAEAEA", borderRadius: "10px" }}>
+                      <Typography sx={{ fontSize: "0.78rem", color: "#17140F", mb: 0.5, fontFamily: G }}>{p.path || p.variant || "Exception Variant"}</Typography>
+                      <Typography sx={{ fontSize: "0.7rem", color: "#B03030", fontFamily: G }}>
+                        {p.exception_type || "unknown"} · {p.frequency ?? p.count ?? 0} cases · {pct(p.percentage)}
+                        {(p.avg_dpo || p.dpo) ? ` · DPO ${Number(p.avg_dpo || p.dpo || 0).toFixed(1)}d` : ""}
+                      </Typography>
+                    </Box>
+                  ))}
                 </Stack>
               )}
             </CardContent>
@@ -440,47 +231,28 @@ export default function VendorAnalysis() {
         </Grid>
       </Grid>
 
-      <Card sx={{ background: "#ffffff", border: "1px solid #e5e7eb", mt: 2 }}>
+      {/* Exception Breakdown */}
+      <Card sx={{ mb: 2.5 }}>
         <CardContent>
-          <Typography variant="h6" sx={{ color: "#1f2937", mb: 1, fontWeight: 700 }}>
-            3) Exception Breakdown for {selectedVendorId}
+          <Typography sx={{ fontFamily: S, fontSize: "1.15rem", color: "#17140F", mb: 1.5 }}>
+            Exception Breakdown — <span style={{ color: "#B5742A" }}>{selectedVendorId}</span>
           </Typography>
           <Grid container spacing={1.5}>
-            {EXCEPTION_META.map((meta) => {
-              const data = exceptionBreakdown?.[meta.key] || {};
+            {EXCEPTION_META.map(meta => {
+              const d = exceptionBreakdown?.[meta.key] || {};
               return (
-                <Grid key={meta.key} item xs={12} md={6} lg={3}>
-                  <Card sx={{ background: "#ffffff", border: `1px solid ${meta.color}55`, height: "100%" }}>
-                    <CardContent sx={{ p: 1.2 }}>
-                      <Typography variant="subtitle2" sx={{ color: meta.color, mb: 0.6 }}>
-                        {meta.title}
-                      </Typography>
-                      <Typography variant="body2" sx={{ color: "#374151" }}>
-                        Count: {data.count ?? 0}
-                      </Typography>
-                      <Typography variant="body2" sx={{ color: "#374151" }}>
-                        Value: {currency(data.value || data.optimization_value || 0)}
-                      </Typography>
-                      <Typography variant="body2" sx={{ color: "#374151" }}>
-                        % of Vendor: {pct(data.percentage)}
-                      </Typography>
-                      {data.avg_dpo !== undefined ? (
-                        <Typography variant="body2" sx={{ color: "#374151" }}>
-                          DPO: {Number(data.avg_dpo || 0).toFixed(2)} days
-                        </Typography>
-                      ) : null}
-                      {data.time_stuck_days !== undefined ? (
-                        <Typography variant="body2" sx={{ color: "#374151" }}>
-                          Time Stuck: {Number(data.time_stuck_days || 0).toFixed(1)} days
-                        </Typography>
-                      ) : null}
-                      {data.risk_level ? (
-                        <Typography variant="body2" sx={{ color: "#374151" }}>
-                          Risk: {data.risk_level}
-                        </Typography>
-                      ) : null}
-                    </CardContent>
-                  </Card>
+                <Grid item xs={12} sm={6} lg={3} key={meta.key}>
+                  <Box sx={{ p: 1.8, background: meta.subtle, border: `1px solid ${meta.border}`, borderRadius: "12px", height: "100%" }}>
+                    <Typography sx={{ fontSize: "0.72rem", fontWeight: 700, color: meta.color, textTransform: "uppercase", letterSpacing: "0.04em", fontFamily: G, mb: 1 }}>{meta.title}</Typography>
+                    <Typography sx={{ fontFamily: S, fontSize: "1.8rem", color: meta.color, lineHeight: 1, mb: 0.3 }}>{d.count ?? 0}</Typography>
+                    <Typography sx={{ fontSize: "0.72rem", color: meta.color, opacity: 0.8, fontFamily: G, mb: 0.8 }}>{currency(d.value || d.optimization_value || 0)}</Typography>
+                    {[["% of vendor", pct(d.percentage)], d.avg_dpo !== undefined && ["Avg DPO", `${Number(d.avg_dpo || 0).toFixed(1)}d`], d.time_stuck_days !== undefined && ["Time Stuck", `${Number(d.time_stuck_days || 0).toFixed(1)}d`], d.risk_level && ["Risk", d.risk_level]].filter(Boolean).map(([k, v]) => (
+                      <Box key={k} sx={{ display: "flex", justifyContent: "space-between" }}>
+                        <Typography sx={{ fontSize: "0.68rem", color: meta.color, opacity: 0.7, fontFamily: G }}>{k}</Typography>
+                        <Typography sx={{ fontSize: "0.68rem", color: meta.color, fontWeight: 600, fontFamily: G }}>{v}</Typography>
+                      </Box>
+                    ))}
+                  </Box>
                 </Grid>
               );
             })}
@@ -488,54 +260,60 @@ export default function VendorAnalysis() {
         </CardContent>
       </Card>
 
-      <Card sx={{ background: "#ffffff", border: "1px solid #e5e7eb", mt: 2 }}>
-        <CardContent>
-          <Typography variant="h6" sx={{ color: "#1f2937", mb: 1, fontWeight: 700 }}>
-            4) AI Analysis
-          </Typography>
-          <Button variant="contained" onClick={runAiAnalysis} disabled={aiLoading || !selectedVendor}>
-            {aiLoading ? "Analyzing..." : "Run Vendor AI Analysis"}
-          </Button>
-          {aiLoading && <CircularProgress size={20} sx={{ ml: 1 }} />}
-          <Divider sx={{ my: 1.2, borderColor: "#e5e7eb" }} />
-          {aiResult ? (
-            <Box>
-              <Typography variant="subtitle2" sx={{ color: "#1976d2", fontWeight: 700 }}>Vendor Risk Assessment</Typography>
-              <Typography variant="body2" sx={{ color: "#374151", mb: 0.8 }}>
-                Risk Score: {aiResult?.vendor_analysis?.vendor_risk_score || "N/A"}
-              </Typography>
-              <Typography variant="subtitle2" sx={{ color: "#1976d2", fontWeight: 700 }}>AI Recommendations</Typography>
-              <Stack sx={{ mb: 0.8 }}>
-                {(aiResult.ai_recommendations || []).map((r, i) => (
-                  <Typography key={i} variant="body2" sx={{ color: "#374151" }}>
-                    • {r}
-                  </Typography>
-                ))}
-              </Stack>
-              {aiResult.celonis_evidence ? (
-                <Chip label={`Celonis Evidence: ${aiResult.celonis_evidence}`} sx={{ background: "#dcfce7", color: "#166534" }} />
-              ) : null}
-              <details style={{ marginTop: 10 }}>
-                <summary style={{ cursor: "pointer", color: "#1976d2" }}>Full AI JSON</summary>
-                <pre className="json-display">{JSON.stringify(aiResult, null, 2)}</pre>
-              </details>
-            </Box>
-          ) : (
-            <Typography variant="body2" sx={{ color: "#6b7280" }}>
-              Click the button to get AI root-cause, preventive/corrective/escalation recommendations, comparison to average, and financial impact.
-            </Typography>
-          )}
-        </CardContent>
-      </Card>
+      <Grid container spacing={2}>
+        {/* AI Analysis */}
+        <Grid item xs={12} md={7}>
+          <Card>
+            <CardContent>
+              <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1.5 }}>
+                <Typography sx={{ fontFamily: S, fontSize: "1.15rem", color: "#17140F" }}>AI Analysis</Typography>
+                <Button variant="contained" size="small" onClick={runAiAnalysis} disabled={aiLoading || !selectedVendor}>
+                  {aiLoading ? <><CircularProgress size={12} sx={{ mr: 1, color: "#fff" }} />Analyzing…</> : "Run Vendor AI"}
+                </Button>
+              </Box>
+              <Divider sx={{ mb: 1.5 }} />
+              {aiResult ? (
+                <Stack spacing={1.2}>
+                  <Box sx={{ p: 1.5, background: "#F5ECD9", border: "1px solid #DEC48A", borderRadius: "10px" }}>
+                    <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "#9C9690", fontFamily: G, mb: 0.5 }}>Risk Score</Typography>
+                    <Typography sx={{ fontSize: "0.875rem", fontWeight: 600, color: "#B5742A", fontFamily: G }}>{aiResult?.vendor_analysis?.vendor_risk_score || "N/A"}</Typography>
+                  </Box>
+                  <Box>
+                    <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "#9C9690", fontFamily: G, mb: 0.8 }}>AI Recommendations</Typography>
+                    {(aiResult.ai_recommendations || []).map((r, i) => (
+                      <Box key={i} sx={{ display: "flex", gap: 1.5, mb: 0.8 }}>
+                        <Box sx={{ width: "6px", height: "6px", borderRadius: "50%", background: "#B5742A", mt: 0.7, flexShrink: 0 }} />
+                        <Typography sx={{ fontSize: "0.82rem", color: "#5C5650", fontFamily: G }}>{r}</Typography>
+                      </Box>
+                    ))}
+                  </Box>
+                  {aiResult.celonis_evidence && <span className="evidence-tag">Celonis Evidence: {aiResult.celonis_evidence}</span>}
+                  <details>
+                    <summary style={{ cursor: "pointer", color: "#B5742A", fontSize: "0.78rem", fontFamily: G, fontWeight: 600 }}>View Full JSON</summary>
+                    <pre className="json-display">{JSON.stringify(aiResult, null, 2)}</pre>
+                  </details>
+                </Stack>
+              ) : (
+                <Typography sx={{ fontSize: "0.875rem", color: "#9C9690", fontFamily: G, py: 2 }}>
+                  Click "Run Vendor AI" to get root-cause analysis, recommendations, comparison to average, and financial impact.
+                </Typography>
+              )}
+            </CardContent>
+          </Card>
+        </Grid>
 
-      <Card sx={{ background: "#ffffff", border: "1px solid #e5e7eb", mt: 2, mb: 2 }}>
-        <CardContent>
-          <Typography variant="h6" sx={{ color: "#1f2937", mb: 1, fontWeight: 700 }}>
-            5) Payment Behavior for {selectedVendorId}
-          </Typography>
-          <PaymentBehaviorPie behavior={behavior} />
-        </CardContent>
-      </Card>
-    </Box>
+        {/* Payment Behavior */}
+        <Grid item xs={12} md={5}>
+          <Card sx={{ height: "100%" }}>
+            <CardContent>
+              <Typography sx={{ fontFamily: S, fontSize: "1.15rem", color: "#17140F", mb: 1.5 }}>
+                Payment Behavior — <span style={{ color: "#B5742A" }}>{selectedVendorId}</span>
+              </Typography>
+              <PaymentPie behavior={behavior} />
+            </CardContent>
+          </Card>
+        </Grid>
+      </Grid>
+    </div>
   );
 }
