@@ -10,6 +10,7 @@ import Alert from "@mui/material/Alert";
 import Stack from "@mui/material/Stack";
 import ProcessMetrics from "../components/ProcessMetrics";
 import LoadingSpinner from "../components/LoadingSpinner";
+import ProcessTrajectoryView from "../components/ProcessTrajectoryView";
 import { fetchCelonisContextLayer, fetchContextCoverage, fetchProcessInsights, refreshCache, validateWcmContext, waitForCacheReady } from "../api/client";
 
 const S = "'Instrument Serif', Georgia, serif";
@@ -171,8 +172,8 @@ export default function Dashboard() {
                   <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#1A6B5E", mb: 1.5, fontFamily: G }}>Performance</Typography>
                   {[
                     ["Golden Path", `${contextLayer.process_map?.golden_path_percentage ?? 0}%`],
-                    ["Avg E2E Cycle", `${contextLayer.cycle_time?.avg_end_to_end_days ?? 0} days`],
-                    ["Exception Rate", `${contextLayer.cycle_time?.exception_rate_pct ?? 0}%`],
+                    ["Observed Process Duration", `${contextLayer.cycle_time?.avg_end_to_end_days ?? 0} days`],
+                    ["Process Failure Rate", `${contextLayer.cycle_time?.exception_rate_pct ?? 0}%`],
                   ].map(([k, v]) => (
                     <Box key={k} sx={{ display: "flex", justifyContent: "space-between", mb: 1 }}>
                       <Typography sx={{ fontSize: "0.78rem", color: "#5C5650", fontFamily: G }}>{k}</Typography>
@@ -181,7 +182,7 @@ export default function Dashboard() {
                   ))}
                 </Grid>
                 <Grid item xs={12} md={4}>
-                  <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#1A6B5E", mb: 1.5, fontFamily: G }}>Top Transitions</Typography>
+                  <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#1A6B5E", mb: 1.5, fontFamily: G }}>High-Impact Process Transitions</Typography>
                   {(contextLayer.process_map?.top_transitions || []).slice(0, 3).map((t, i) => (
                     <Box key={i} sx={{ mb: 1.2 }}>
                       <Typography sx={{ fontSize: "0.75rem", color: "#17140F", fontFamily: G }}>{t.from_step} → {t.to_step}</Typography>
@@ -208,46 +209,13 @@ export default function Dashboard() {
         </>
       )}
 
-      {/* Golden Path */}
-      {context?.golden_path && (
-        <>
-          <SectionHeader label="Golden Path" meta={`${context.golden_path_percentage}% of cases`} />
-          <Card>
-            <CardContent>
-              <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-                {context.golden_path.split("→").map((step, i, arr) => (
-                  <React.Fragment key={i}>
-                    <Box sx={{ background: "#F5ECD9", border: "1px solid #DEC48A", color: "#B5742A", px: 1.5, py: 0.5, borderRadius: "8px", fontSize: "0.78rem", fontWeight: 500, fontFamily: G }}>
-                      {step.trim()}
-                    </Box>
-                    {i < arr.length - 1 && <Typography sx={{ color: "#C4BDB0", fontSize: "0.9rem" }}>→</Typography>}
-                  </React.Fragment>
-                ))}
-              </Box>
-            </CardContent>
-          </Card>
-        </>
-      )}
-
-      {/* Turnaround Times */}
-      {context?.activity_durations && Object.keys(context.activity_durations).length > 0 && (
-        <>
-          <SectionHeader label="Turnaround Times" meta="Celonis Process Explorer" />
-          <Grid container spacing={2}>
-            {Object.entries(context.activity_durations).map(([key, val]) => (
-              <Grid item xs={12} sm={6} md={4} key={key}>
-                <Card>
-                  <CardContent sx={{ py: "16px !important" }}>
-                    <Typography sx={{ fontSize: "0.78rem", color: "#9C9690", mb: 1, lineHeight: 1.4, fontFamily: G }}>{key}</Typography>
-                    <Typography sx={{ fontFamily: S, fontSize: "1.9rem", color: "#1A6B5E", letterSpacing: "-0.03em" }}>
-                      {val}<span style={{ fontSize: "0.85rem", color: "#9C9690", marginLeft: "4px" }}>days</span>
-                    </Typography>
-                  </CardContent>
-                </Card>
-              </Grid>
-            ))}
-          </Grid>
-        </>
+      {/* Process Trajectory (replaces Golden Path + Turnaround Times) */}
+      {(context?.golden_path || (context?.activity_durations && Object.keys(context.activity_durations).length > 0)) && (
+        <ProcessTrajectoryView
+          goldenPath={context?.golden_path}
+          goldenPathPercentage={context?.golden_path_percentage}
+          activityDurations={context?.activity_durations}
+        />
       )}
 
       {/* Exception Patterns */}

@@ -40,24 +40,24 @@ export default function AgentCard({ agent }) {
           </Typography>
         )}
         <Typography variant="caption" sx={{ fontWeight: 700, color: "#2e7d32" }}>
-          Celonis Evidence:
+          Process Signals:
         </Typography>
         <Typography variant="body2" sx={{ mb: 2, color: "#374151", fontSize: "0.84rem" }}>
           {agent.process_mining_evidence}
         </Typography>
         {agent.timing_decision && (
           <Typography variant="body2" sx={{ mb: 1, color: "#1d4ed8", fontSize: "0.82rem" }}>
-            <strong>Timing Decision:</strong> {agent.timing_decision}
+            <strong>Prediction:</strong> {agent.timing_decision}
           </Typography>
         )}
         {agent.action_impact && (
           <Typography variant="body2" sx={{ mb: 1, color: "#334155", fontSize: "0.82rem" }}>
-            <strong>Action Impact:</strong> {agent.action_impact}
+            <strong>Decision:</strong> {agent.action_impact}
           </Typography>
         )}
         {agent.why_bi_only_misses_this && (
           <Typography variant="body2" sx={{ mb: 1.2, color: "#7c2d12", fontSize: "0.82rem" }}>
-            <strong>Why BI-only misses this:</strong> {agent.why_bi_only_misses_this}
+            <strong>Why This Action:</strong> {agent.why_bi_only_misses_this}
           </Typography>
         )}
         <Box sx={{ mb: 1 }}>

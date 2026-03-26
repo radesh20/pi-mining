@@ -101,7 +101,9 @@ export default function VendorAnalysis() {
       } catch (e) {
         if (active) {
           setError(e?.response?.data?.detail || e.message || "Failed to load vendors");
-          setVendors(FALLBACK_VENDORS.map(v => ({ ...v, exception_rate: 100, avg_dpo: 15, payment_behavior: null, risk_score: "CRITICAL" })));
+          const fallback = FALLBACK_VENDORS.map(v => ({ ...v, exception_rate: 100, avg_dpo: 15, payment_behavior: null, risk_score: "CRITICAL" }));
+          setVendors(fallback);
+          setSelectedVendorId(fallback[0]?.vendor_id || "D4");
         }
       } finally { if (active) setLoading(false); }
     };
@@ -196,6 +198,63 @@ export default function VendorAnalysis() {
       </Box>
 
       {error && <Alert severity="warning" sx={{ mb: 2 }}>{error}</Alert>}
+
+      {/* Vendor Process Behavior — PI-style section above table */}
+      {selectedVendor && (
+        <Card sx={{ mb: 2.5, background: "#F2FAF6 !important", border: "1px solid #B8DFD0 !important" }}>
+          <CardContent>
+            <Typography sx={{ fontFamily: S, fontSize: "1.1rem", color: "#1A6B5E", mb: 1.5 }}>Vendor Process Behavior</Typography>
+            <Grid container spacing={2}>
+              <Grid item xs={12} sm={4}>
+                <Box sx={{ p: 1.2, background: "#DCF0EB", border: "1px solid #8FCFC5", borderRadius: "10px" }}>
+                  <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "#1A6B5E", fontFamily: G, mb: 0.5 }}>Process Signals</Typography>
+                  <Typography sx={{ fontFamily: S, fontSize: "1.6rem", color: "#1A6B5E", lineHeight: 1, mb: 0.2 }}>{Number(selectedVendor.avg_dpo || 0).toFixed(1)}d</Typography>
+                  <Typography sx={{ fontSize: "0.7rem", color: "#1A6B5E", fontFamily: G, opacity: 0.8 }}>Observed Process Duration</Typography>
+                </Box>
+              </Grid>
+              <Grid item xs={12} sm={4}>
+                <Box sx={{ p: 1.2, background: "#FAEAEA", border: "1px solid #E0A0A0", borderRadius: "10px" }}>
+                  <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "#B03030", fontFamily: G, mb: 0.5 }}>Process Failure Rate</Typography>
+                  <Typography sx={{ fontFamily: S, fontSize: "1.6rem", color: "#B03030", lineHeight: 1, mb: 0.2 }}>{pct(selectedVendor.exception_rate)}</Typography>
+                  <Typography sx={{ fontSize: "0.7rem", color: "#B03030", fontFamily: G, opacity: 0.8 }}>Exceptions vs. total cases</Typography>
+                </Box>
+              </Grid>
+              <Grid item xs={12} sm={4}>
+                <Box sx={{ p: 1.2, background: "#EBF2FC", border: "1px solid #90B8E8", borderRadius: "10px" }}>
+                  <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "#1E4E8C", fontFamily: G, mb: 0.5 }}>High-Impact Transitions</Typography>
+                  <Typography sx={{ fontFamily: S, fontSize: "1.6rem", color: "#1E4E8C", lineHeight: 1, mb: 0.2 }}>{selectedVendor.total_cases}</Typography>
+                  <Typography sx={{ fontSize: "0.7rem", color: "#1E4E8C", fontFamily: G, opacity: 0.8 }}>Total process cases</Typography>
+                </Box>
+              </Grid>
+            </Grid>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Predictive Insight */}
+      {selectedVendor && (
+        <Card sx={{ mb: 2.5, borderLeft: "3px solid #1E4E8C !important", background: "#EBF2FC !important", border: "1px solid #90B8E8 !important" }}>
+          <CardContent>
+            <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#1E4E8C", fontFamily: G, mb: 0.8 }}>Predictive Insight</Typography>
+            <Typography sx={{ fontSize: "0.875rem", color: "#17140F", fontFamily: G, mb: 0.8 }}>
+              Based on observed process trajectories for <strong>{selectedVendor.vendor_id}</strong>:
+            </Typography>
+            <Stack spacing={0.6}>
+              {[
+                selectedVendor.exception_rate > 60 && "⚠️ High process failure rate — majority of cases deviate from the expected path.",
+                selectedVendor.avg_dpo > 40 && "⏱ Extended dwell time detected — cases exceed 75th percentile in key stages.",
+                selectedVendor.exception_rate > 40 && "🔁 Recurring exception patterns identified — stage-level intervention recommended.",
+                selectedVendor.exception_rate <= 40 && selectedVendor.avg_dpo <= 20 && "✅ Process behavior within expected range — no immediate trajectory-based risk.",
+              ].filter(Boolean).map((msg, i) => (
+                <Typography key={i} sx={{ fontSize: "0.8rem", color: "#2E5090", fontFamily: G }}>{msg}</Typography>
+              ))}
+              <Typography sx={{ fontSize: "0.72rem", color: "#9C9690", fontFamily: G, fontStyle: "italic", mt: 0.4 }}>
+                Predictions based on stage-level timing, transition patterns, and historical outcomes — not static thresholds.
+              </Typography>
+            </Stack>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Vendor Table */}
       <Card sx={{ mb: 2.5 }}>

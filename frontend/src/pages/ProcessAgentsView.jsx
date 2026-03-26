@@ -3,6 +3,10 @@ import { Box, Card, CardContent, Chip, Grid, Typography, Stack } from "@mui/mate
 import AgentCard from "../components/AgentCard";
 import ProcessMetrics from "../components/ProcessMetrics";
 import LoadingSpinner from "../components/LoadingSpinner";
+import ProcessSignalsPanel from "../components/ProcessSignalsPanel";
+import PredictionPanel from "../components/PredictionPanel";
+import DecisionPanel from "../components/DecisionPanel";
+import WhyThisActionPanel from "../components/WhyThisActionPanel";
 import { fetchProcessAgents, waitForCacheReady } from "../api/client";
 
 const S = "'Instrument Serif', Georgia, serif";
@@ -99,7 +103,7 @@ export default function ProcessAgentsView() {
       {piVsBiMessage && (
         <Card sx={{ mb: 2.5, borderLeft: "3px solid #B5742A !important" }}>
           <CardContent>
-            <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#9C9690", fontFamily: G, mb: 0.8 }}>Why PI, not BI-only</Typography>
+            <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#9C9690", fontFamily: G, mb: 0.8 }}>Process Intelligence Advantage</Typography>
             <Typography sx={{ fontSize: "0.875rem", color: "#5C5650", fontFamily: G }}>{piVsBiMessage}</Typography>
           </CardContent>
         </Card>
@@ -168,17 +172,19 @@ export default function ProcessAgentsView() {
                       </Box>
                     </Box>
                     <Typography sx={{ fontWeight: 600, fontSize: "0.875rem", color: "#17140F", fontFamily: G, mb: 1 }}>{item.agent_name}</Typography>
-                    {[
-                      { label: "PI Evidence", value: item.pi_evidence, color: "#1A6B5E", bg: "#DCF0EB" },
-                      { label: "Timing Decision", value: item.timing_decision, color: "#1E4E8C", bg: "#EBF2FC" },
-                      { label: "Action Impact", value: item.action_impact, color: "#5C5650", bg: "#F0EDE6" },
-                      { label: "Why BI misses this", value: item.why_bi_only_misses_this, color: "#B03030", bg: "#FAEAEA" },
-                    ].map(({ label, value, color, bg }) => (
-                      <Box key={label} sx={{ mb: 0.8, p: 0.8, background: bg, borderRadius: "6px" }}>
-                        <Typography sx={{ fontSize: "0.65rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color, fontFamily: G, mb: 0.2, opacity: 0.8 }}>{label}</Typography>
-                        <Typography sx={{ fontSize: "0.75rem", color: "#5C5650", fontFamily: G }}>{value}</Typography>
-                      </Box>
-                    ))}
+                    <ProcessSignalsPanel
+                      currentStage={item.lifecycle_stage}
+                      observedDuration={item.avg_duration_days}
+                      percentile75={item.percentile75_days}
+                    />
+                    <PredictionPanel
+                      expectedCompletion={item.expected_completion}
+                      remainingSla={item.remaining_sla}
+                      breachProbability={item.breach_probability}
+                      onFailureTrajectory={item.on_failure_trajectory}
+                    />
+                    <DecisionPanel action={item.action_impact} />
+                    <WhyThisActionPanel reason={item.why_bi_only_misses_this} />
                   </CardContent>
                 </Card>
               </Grid>
