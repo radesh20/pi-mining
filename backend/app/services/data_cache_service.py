@@ -518,6 +518,72 @@ class DataCacheService:
         with self._lock:
             return self.exception_records_map.get(key, [])
 
+    def get_all_exception_records(self) -> List[Dict[str, Any]]:
+        try:
+            self.ensure_loaded()
+        except Exception as e:
+            logger.warning("Serving flattened exception records due to refresh/load error: %s", str(e))
+        with self._lock:
+            rows: List[Dict[str, Any]] = []
+            seen: set[str] = set()
+            for record_list in self.exception_records_map.values():
+                for row in record_list or []:
+                    record_id = str(row.get("exception_id") or row.get("case_id") or "")
+                    if record_id and record_id in seen:
+                        continue
+                    if record_id:
+                        seen.add(record_id)
+                    rows.append(self._to_jsonable(dict(row)))
+            return rows
+
+    def get_representative_exception_case(self) -> Dict[str, Any]:
+        try:
+            self.ensure_loaded()
+        except Exception as e:
+            logger.warning("Serving fallback representative case due to refresh/load error: %s", str(e))
+
+        with self._lock:
+            all_exception_rows: List[Dict[str, Any]] = []
+            case_level = self.case_level_df.copy()
+            for record_list in self.exception_records_map.values():
+                all_exception_rows.extend(record_list or [])
+
+            def score(row: Dict[str, Any]) -> tuple[float, float]:
+                return (
+                    float(row.get("invoice_amount") or row.get("value_at_risk") or 0.0),
+                    float(row.get("dpo") or row.get("actual_dpo") or row.get("days_in_exception") or 0.0),
+                )
+
+            for row in sorted(all_exception_rows, key=score, reverse=True):
+                case_id = str(row.get("case_id") or row.get("invoice_id") or "").strip()
+                if not case_id:
+                    continue
+                if case_level.empty or "case_id" not in case_level.columns:
+                    break
+                mask = case_level["case_id"].astype(str) == case_id
+                if "document_number" in case_level.columns:
+                    mask = mask | (case_level["document_number"].astype(str) == case_id)
+                match = case_level[mask]
+                if match.empty:
+                    continue
+                case_row = match.iloc[0].to_dict()
+                case_row["activity_trace"] = [str(x) for x in case_row.get("activity_trace", [])]
+                return self._to_jsonable(case_row)
+
+            if case_level.empty:
+                return {}
+
+            activity_l = case_level.get("activity_trace_text", pd.Series(dtype=str)).astype(str).str.lower().fillna("")
+            priority_mask = activity_l.str.contains("exception|moved out|due date passed|payment term|block", regex=True, na=False)
+            candidate_df = case_level[priority_mask] if priority_mask.any() else case_level
+            if candidate_df.empty:
+                return {}
+            candidate_df = candidate_df.copy()
+            candidate_df["invoice_amount"] = pd.to_numeric(candidate_df.get("invoice_amount"), errors="coerce").fillna(0.0)
+            case_row = candidate_df.sort_values("invoice_amount", ascending=False).iloc[0].to_dict()
+            case_row["activity_trace"] = [str(x) for x in case_row.get("activity_trace", [])]
+            return self._to_jsonable(case_row)
+
     def get_vendor_records(self, vendor_id: str) -> List[Dict[str, Any]]:
         try:
             self.ensure_loaded()
@@ -1583,12 +1649,7 @@ class DataCacheService:
 
     def _build_exception_categories(self, records_map: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         categories = []
-        keys_in_order: List[str] = []
-        for label in self.EXCEPTION_LABELS:
-            keys_in_order.append(self._normalize_exception_key(label))
-        for key in sorted(records_map.keys()):
-            if key not in keys_in_order:
-                keys_in_order.append(key)
+        keys_in_order: List[str] = [self._normalize_exception_key(label) for label in self.EXCEPTION_LABELS]
 
         for key in keys_in_order:
             rows = records_map.get(key, [])

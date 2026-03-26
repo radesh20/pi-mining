@@ -1,51 +1,192 @@
-import React, { useMemo, useState } from "react";
-import { Alert, Box, Button, Card, CardContent, FormControlLabel, Grid, Stack, Switch, TextField, Typography } from "@mui/material";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Alert, Box, Button, Card, CardContent, Chip, Grid, Stack, TextField, Typography } from "@mui/material";
 import InteractionFlow from "../components/InteractionFlow";
 import LoadingSpinner from "../components/LoadingSpinner";
-import { executeInvoiceFlow } from "../api/client";
+import { analyzeExceptionRecord, executeInvoiceFlow, fetchAllExceptionRecords, fetchExceptionCategories, waitForCacheReady } from "../api/client";
 
 const S = "'Instrument Serif', Georgia, serif";
 const G = "'Geist', system-ui, sans-serif";
+const numberFields = new Set(["invoice_amount", "days_in_exception", "actual_dpo", "potential_dpo", "days_until_due"]);
+const FORM_FIELDS = [["invoice_id", "Invoice ID"], ["vendor_id", "Vendor ID"], ["vendor_name", "Vendor Name"], ["invoice_amount", "Invoice Amount", "number"], ["currency", "Currency"], ["invoice_payment_terms", "Invoice Payment Terms"], ["po_payment_terms", "PO Payment Terms"], ["vendor_master_terms", "Vendor Master Terms"], ["payment_due_date", "Payment Due Date"], ["days_until_due", "Days Until Due", "number"], ["days_in_exception", "Days in Exception", "number"], ["actual_dpo", "Actual DPO", "number"], ["potential_dpo", "Potential DPO", "number"], ["company_code", "Company Code"], ["scenario", "Scenario Notes"]];
 
-const SCENARIOS = {
-  payment_terms_mismatch: { label: "Payment Terms Mismatch", invoice_id: "INV-5700028038", vendor_id: "D4", vendor_name: "Supplier D4", vendor_lifnr: "7003198830", invoice_amount: 363000, currency: "USD", invoice_payment_terms: "NET10", po_payment_terms: "NET30", vendor_master_terms: "NET30", invoice_tax_code: "", po_tax_code: "", payment_due_date: "2025-04-15", goods_receipt_recorded: true, days_in_exception: 0, discount_terms: "", actual_dpo: 0, potential_dpo: 0, company_code: "AC33", scenario: "Payment terms mismatch" },
-  invoice_exception: { label: "Invoice Exception (80 days stuck)", invoice_id: "INV-5700028040", vendor_id: "F6", vendor_name: "Supplier F6", vendor_lifnr: "7003198928", invoice_amount: 499000, currency: "USD", invoice_payment_terms: "NET30", po_payment_terms: "NET30", vendor_master_terms: "", invoice_tax_code: "TAX_EXEMPT", po_tax_code: "STANDARD_RATE", payment_due_date: "2025-02-15", goods_receipt_recorded: true, days_in_exception: 80, discount_terms: "", actual_dpo: 0, potential_dpo: 0, company_code: "AC33", scenario: "Tax mismatch, stuck 80 days" },
-  short_payment_terms: { label: "Short Payment Terms (0 days)", invoice_id: "INV-5700028045", vendor_id: "V22", vendor_name: "Supplier V22", vendor_lifnr: "7003204531", invoice_amount: 775000, currency: "USD", invoice_payment_terms: "IMMEDIATE", po_payment_terms: "NET30", vendor_master_terms: "NET30", invoice_tax_code: "", po_tax_code: "", payment_due_date: "2025-03-27", goods_receipt_recorded: true, days_in_exception: 0, discount_terms: "", actual_dpo: 0, potential_dpo: 0, company_code: "AC33", scenario: "0-day payment terms" },
-  early_payment: { label: "Early Payment Optimization", invoice_id: "INV-5700028039", vendor_id: "D4", vendor_name: "Supplier D4", vendor_lifnr: "7003198830", invoice_amount: 1420000, currency: "USD", invoice_payment_terms: "NET60", po_payment_terms: "NET60", vendor_master_terms: "NET60", invoice_tax_code: "", po_tax_code: "", payment_due_date: "2025-05-27", goods_receipt_recorded: true, days_in_exception: 0, discount_terms: "2% if paid within 10 days", actual_dpo: 3, potential_dpo: 63, company_code: "AC33", scenario: "Early payment discount available" },
+const money = (v) => {
+  const n = Number(v || 0);
+  if (!n) return "N/A";
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M $`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K $`;
+  return `${n.toFixed(0)} $`;
 };
 
-const METRICS = ["37 Total Invoices | 22.5M $", "19 with Exception (80 day DPO)", "25 Short Terms | 23 Early Payment", "5M $ Value at Risk"];
-const NO_PM = { without: "Invoice due in 7 days. Keep monitoring and act later based on static threshold.", with: "PI says this path takes ~3+ days historically. Trigger now, escalate if due-date buffer drops below processing lead time." };
-const numberFields = new Set(["invoice_amount", "days_in_exception", "actual_dpo", "potential_dpo"]);
-
-const SCENARIO_STYLES = {
-  payment_terms_mismatch: { color: "#A05A10", bg: "#FEF3DC", border: "#F0C870" },
-  invoice_exception: { color: "#B03030", bg: "#FAEAEA", border: "#E0A0A0" },
-  short_payment_terms: { color: "#1E4E8C", bg: "#EBF2FC", border: "#90B8E8" },
-  early_payment: { color: "#1A6B5E", bg: "#DCF0EB", border: "#8FCFC5" },
+const riskStyle = (value) => {
+  const v = String(value || "").toUpperCase();
+  if (v === "CRITICAL") return { bg: "#FAEAEA", color: "#B03030", border: "#E0A0A0" };
+  if (v === "HIGH") return { bg: "#FEF3DC", color: "#A05A10", border: "#F0C870" };
+  if (v === "MEDIUM") return { bg: "#EBF2FC", color: "#1E4E8C", border: "#90B8E8" };
+  return { bg: "#DCF0EB", color: "#1A6B5E", border: "#8FCFC5" };
 };
 
-const FORM_FIELDS = [["invoice_id", "Invoice ID"], ["vendor_id", "Vendor ID"], ["vendor_name", "Vendor Name"], ["invoice_amount", "Invoice Amount", "number"], ["currency", "Currency"], ["invoice_payment_terms", "Invoice Payment Terms"], ["po_payment_terms", "PO Payment Terms"], ["vendor_master_terms", "Vendor Master Terms"], ["invoice_tax_code", "Invoice Tax Code"], ["po_tax_code", "PO Tax Code"], ["payment_due_date", "Payment Due Date"], ["days_in_exception", "Days in Exception", "number"], ["discount_terms", "Discount Terms"], ["actual_dpo", "Actual DPO", "number"], ["potential_dpo", "Potential DPO", "number"], ["company_code", "Company Code"], ["scenario", "Scenario Notes"]];
+const toInvoicePayload = (record) => {
+  if (!record) {
+    return {
+      invoice_id: "",
+      vendor_id: "",
+      vendor_name: "",
+      invoice_amount: 0,
+      currency: "USD",
+      invoice_payment_terms: "",
+      po_payment_terms: "",
+      vendor_master_terms: "",
+      payment_due_date: "",
+      days_until_due: 0,
+      days_in_exception: 0,
+      actual_dpo: 0,
+      potential_dpo: 0,
+      company_code: "",
+      scenario: "",
+    };
+  }
+  return {
+    invoice_id: record.invoice_id || record.document_number || record.case_id || "",
+    vendor_id: record.vendor_id || "",
+    vendor_name: record.vendor_name || record.vendor_id || "",
+    invoice_amount: Number(record.invoice_amount || record.value_at_risk || 0),
+    currency: record.currency || "USD",
+    invoice_payment_terms: record.invoice_payment_terms || record.payment_terms || "",
+    po_payment_terms: record.po_payment_terms || record.payment_terms || "",
+    vendor_master_terms: record.vendor_master_terms || "",
+    payment_due_date: record.payment_due_date || "",
+    days_until_due: Number(record.days_until_due || 0),
+    days_in_exception: Number(record.days_in_exception || record.avg_resolution_time_days || 0),
+    actual_dpo: Number(record.actual_dpo || record.dpo || 0),
+    potential_dpo: Number(record.potential_dpo || record.actual_dpo || record.dpo || 0),
+    company_code: record.company_code || "",
+    scenario: record.exception_type || record.summary || "Celonis exception scenario",
+  };
+};
+
+const buildAnalysisPayload = (record) => ({
+  exception_type: record.exception_type || "",
+  exception_id: record.exception_id,
+  invoice_id: record.invoice_id || record.document_number || record.case_id || "",
+  vendor_id: record.vendor_id || "",
+  vendor_name: record.vendor_name || record.vendor_id || "",
+  invoice_amount: record.invoice_amount || record.value_at_risk || 0,
+  currency: record.currency || "USD",
+  days_until_due: record.days_until_due || 0,
+  extra_context: record,
+});
+
+function MetricCard({ label, value, caption, color }) {
+  return (
+    <Card>
+      <CardContent>
+        <Typography sx={{ fontSize: "0.69rem", textTransform: "uppercase", letterSpacing: "0.07em", color: "#9C9690", fontFamily: G, mb: 0.8 }}>{label}</Typography>
+        <Typography sx={{ fontFamily: S, fontSize: "2rem", color, mb: 0.3 }}>{value}</Typography>
+        <Typography sx={{ fontSize: "0.78rem", color: "#9C9690", fontFamily: G }}>{caption}</Typography>
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function CrossAgentInteraction() {
-  const [invoice, setInvoice] = useState(SCENARIOS.payment_terms_mismatch);
-  const [selectedScenario, setSelectedScenario] = useState("payment_terms_mismatch");
-  const [loading, setLoading] = useState(false);
+  const [categories, setCategories] = useState([]);
+  const [records, setRecords] = useState([]);
+  const [selectedRecordId, setSelectedRecordId] = useState("");
+  const [invoice, setInvoice] = useState(toInvoicePayload(null));
+  const [analysis, setAnalysis] = useState(null);
+  const [loadingPage, setLoadingPage] = useState(true);
+  const [loadingAnalysis, setLoadingAnalysis] = useState(false);
+  const [loadingFlow, setLoadingFlow] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
-  const [showComparison, setShowComparison] = useState(false);
+  const analysisRequestRef = useRef(0);
 
-  const executionTrace = useMemo(() => result?.execution_trace || result?.data?.execution_trace || null, [result]);
+  const selectedRecord = useMemo(
+    () => records.find((record) => record.exception_id === selectedRecordId) || null,
+    [records, selectedRecordId],
+  );
+  const executionTrace = result?.execution_trace || result?.data?.execution_trace || null;
 
-  const setScenario = (key) => { setSelectedScenario(key); setInvoice(SCENARIOS[key]); setResult(null); setError(""); };
-  const handleField = (field, value) => setInvoice(p => ({ ...p, [field]: numberFields.has(field) ? Number(value || 0) : value }));
+  useEffect(() => {
+    let active = true;
+    const load = async (retryIfCacheCold = true) => {
+      try {
+        const [categoriesRes, recordsRes] = await Promise.all([
+          fetchExceptionCategories(),
+          fetchAllExceptionRecords(),
+        ]);
+        const categoryRows = (categoriesRes.data || categoriesRes || []).filter((row) => Number(row.case_count || 0) > 0);
+        const recordRows = (recordsRes.data || recordsRes || []).filter((row) => row.exception_id);
+        if (retryIfCacheCold && categoryRows.length === 0 && recordRows.length === 0) {
+          await waitForCacheReady();
+          return await load(false);
+        }
+        if (!active) return;
+        setCategories(categoryRows);
+        setRecords(recordRows);
+        const first = recordRows[0] || null;
+        if (first) {
+          setSelectedRecordId(first.exception_id);
+          setInvoice(toInvoicePayload(first));
+        }
+      } catch (e) {
+        if (!active) return;
+        setError(e?.response?.data?.detail || e.message || "Failed to load cross-agent data");
+      } finally {
+        if (active) setLoadingPage(false);
+      }
+    };
+    load();
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!selectedRecord) return;
+    setInvoice(toInvoicePayload(selectedRecord));
+    setResult(null);
+    const requestId = ++analysisRequestRef.current;
+    setLoadingAnalysis(true);
+    analyzeExceptionRecord(buildAnalysisPayload(selectedRecord))
+      .then((res) => {
+        if (analysisRequestRef.current !== requestId) return;
+        setAnalysis(res.data || res);
+      })
+      .catch((e) => {
+        if (analysisRequestRef.current !== requestId) return;
+        setError(e?.response?.data?.detail || e.message || "Failed to analyze selected exception");
+      })
+      .finally(() => {
+        if (analysisRequestRef.current === requestId) setLoadingAnalysis(false);
+      });
+  }, [selectedRecord]);
+
+  const handleField = (field, value) => {
+    setInvoice((prev) => ({ ...prev, [field]: numberFields.has(field) ? Number(value || 0) : value }));
+  };
 
   const runOrchestration = async () => {
-    setLoading(true); setError(""); setResult(null);
-    try { setResult(await executeInvoiceFlow(invoice)); }
-    catch (e) { setError(e?.response?.data?.detail || e.message || "Execution failed"); }
-    finally { setLoading(false); }
+    setLoadingFlow(true);
+    setError("");
+    setResult(null);
+    try {
+      setResult(await executeInvoiceFlow(invoice));
+    } catch (e) {
+      setError(e?.response?.data?.detail || e.message || "Execution failed");
+    } finally {
+      setLoadingFlow(false);
+    }
   };
+
+  const totalValueAtRisk = records.reduce((sum, record) => sum + Number(record.invoice_amount || record.value_at_risk || 0), 0);
+  const autoCandidates = records.filter((record) => {
+    const risk = String(record.risk_level || "").toUpperCase();
+    return !["CRITICAL", "HIGH"].includes(risk);
+  }).length;
+  const exceptionAgentPrompt = executionTrace?.steps?.find((step) => String(step.agent || "").includes("Exception Agent"))?.full_output?.prompt_for_next_agents;
+  const automationDecision = executionTrace?.steps?.find((step) => String(step.agent || "").includes("Automation Policy Agent"))?.full_output;
+  const humanStep = executionTrace?.steps?.find((step) => String(step.agent || "").includes("Human-in-the-Loop Agent"))?.full_output;
+
+  if (loadingPage) return <LoadingSpinner message="Loading Celonis-derived cross-agent scenarios..." />;
 
   return (
     <div className="page-container">
@@ -54,135 +195,139 @@ export default function CrossAgentInteraction() {
           Cross-Agent Interaction
         </Typography>
         <Typography sx={{ fontSize: "0.875rem", color: "#9C9690", fontFamily: G }}>
-          Full 6-agent orchestration with PI-derived timing context, process-step detection, and evidence-based handoff decisions.
+          Follow how the Invoice Processing Agent and Exception Agent exchange Celonis-derived prompts, timing context, routing decisions, next best actions, and human-review escalation.
         </Typography>
       </Box>
 
-      {/* Metrics Strip */}
-      <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", mb: 3 }}>
-        {METRICS.map(m => (
-          <Box key={m} sx={{ background: "#EBF2FC", border: "1px solid #90B8E8", px: 1.5, py: 0.5, borderRadius: "99px" }}>
-            <Typography sx={{ fontSize: "0.72rem", fontWeight: 600, color: "#1E4E8C", fontFamily: G }}>{m}</Typography>
-          </Box>
-        ))}
-      </Box>
+      {error && <Alert severity="warning" sx={{ mb: 2 }}>{error}</Alert>}
+
+      <Grid container spacing={2} sx={{ mb: 2.5 }}>
+        <Grid item xs={12} md={3}><MetricCard label="Exception Scenarios" value={records.length} caption="Real exception records available for orchestration" color="#1E4E8C" /></Grid>
+        <Grid item xs={12} md={3}><MetricCard label="Categories" value={categories.length} caption="Distinct Celonis exception buckets" color="#B5742A" /></Grid>
+        <Grid item xs={12} md={3}><MetricCard label="Value At Risk" value={money(totalValueAtRisk)} caption="Invoice exposure across the loaded queue" color="#B03030" /></Grid>
+        <Grid item xs={12} md={3}><MetricCard label="Auto Candidates" value={autoCandidates} caption="Lower-risk records likely fit for auto-route" color="#1A6B5E" /></Grid>
+      </Grid>
 
       <Grid container spacing={2.5}>
-        {/* LEFT */}
         <Grid item xs={12} md={5}>
-          <Card>
+          <Card sx={{ mb: 2 }}>
             <CardContent>
-              <Typography sx={{ fontFamily: S, fontSize: "1.1rem", color: "#17140F", mb: 1.2 }}>
-                <span style={{ color: "#9C9690", fontSize: "0.69rem", fontFamily: G, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: "6px" }}>01</span>
-                Scenario Selector
-              </Typography>
-              <Stack spacing={0.8} sx={{ mb: 2.5 }}>
-                {Object.entries(SCENARIOS).map(([key, cfg]) => {
-                  const active = selectedScenario === key;
-                  const st = SCENARIO_STYLES[key];
+              <Typography sx={{ fontFamily: S, fontSize: "1.1rem", color: "#17140F", mb: 1.2 }}>Celonis Queue</Typography>
+              <Stack spacing={0.9}>
+                {records.slice(0, 10).map((record) => {
+                  const active = selectedRecordId === record.exception_id;
+                  const style = riskStyle(record.risk_level || "LOW");
                   return (
-                    <Box key={key} onClick={() => setScenario(key)} sx={{ p: 1.4, borderRadius: "10px", border: active ? `2px solid ${st.color}` : "1px solid #E8E3DA", background: active ? st.bg : "#FDFCFA", cursor: "pointer", transition: "all 0.15s", "&:hover": { background: active ? st.bg : "#F5F2EC", borderColor: active ? st.color : "#C4BDB0" } }}>
-                      <Typography sx={{ fontSize: "0.82rem", fontWeight: active ? 600 : 400, color: active ? st.color : "#5C5650", fontFamily: G }}>{cfg.label}</Typography>
+                    <Box
+                      key={record.exception_id}
+                      onClick={() => setSelectedRecordId(record.exception_id)}
+                      sx={{ p: 1.25, borderRadius: "10px", border: active ? "2px solid #B5742A" : "1px solid #E8E3DA", background: active ? "#F5ECD9" : "#FDFCFA", cursor: "pointer" }}
+                    >
+                      <Typography sx={{ fontSize: "0.82rem", fontWeight: 600, color: "#17140F", fontFamily: G }}>{record.exception_type || "Exception"}</Typography>
+                      <Typography sx={{ fontSize: "0.76rem", color: "#5C5650", fontFamily: G, mb: 0.4 }}>
+                        {record.invoice_id || record.document_number || record.case_id} · {record.vendor_name || record.vendor_id || "Unknown vendor"}
+                      </Typography>
+                      <Stack direction="row" spacing={0.8} alignItems="center" flexWrap="wrap" gap={0.6}>
+                        <Chip size="small" label={money(record.invoice_amount || record.value_at_risk || 0)} sx={{ background: "#F0EDE6", color: "#5C5650", border: "1px solid #E8E3DA" }} />
+                        <Chip size="small" label={`DPO ${Number(record.actual_dpo || record.dpo || 0).toFixed(1)}`} sx={{ background: "#EBF2FC", color: "#1E4E8C", border: "1px solid #90B8E8" }} />
+                        <Chip size="small" label={String(record.risk_level || "LOW").toUpperCase()} sx={{ background: style.bg, color: style.color, border: `1px solid ${style.border}` }} />
+                      </Stack>
                     </Box>
                   );
                 })}
               </Stack>
+            </CardContent>
+          </Card>
 
-              <Box sx={{ height: "1px", background: "#E8E3DA", mb: 2 }} />
-              <Typography sx={{ fontFamily: S, fontSize: "1.1rem", color: "#17140F", mb: 1.2 }}>
-                <span style={{ color: "#9C9690", fontSize: "0.69rem", fontFamily: G, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: "6px" }}>02</span>
-                Invoice Input Form
-              </Typography>
+          <Card>
+            <CardContent>
+              <Typography sx={{ fontFamily: S, fontSize: "1.1rem", color: "#17140F", mb: 1.2 }}>Execution Payload</Typography>
               <Grid container spacing={1.2}>
                 {FORM_FIELDS.map(([field, label, type]) => (
-                  <Grid key={field} item xs={12} sm={field === "scenario" || field === "discount_terms" ? 12 : 6}>
-                    <TextField fullWidth size="small" label={label} value={invoice[field] ?? ""} type={type || "text"} onChange={e => handleField(field, e.target.value)} />
+                  <Grid key={field} item xs={12} sm={field === "scenario" ? 12 : 6}>
+                    <TextField fullWidth size="small" label={label} value={invoice[field] ?? ""} type={type || "text"} onChange={(e) => handleField(field, e.target.value)} />
                   </Grid>
                 ))}
-                <Grid item xs={12}>
-                  <FormControlLabel
-                    control={<Switch checked={Boolean(invoice.goods_receipt_recorded)} onChange={(_, v) => setInvoice(p => ({ ...p, goods_receipt_recorded: v }))} size="small" />}
-                    label={<Typography sx={{ fontSize: "0.82rem", fontFamily: G }}>Goods Receipt Recorded</Typography>}
-                  />
-                </Grid>
               </Grid>
-              <Button variant="contained" fullWidth onClick={runOrchestration} disabled={loading} sx={{ mt: 2 }}>
-                {loading ? "Executing…" : "Execute Flow"}
+              <Button variant="contained" fullWidth onClick={runOrchestration} disabled={loadingFlow || !selectedRecord} sx={{ mt: 2 }}>
+                {loadingFlow ? "Executing..." : "Run Invoice + Exception Flow"}
               </Button>
             </CardContent>
           </Card>
         </Grid>
 
-        {/* RIGHT */}
         <Grid item xs={12} md={7}>
-          <Typography sx={{ fontFamily: S, fontSize: "1.1rem", color: "#17140F", mb: 1.5 }}>
-            <span style={{ color: "#9C9690", fontSize: "0.69rem", fontFamily: G, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: "6px" }}>03</span>
-            Execution Flow
-          </Typography>
-
-          {executionTrace?.turnaround_assessment && (
-            <Card sx={{ mb: 2, background: "#EBF2FC !important", border: "1px solid #90B8E8 !important", borderLeft: "3px solid #1E4E8C !important" }}>
-              <CardContent sx={{ py: "14px !important" }}>
-                <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#1E4E8C", fontFamily: G, mb: 0.8 }}>PI Timing Decision</Typography>
-                <Box sx={{ display: "flex", gap: 1, mb: 0.8, flexWrap: "wrap" }}>
-                  {[`Due in ${executionTrace.turnaround_assessment.days_until_due ?? 0}d`, `Historical path ${executionTrace.turnaround_assessment.historical_processing_days ?? executionTrace.turnaround_assessment.estimated_processing_days ?? 0}d`, `Urgency: ${executionTrace.turnaround_assessment.urgency || "MEDIUM"}`].map(t => (
-                    <Box key={t} sx={{ background: "#D0E4F8", px: 1.2, py: 0.2, borderRadius: "99px" }}>
-                      <Typography sx={{ fontSize: "0.7rem", fontWeight: 600, color: "#1E4E8C", fontFamily: G }}>{t}</Typography>
-                    </Box>
-                  ))}
-                </Box>
-                <Typography sx={{ fontSize: "0.78rem", color: "#2E5090", fontFamily: G }}>{executionTrace.turnaround_assessment.urgency_basis || "Decision derived from PI turnaround vs due-date buffer."}</Typography>
-              </CardContent>
-            </Card>
-          )}
-
-          {loading && <LoadingSpinner message="Running 6-agent orchestration with Celonis context..." />}
-          {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
-          {executionTrace && <InteractionFlow executionTrace={executionTrace} />}
-
-          {executionTrace && (
-            <Card sx={{ mt: 2 }}>
-              <CardContent>
-                <Typography sx={{ fontFamily: S, fontSize: "1.1rem", color: "#17140F", mb: 1.5 }}>
-                  <span style={{ color: "#9C9690", fontSize: "0.69rem", fontFamily: G, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: "6px" }}>04</span>
-                  Final Result
-                </Typography>
-                {(() => {
-                  const v = String(executionTrace.final_status || "").toUpperCase();
-                  const s = v.includes("BLOCK") ? { bg: "#FAEAEA", c: "#B03030", b: "#E0A0A0" } : v.includes("ESCAL") ? { bg: "#FEF3DC", c: "#A05A10", b: "#F0C870" } : { bg: "#DCF0EB", c: "#1A6B5E", b: "#8FCFC5" };
-                  return <Box sx={{ display: "inline-block", background: s.bg, color: s.c, border: `1px solid ${s.b}`, px: 1.5, py: 0.4, borderRadius: "99px", mb: 1.5 }}><Typography sx={{ fontSize: "0.75rem", fontWeight: 700, fontFamily: G }}>{executionTrace.final_status || "UNKNOWN"}</Typography></Box>;
-                })()}
-                {[["Financial Summary", executionTrace.financial_summary], ["Turnaround Assessment", executionTrace.turnaround_assessment], ["Exception Summary", executionTrace.exception_summary]].map(([lbl, data]) => (
-                  <Box key={lbl} sx={{ mb: 1.5 }}>
-                    <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#9C9690", fontFamily: G, mb: 0.5 }}>{lbl}</Typography>
-                    <pre className="json-display">{JSON.stringify(data || {}, null, 2)}</pre>
-                  </Box>
-                ))}
-              </CardContent>
-            </Card>
-          )}
-
-          <Card sx={{ mt: 2 }}>
+          <Card sx={{ mb: 2 }}>
             <CardContent>
-              <Typography sx={{ fontFamily: S, fontSize: "1.1rem", color: "#17140F", mb: 1.2 }}>
-                <span style={{ color: "#9C9690", fontSize: "0.69rem", fontFamily: G, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: "6px" }}>05</span>
-                Process Mining Value
-              </Typography>
-              <Button variant="outlined" size="small" onClick={() => setShowComparison(s => !s)}>
-                {showComparison ? "Collapse" : "What would happen WITHOUT process mining?"}
-              </Button>
-              {showComparison && (
-                <Stack spacing={1.5} sx={{ mt: 1.5 }}>
-                  {[["Without Process Mining", "#B03030", "#FAEAEA", "#E0A0A0", NO_PM.without], ["With Process Mining", "#1A6B5E", "#DCF0EB", "#8FCFC5", NO_PM.with]].map(([title, c, bg, b, text]) => (
-                    <Box key={title} sx={{ p: 1.5, background: bg, border: `1px solid ${b}`, borderLeft: `3px solid ${c}`, borderRadius: "0 10px 10px 0" }}>
-                      <Typography sx={{ fontSize: "0.68rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: c, fontFamily: G, mb: 0.5 }}>{title}</Typography>
-                      <Typography sx={{ fontSize: "0.82rem", color: "#5C5650", fontFamily: G }}>{text}</Typography>
-                    </Box>
-                  ))}
-                </Stack>
+              <Typography sx={{ fontFamily: S, fontSize: "1.1rem", color: "#17140F", mb: 1.2 }}>Prompt Interaction Summary</Typography>
+              {loadingAnalysis ? (
+                <LoadingSpinner message="Analyzing selected exception with process context..." />
+              ) : analysis ? (
+                <>
+                  <Box sx={{ p: 1.2, background: "#EBF2FC", border: "1px solid #90B8E8", borderRadius: "10px", mb: 1.2 }}>
+                    <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#1E4E8C", fontFamily: G, mb: 0.5 }}>Invoice Processing Agent Prompt Outcome</Typography>
+                    <Typography sx={{ fontSize: "0.82rem", color: "#5C5650", fontFamily: G, mb: 0.4 }}>{analysis.summary}</Typography>
+                    <Typography sx={{ fontSize: "0.76rem", color: "#1E4E8C", fontFamily: G }}>Turnaround risk: {analysis.turnaround_risk?.risk_level || "MEDIUM"} · ETA {Number(analysis.turnaround_risk?.estimated_processing_days || 0).toFixed(2)} days</Typography>
+                  </Box>
+                  <Box sx={{ p: 1.2, background: "#F7FBF9", border: "1px solid #CFE5DA", borderRadius: "10px", mb: 1.2 }}>
+                    <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#1A6B5E", fontFamily: G, mb: 0.5 }}>Exception Agent Prompt Outcome</Typography>
+                    <Typography sx={{ fontSize: "0.82rem", color: "#5C5650", fontFamily: G, mb: 0.4 }}>{analysis.next_best_action?.action || "No next best action available."}</Typography>
+                    <Typography sx={{ fontSize: "0.76rem", color: "#1A6B5E", fontFamily: G, mb: 0.3 }}>{analysis.next_best_action?.why}</Typography>
+                    <Typography sx={{ fontSize: "0.76rem", color: "#5C5650", fontFamily: G }}>Auto route: {analysis.classifier_agent?.recommended_mode || "human_review"} · Human review: {analysis.send_to_human_review ? "Yes" : "No"}</Typography>
+                  </Box>
+                  <Box sx={{ p: 1.2, background: "#F0EDE6", border: "1px solid #E8E3DA", borderRadius: "10px" }}>
+                    <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#9C9690", fontFamily: G, mb: 0.5 }}>Prompt Handoff</Typography>
+                    <Typography sx={{ fontSize: "0.8rem", color: "#5C5650", fontFamily: G, mb: 0.4 }}>{analysis.prompt_for_next_agents?.execution_prompt || "Execution prompt not available."}</Typography>
+                    <Typography sx={{ fontSize: "0.76rem", color: "#5C5650", fontFamily: G }}>Targets: {(analysis.prompt_for_next_agents?.target_agents || []).join(", ") || "N/A"}</Typography>
+                  </Box>
+                </>
+              ) : (
+                <Typography sx={{ fontSize: "0.82rem", color: "#9C9690", fontFamily: G }}>Select a queue record to inspect prompt interaction.</Typography>
               )}
             </CardContent>
           </Card>
+
+          {loadingFlow && <LoadingSpinner message="Running orchestration with Celonis handoff context..." />}
+          {executionTrace && <InteractionFlow executionTrace={executionTrace} />}
+
+          {executionTrace && (
+            <>
+              <Card sx={{ mt: 2 }}>
+                <CardContent>
+                  <Typography sx={{ fontFamily: S, fontSize: "1.1rem", color: "#17140F", mb: 1.2 }}>Routing Outcome</Typography>
+                  <Stack direction="row" spacing={1} flexWrap="wrap" gap={0.8} sx={{ mb: 1 }}>
+                    <Chip size="small" label={`Final status: ${executionTrace.final_status || "UNKNOWN"}`} sx={{ background: "#F5ECD9", color: "#B5742A", border: "1px solid #DEC48A" }} />
+                    <Chip size="small" label={`Urgency: ${executionTrace.turnaround_assessment?.urgency || "MEDIUM"}`} sx={{ background: "#EBF2FC", color: "#1E4E8C", border: "1px solid #90B8E8" }} />
+                    <Chip size="small" label={`ETA ${Number(executionTrace.turnaround_assessment?.estimated_processing_days || 0).toFixed(2)}d`} sx={{ background: "#F0EDE6", color: "#5C5650", border: "1px solid #E8E3DA" }} />
+                  </Stack>
+                  <Typography sx={{ fontSize: "0.82rem", color: "#5C5650", fontFamily: G, mb: 0.4 }}>
+                    {automationDecision?.reasoning || executionTrace.turnaround_assessment?.recommendation || "Routing decision derived from Celonis timing and exception context."}
+                  </Typography>
+                  <Typography sx={{ fontSize: "0.76rem", color: "#1A6B5E", fontFamily: G }}>
+                    Auto route / human decision: {automationDecision?.automation_decision || analysis?.classifier_agent?.recommended_mode || "MONITOR"} · Teams handoff ready: {humanStep ? "Yes" : "Pending"}
+                  </Typography>
+                </CardContent>
+              </Card>
+
+              <Card sx={{ mt: 2 }}>
+                <CardContent>
+                  <Typography sx={{ fontFamily: S, fontSize: "1.1rem", color: "#17140F", mb: 1.2 }}>Exception Resolution + Human Loop</Typography>
+                  <Typography sx={{ fontSize: "0.82rem", color: "#5C5650", fontFamily: G, mb: 0.4 }}>
+                    Next best action: {exceptionAgentPrompt?.execution_prompt || analysis?.next_best_action?.action || "N/A"}
+                  </Typography>
+                  <Typography sx={{ fontSize: "0.76rem", color: "#1E4E8C", fontFamily: G, mb: 0.3 }}>
+                    Handoff intent: {exceptionAgentPrompt?.handoff_intent || "Exception resolution handoff"}
+                  </Typography>
+                  <Typography sx={{ fontSize: "0.76rem", color: "#B03030", fontFamily: G, mb: 0.3 }}>
+                    Human review package: {humanStep?.case_summary || humanStep?.reason_for_review || "Will be prepared when escalation is required."}
+                  </Typography>
+                  <Typography sx={{ fontSize: "0.76rem", color: "#5C5650", fontFamily: G }}>
+                    Teams-ready evidence: {humanStep?.celonis_evidence || analysis?.exception_context_from_celonis?.category_summary || "Celonis evidence attached in the HITL package."}
+                  </Typography>
+                </CardContent>
+              </Card>
+            </>
+          )}
         </Grid>
       </Grid>
     </div>

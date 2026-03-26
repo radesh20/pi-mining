@@ -104,8 +104,34 @@ class PromptGenerationService:
     def __init__(self, llm: AzureOpenAIService):
         self.llm = llm
 
-    def generate_deep_dive(self, agent_name: str, process_context: dict,case_data:Dict[str, Any],exception_records: List[Dict[str, Any]]) -> dict:
-        user_prompt = f"""
+    def generate_deep_dive(
+        self,
+        agent_name: str,
+        process_context: dict,
+        case_data: Dict[str, Any] | None = None,
+        exception_records: List[Dict[str, Any]] | None = None,
+    ) -> dict:
+        case_data = case_data or {}
+        exception_records = exception_records or []
+        matching_case_exceptions = [
+            e for e in exception_records
+            if str(e.get("case_id")) == str(case_data.get("case_id"))
+        ]
+        safe_context = {
+            "activity_durations": process_context.get("activity_durations", {}),
+            "avg_end_to_end_days": process_context.get("avg_end_to_end_days", 0),
+            "bottleneck": process_context.get("bottleneck", {}),
+            "exception_patterns": process_context.get("exception_patterns", []),
+            "decision_rules": process_context.get("decision_rules", []),
+            "conformance_violations": process_context.get("conformance_violations", []),
+            "role_mappings": process_context.get("role_mappings", []),
+            "variants": process_context.get("variants", []),
+            "total_cases": process_context.get("total_cases", 0),
+            "total_events": process_context.get("total_events", 0),
+            "exception_rate": process_context.get("exception_rate", 0),
+        }
+        try:
+            user_prompt = f"""
 Generate comprehensive prompts for: {agent_name}
 Data source: Celonis Process Mining
 
@@ -116,53 +142,59 @@ Activity Trace: {case_data.get("activity_trace_text", "")}
 Actual Duration: {case_data.get("actual_dpo", 0.0)}
 
 Exceptions for this case:
-{json.dumps(
-    [e for e in exception_records if str(e.get("case_id")) == str(case_data.get("case_id"))],
-    indent=2
-)}
+{json.dumps(matching_case_exceptions, indent=2)}
 
 === END CASE CONTEXT ===
 
 === CELONIS PROCESS MINING CONTEXT ===
 
 TURNAROUND TIMES (from Celonis Process Explorer):
-{json.dumps(process_context["activity_durations"], indent=2)}
+{json.dumps(safe_context["activity_durations"], indent=2)}
 
-Avg End-to-End: {process_context["avg_end_to_end_days"]} days
-Bottleneck: {json.dumps(process_context["bottleneck"])}
+Avg End-to-End: {safe_context["avg_end_to_end_days"]} days
+Bottleneck: {json.dumps(safe_context["bottleneck"])}
 
 EXCEPTION PATTERNS (mined from Celonis variants):
-{json.dumps(process_context["exception_patterns"], indent=2)}
+{json.dumps(safe_context["exception_patterns"], indent=2)}
 
 DECISION RULES (mined from Celonis event logs):
-{json.dumps(process_context["decision_rules"], indent=2)}
+{json.dumps(safe_context["decision_rules"], indent=2)}
 
 CONFORMANCE VIOLATIONS (from Celonis conformance checking):
-{json.dumps(process_context["conformance_violations"], indent=2)}
+{json.dumps(safe_context["conformance_violations"], indent=2)}
 
 ROLE-ACTIVITY MAPPINGS (from Celonis resource analysis):
-{json.dumps(process_context["role_mappings"], indent=2)}
+{json.dumps(safe_context["role_mappings"], indent=2)}
 
 VARIANT FREQUENCIES (from Celonis variant analysis):
-{json.dumps(process_context["variants"][:10], indent=2)}
+{json.dumps(safe_context["variants"][:10], indent=2)}
 
 PROCESS STATS:
-Cases: {process_context["total_cases"]}
-Events: {process_context["total_events"]}
-Exception Rate: {process_context["exception_rate"]}%
+Cases: {safe_context["total_cases"]}
+Events: {safe_context["total_events"]}
+Exception Rate: {safe_context["exception_rate"]}%
 
 === END CELONIS DATA ===
 
 Generate workflow prompts, decision logic, and guardrails.
 EVERY element must reference Celonis as the data source with specific metrics.
 """
-        try:
             result = self.llm.chat_json(DEEP_DIVE_SYSTEM, user_prompt)
             return self._normalize_deep_dive(result, agent_name, process_context)
         except Exception as e:
             return self._fallback_deep_dive(agent_name, process_context, str(e))
 
     def generate_comparison(self, agent_name: str, process_context: dict) -> dict:
+        safe_context = {
+            "activity_durations": process_context.get("activity_durations", {}),
+            "bottleneck": process_context.get("bottleneck", {}),
+            "exception_patterns": process_context.get("exception_patterns", []),
+            "conformance_violations": process_context.get("conformance_violations", []),
+            "role_mappings": process_context.get("role_mappings", []),
+            "variants": process_context.get("variants", []),
+            "avg_end_to_end_days": process_context.get("avg_end_to_end_days", 0),
+            "exception_rate": process_context.get("exception_rate", 0),
+        }
         user_prompt = f"""
 For the agent "{agent_name}", generate a side-by-side comparison:
 
@@ -171,14 +203,14 @@ For the agent "{agent_name}", generate a side-by-side comparison:
 
 Use this REAL Celonis data to populate the "with process mining" section:
 
-Turnaround Times: {json.dumps(process_context["activity_durations"])}
-Bottleneck: {json.dumps(process_context["bottleneck"])}
-Exception Patterns: {json.dumps(process_context["exception_patterns"])}
-Conformance Violations: {json.dumps(process_context["conformance_violations"])}
-Role Mappings: {json.dumps(process_context["role_mappings"])}
-Variants: {json.dumps(process_context["variants"][:5])}
-Avg E2E: {process_context["avg_end_to_end_days"]} days
-Exception Rate: {process_context["exception_rate"]}%
+Turnaround Times: {json.dumps(safe_context["activity_durations"])}
+Bottleneck: {json.dumps(safe_context["bottleneck"])}
+Exception Patterns: {json.dumps(safe_context["exception_patterns"])}
+Conformance Violations: {json.dumps(safe_context["conformance_violations"])}
+Role Mappings: {json.dumps(safe_context["role_mappings"])}
+Variants: {json.dumps(safe_context["variants"][:5])}
+Avg E2E: {safe_context["avg_end_to_end_days"]} days
+Exception Rate: {safe_context["exception_rate"]}%
 """
         try:
             result = self.llm.chat_json(COMPARISON_SYSTEM, user_prompt)

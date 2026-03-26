@@ -18,7 +18,14 @@ def get_agent_deep_dive(
         prompt_service = PromptGenerationService(llm)
 
         context = cache.get_process_context()
-        result = prompt_service.generate_deep_dive(agent_name, context)
+        case_data = cache.get_representative_exception_case()
+        exception_records = cache.get_all_exception_records()
+        result = prompt_service.generate_deep_dive(
+            agent_name,
+            context,
+            case_data=case_data,
+            exception_records=exception_records,
+        )
         return {"success": True, "data": result}
     except CelonisConnectionError as e:
         raise HTTPException(status_code=503, detail=str(e))

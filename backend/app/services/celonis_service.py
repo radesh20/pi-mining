@@ -1586,8 +1586,7 @@ class CelonisService:
                     df["vendor_id"].astype(str).str.strip() == alias_lifnr
                 ].copy()
             if vendor_df.empty:
-                # Fallback to global variants so UI still has a path baseline for this alias.
-                vendor_df = df.copy()
+                return {"vendor_id": vendor_id, "happy_paths": [], "exception_paths": []}
 
             vendor_df = vendor_df.sort_values(["case_id", "timestamp"]).reset_index(drop=True)
             variant_by_case = (
@@ -1655,13 +1654,6 @@ class CelonisService:
                     exception_paths.append(record)
                 else:
                     happy_paths.append(record)
-
-            # Ensure UI always has a visible happy path baseline.
-            if not happy_paths and exception_paths:
-                top = exception_paths[0].copy()
-                top["derived_from"] = "most_frequent_variant_fallback"
-                top["note"] = "No clean happy path found for this vendor; using highest-frequency observed variant."
-                happy_paths.append(top)
 
             return {
                 "vendor_id": vendor_id,

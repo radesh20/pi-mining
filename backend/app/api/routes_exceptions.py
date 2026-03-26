@@ -44,7 +44,7 @@ def get_exception_records(
 ):
     try:
         cache = get_data_cache_service()
-        data = cache.get_exception_records(type)
+        data = cache.get_all_exception_records() if str(type).strip() == "*" else cache.get_exception_records(type)
         return {"success": True, "data": data}
     except CelonisConnectionError as e:
         raise HTTPException(status_code=503, detail=str(e))

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import Alert from "@mui/material/Alert";
 import Typography from "@mui/material/Typography";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
@@ -13,17 +14,22 @@ export default function CelonisSetup() {
   const [pools, setPools] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [poolError, setPoolError] = useState(null);
 
   useEffect(() => {
     const load = async () => {
       try {
         const connRes = await checkConnection();
         setConnection(connRes.data);
+      } catch (err) {
+        setError(err.response?.data?.detail || err.message);
+      }
 
+      try {
         const poolRes = await fetchPools();
         setPools(poolRes.data || []);
       } catch (err) {
-        setError(err.response?.data?.detail || err.message);
+        setPoolError(err.response?.data?.detail || err.message);
       } finally {
         setLoading(false);
       }
@@ -105,6 +111,12 @@ export default function CelonisSetup() {
             </Typography>
           </CardContent>
         </Card>
+      )}
+
+      {poolError && connection && (
+        <Alert severity="warning" sx={{ mb: 3 }}>
+          Pool/model discovery is unavailable right now: {poolError}
+        </Alert>
       )}
 
       {pools.length > 0 && (

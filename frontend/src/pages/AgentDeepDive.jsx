@@ -1,11 +1,10 @@
-import React, { useEffect, useState } from "react";
-import { Alert, Box, Card, CardContent, Grid, Stack, Typography } from "@mui/material";
+import React, { useEffect, useMemo, useState } from "react";
+import { Alert, Box, Card, CardContent, Chip, Grid, Stack, Typography } from "@mui/material";
 import LoadingSpinner from "../components/LoadingSpinner";
-import { fetchAgentDeepDive } from "../api/client";
+import { fetchAgentDeepDive, fetchProcessAgents, fetchPromptComparison, waitForCacheReady } from "../api/client";
 
 const S = "'Instrument Serif', Georgia, serif";
 const G = "'Geist', system-ui, sans-serif";
-const AGENT_NAME = "Invoice Exception Agent";
 const asList = (v, fb = []) => Array.isArray(v) ? v : v ? [v] : fb;
 
 const COLUMN_STYLES = [
@@ -44,13 +43,55 @@ export default function AgentDeepDive() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [promptData, setPromptData] = useState(null);
+  const [comparison, setComparison] = useState(null);
+  const [agentOptions, setAgentOptions] = useState([]);
+  const [selectedAgent, setSelectedAgent] = useState("Invoice Exception Agent");
 
   useEffect(() => {
-    fetchAgentDeepDive(AGENT_NAME)
-      .then((res) => setPromptData(res.data || res))
-      .catch((e) => setError(e.response?.data?.detail || e.message))
-      .finally(() => setLoading(false));
+    let active = true;
+    const loadAgents = async (retryIfCacheCold = true) => {
+      try {
+        const res = await fetchProcessAgents();
+        const payload = res.data || {};
+        const processContext = res.process_context || {};
+        const recommendedAgents = payload.recommended_agents || [];
+        if (retryIfCacheCold && recommendedAgents.length === 0 && Number(processContext.total_cases || 0) === 0) {
+          await waitForCacheReady();
+          return await loadAgents(false);
+        }
+        if (!active) return;
+        setAgentOptions(recommendedAgents);
+        const preferred = recommendedAgents.find((agent) => agent.agent_name === "Invoice Exception Agent") || recommendedAgents[0];
+        if (preferred?.agent_name) setSelectedAgent(preferred.agent_name);
+      } catch (e) {
+        if (!active) return;
+        setError(e.response?.data?.detail || e.message);
+      }
+    };
+    loadAgents().finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    if (!selectedAgent) return;
+    let active = true;
+    setLoading(true);
+    setError("");
+    Promise.all([fetchAgentDeepDive(selectedAgent), fetchPromptComparison(selectedAgent)])
+      .then(([deepDiveRes, comparisonRes]) => {
+        if (!active) return;
+        setPromptData(deepDiveRes.data || deepDiveRes);
+        setComparison(comparisonRes.data || comparisonRes);
+      })
+      .catch((e) => {
+        if (!active) return;
+        setError(e.response?.data?.detail || e.message);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => { active = false; };
+  }, [selectedAgent]);
 
   if (loading) return <LoadingSpinner message="Loading deep dive prompts..." />;
 
@@ -58,6 +99,10 @@ export default function AgentDeepDive() {
   const decision = asList(promptData?.decision_logic || []);
   const guardrails = asList(promptData?.guardrails || []);
   const cs = promptData?.critical_scenario;
+  const selectedAgentCard = useMemo(
+    () => agentOptions.find((agent) => agent.agent_name === selectedAgent) || null,
+    [agentOptions, selectedAgent],
+  );
 
   return (
     <div className="page-container">
@@ -66,11 +111,42 @@ export default function AgentDeepDive() {
           Agent Deep Dive
         </Typography>
         <Typography sx={{ fontSize: "0.875rem", color: "#9C9690", fontFamily: G }}>
-          {AGENT_NAME} — prompt design for core exception handling workflows.
+          Select one Celonis-derived agent and inspect how its workflow prompts, decision logic, and guardrails outperform BI-only prompting.
         </Typography>
       </Box>
 
       {error && <Alert severity="warning" sx={{ mb: 2 }}>{error}</Alert>}
+
+      {agentOptions.length > 0 && (
+        <Card sx={{ mb: 2.5 }}>
+          <CardContent>
+            <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#9C9690", fontFamily: G, mb: 1 }}>Agent Selector</Typography>
+            <Stack direction="row" spacing={1} flexWrap="wrap" gap={0.8}>
+              {agentOptions.map((agent) => {
+                const active = agent.agent_name === selectedAgent;
+                return (
+                  <Chip
+                    key={agent.agent_name}
+                    label={agent.agent_name}
+                    clickable
+                    onClick={() => setSelectedAgent(agent.agent_name)}
+                    sx={active
+                      ? { background: "#F5ECD9", color: "#B5742A", border: "1px solid #DEC48A", fontWeight: 600 }
+                      : { background: "#F0EDE6", color: "#5C5650", border: "1px solid #E8E3DA" }}
+                  />
+                );
+              })}
+            </Stack>
+            {selectedAgentCard && (
+              <Box sx={{ mt: 1.5 }}>
+                <Typography sx={{ fontSize: "0.82rem", color: "#17140F", fontFamily: G, mb: 0.3 }}>{selectedAgentCard.purpose}</Typography>
+                <Typography sx={{ fontSize: "0.76rem", color: "#1A6B5E", fontFamily: G, mb: 0.3 }}>{selectedAgentCard.pi_evidence || selectedAgentCard.process_mining_evidence}</Typography>
+                <Typography sx={{ fontSize: "0.76rem", color: "#1E4E8C", fontFamily: G }}>{selectedAgentCard.timing_decision}</Typography>
+              </Box>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {promptData?.pi_superiority_summary && (
         <Card sx={{ mb: 2.5, borderLeft: "3px solid #1A6B5E !important", background: "#F7FBF9 !important" }}>
@@ -123,6 +199,34 @@ export default function AgentDeepDive() {
           );
         })}
       </Grid>
+
+      {comparison && (
+        <Card sx={{ mt: 2.5 }}>
+          <CardContent>
+            <Typography sx={{ fontFamily: S, fontSize: "1.1rem", color: "#17140F", mb: 1.2 }}>Prompt Comparison</Typography>
+            <Grid container spacing={2}>
+              <Grid item xs={12} md={6}>
+                <Box sx={{ p: 1.5, background: "#FAEAEA", border: "1px solid #E0A0A0", borderRadius: "10px", height: "100%" }}>
+                  <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#B03030", fontFamily: G, mb: 0.8 }}>Without Process Mining</Typography>
+                  <Typography sx={{ fontSize: "0.82rem", color: "#5C5650", fontFamily: G, mb: 0.8 }}>{comparison.without_process_mining?.prompt || "N/A"}</Typography>
+                  {asList(comparison.without_process_mining?.limitations).map((item, idx) => (
+                    <Typography key={idx} sx={{ fontSize: "0.74rem", color: "#7A3D3D", fontFamily: G, mb: 0.3 }}>{item}</Typography>
+                  ))}
+                </Box>
+              </Grid>
+              <Grid item xs={12} md={6}>
+                <Box sx={{ p: 1.5, background: "#F7FBF9", border: "1px solid #CFE5DA", borderRadius: "10px", height: "100%" }}>
+                  <Typography sx={{ fontSize: "0.69rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", color: "#1A6B5E", fontFamily: G, mb: 0.8 }}>With Celonis Process Mining</Typography>
+                  <Typography sx={{ fontSize: "0.82rem", color: "#5C5650", fontFamily: G, mb: 0.8 }}>{comparison.with_process_mining?.prompt || "N/A"}</Typography>
+                  {asList(comparison.with_process_mining?.advantages).map((item, idx) => (
+                    <Typography key={idx} sx={{ fontSize: "0.74rem", color: "#1A6B5E", fontFamily: G, mb: 0.3 }}>{item}</Typography>
+                  ))}
+                </Box>
+              </Grid>
+            </Grid>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
