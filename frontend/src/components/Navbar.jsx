@@ -4,8 +4,8 @@ import { Link, useLocation } from "react-router-dom";
 const NAV_ITEMS = [
   { label: "Dashboard", path: "/" },
   { label: "Celonis Setup", path: "/setup" },
-  { label: "Exceptions Workbench", path: "/exceptions-workbench" },
-  { label: "Exception Intelligence", path: "/exception-intelligence" },
+  { label: "Exception Triage", path: "/exceptions-workbench" },
+  { label: "Case Resolution", path: "/exception-intelligence" },
   { label: "Vendor Analysis", path: "/vendor-analysis" },
   { label: "Cross-Agent Flow", path: "/interaction" },
 ];

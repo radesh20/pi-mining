@@ -326,7 +326,7 @@ F) Open Invoices at Risk:
             process_context=process_context,
         )
 
-        if bool(analysis.get("send_to_human_review", False)):
+        if bool(analysis.get("send_to_human_review", True)):
             teams_result = self._maybe_notify_teams(analysis)
             if teams_result is not None:
                 analysis["teams_notification"] = teams_result

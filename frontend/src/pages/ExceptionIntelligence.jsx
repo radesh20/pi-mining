@@ -1,75 +1,93 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Box, Card, CardContent, Chip, CircularProgress, Divider, Grid, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography } from "@mui/material";
+import { useNavigate, useSearchParams, Link } from "react-router-dom";
+import {
+  Alert, Box, Button, Card, CardContent, Chip, CircularProgress,
+  Collapse, Grid, Stack, Table, TableBody, TableCell,
+  TableContainer, TableHead, TableRow, Typography,
+  FormControl, InputLabel, Select, MenuItem, Snackbar,
+} from "@mui/material";
 import LoadingSpinner from "../components/LoadingSpinner";
-import { analyzeExceptionRecord, fetchExceptionCategories, fetchExceptionRecords, waitForCacheReady } from "../api/client";
+import {
+  analyzeExceptionRecord, fetchExceptionCategories,
+  fetchExceptionRecords, sendExceptionToTeams, waitForCacheReady,
+} from "../api/client";
 
 const S = "'Instrument Serif', Georgia, serif";
 const G = "'Geist', system-ui, sans-serif";
 
-const pickData = (r) => {
-  if (!r) return null;
-  if (r.data !== undefined) return r.data;
-  return r;
-};
-
+const pickData = (r) => { if (!r) return null; if (r.data !== undefined) return r.data; return r; };
 const money = (v) => {
   const n = Number(v || 0);
+  if (!n) return "N/A";
   if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M $`;
   if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K $`;
   return `${n.toFixed(0)} $`;
 };
-
 const pct = (v) => `${Number(v || 0).toFixed(1)}%`;
+const vendorDisplay = (rec) => rec?.vendor_name || rec?.vendor_id || rec?.recurring_vendor_hint || "—";
 
-const riskTone = (risk) => {
-  const value = String(risk || "").toUpperCase();
-  if (value === "CRITICAL") return { bg: "#FAEAEA", border: "#E0A0A0", color: "#B03030" };
-  if (value === "HIGH") return { bg: "#FEF3DC", border: "#F0C870", color: "#A05A10" };
-  if (value === "MEDIUM") return { bg: "#EBF2FC", border: "#90B8E8", color: "#1E4E8C" };
-  return { bg: "#E0F0E8", border: "#80C0A0", color: "#1D5C3A" };
+const RISK_STYLES = {
+  CRITICAL: { bg: "#FAEAEA", border: "#E0A0A0", color: "#B03030", dot: "#C94040" },
+  HIGH:     { bg: "#FEF3DC", border: "#F0C870", color: "#A05A10", dot: "#C47020" },
+  MEDIUM:   { bg: "#EBF2FC", border: "#90B8E8", color: "#1E4E8C", dot: "#2E6EBC" },
+  LOW:      { bg: "#E0F0E8", border: "#80C0A0", color: "#1D5C3A", dot: "#2A7A50" },
 };
 
-function MetricCard({ label, value, note, color = "#1E4E8C" }) {
+function RiskBadge({ risk }) {
+  const key = String(risk || "").toUpperCase();
+  const s = RISK_STYLES[key] || RISK_STYLES.LOW;
   return (
-    <Card sx={{ height: "100%" }}>
-      <CardContent>
-        <Typography sx={{ fontSize: "0.72rem", textTransform: "uppercase", letterSpacing: "0.07em", color: "#9C9690", fontFamily: G, mb: 1 }}>{label}</Typography>
-        <Typography sx={{ fontFamily: S, fontSize: "2rem", color, lineHeight: 1.1, mb: 0.5 }}>{value}</Typography>
-        <Typography sx={{ fontSize: "0.78rem", color: "#9C9690", fontFamily: G }}>{note}</Typography>
-      </CardContent>
-    </Card>
+    <Box sx={{ display: "inline-flex", alignItems: "center", gap: 0.5, background: s.bg, color: s.color, border: `1px solid ${s.border}`, px: 1, py: 0.25, borderRadius: "99px" }}>
+      <Box sx={{ width: 5, height: 5, borderRadius: "50%", background: s.dot, flexShrink: 0 }} />
+      <Typography sx={{ fontSize: "0.65rem", fontWeight: 700, fontFamily: G, letterSpacing: "0.05em" }}>{key}</Typography>
+    </Box>
   );
 }
 
-function AnalysisCard({ title, color, bg, border, children }) {
+function SectionLabel({ children, sx = {} }) {
   return (
-    <Card sx={{ height: "100%", background: `${bg} !important`, border: `1px solid ${border} !important`, borderLeft: `3px solid ${color} !important` }}>
-      <CardContent>
-        <Typography sx={{ fontFamily: S, fontSize: "1.05rem", color, mb: 1.2 }}>{title}</Typography>
+    <Typography sx={{ fontSize: "0.63rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#A09890", fontFamily: G, mb: 0.8, ...sx }}>
+      {children}
+    </Typography>
+  );
+}
+
+function LabelValue({ label, value }) {
+  return (
+    <Box sx={{ py: 0.65, borderBottom: "1px solid #F0EDE6" }}>
+      <Typography sx={{ fontSize: "0.65rem", textTransform: "uppercase", letterSpacing: "0.07em", color: "#A09890", fontFamily: G, mb: 0.3 }}>{label}</Typography>
+      <Typography sx={{ fontSize: "0.78rem", color: "#4C4840", fontFamily: G, lineHeight: 1.55 }}>{value || "N/A"}</Typography>
+    </Box>
+  );
+}
+
+function PanelCard({ title, accentColor, bg, border, children }) {
+  return (
+    <Card sx={{ height: "100%", background: `${bg} !important`, border: `1px solid ${border} !important`, borderTop: `2px solid ${accentColor} !important` }}>
+      <CardContent sx={{ pb: "16px !important" }}>
+        <Typography sx={{ fontFamily: S, fontSize: "1.05rem", color: accentColor, mb: 1.2 }}>{title}</Typography>
         {children}
       </CardContent>
     </Card>
   );
 }
 
-function LabelValue({ label, value }) {
-  return (
-    <Box sx={{ py: 0.7, borderBottom: "1px solid #E8E3DA" }}>
-      <Typography sx={{ fontSize: "0.68rem", textTransform: "uppercase", letterSpacing: "0.07em", color: "#9C9690", fontFamily: G, mb: 0.35 }}>{label}</Typography>
-      <Typography sx={{ fontSize: "0.8rem", color: "#5C5650", fontFamily: G, lineHeight: 1.55 }}>{value || "N/A"}</Typography>
-    </Box>
-  );
-}
-
 export default function ExceptionIntelligence() {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+
   const [loading, setLoading] = useState(true);
   const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [loadingTeams, setLoadingTeams] = useState(false);
   const [error, setError] = useState("");
   const [records, setRecords] = useState([]);
   const [selectedRecordId, setSelectedRecordId] = useState("");
   const [analysis, setAnalysis] = useState(null);
+  const [agentContextOpen, setAgentContextOpen] = useState(false);
+  const [toast, setToast] = useState({ open: false, message: "", severity: "success" });
   const analysisRequestRef = useRef(0);
 
+  // ── Load all records across all categories (flat) ──
   useEffect(() => {
     let active = true;
     (async () => {
@@ -87,32 +105,28 @@ export default function ExceptionIntelligence() {
             .filter((row) => Number(row.case_count || 0) > 0)
             .sort((a, b) => Number(b.case_count || 0) - Number(a.case_count || 0));
         }
-
         const recordGroups = await Promise.all(
           categories.map(async (category) => {
             const res = await fetchExceptionRecords(category.category_id);
             const rows = Array.isArray(pickData(res)) ? pickData(res) : [];
-            return rows.map((row) => ({
-              ...row,
-              category_id: category.category_id,
-              category_label: category.category_label,
-            }));
-          }),
+            return rows.map((row) => ({ ...row, category_id: category.category_id, category_label: category.category_label }));
+          })
         );
-
         const flattened = recordGroups
           .flat()
           .sort((a, b) => Number(b.invoice_amount || b.value_at_risk || 0) - Number(a.invoice_amount || a.value_at_risk || 0));
-
         if (!active) return;
         setRecords(flattened);
-        const first = flattened[0];
-        if (first) {
-          setSelectedRecordId(first.exception_id);
-        }
+
+        // Pre-select from URL param if present, else first record
+        const paramId = searchParams.get("exception_id");
+        const preselect = paramId
+          ? (flattened.find((r) => r.exception_id === paramId) || flattened[0])
+          : flattened[0];
+        if (preselect) setSelectedRecordId(preselect.exception_id);
       } catch (e) {
         if (!active) return;
-        setError(e?.response?.data?.detail || e.message || "Failed to load exception intelligence.");
+        setError(e?.response?.data?.detail || e.message || "Failed to load exceptions.");
       } finally {
         if (active) setLoading(false);
       }
@@ -121,34 +135,42 @@ export default function ExceptionIntelligence() {
   }, []);
 
   const selectedRecord = useMemo(
-    () => records.find((row) => row.exception_id === selectedRecordId) || null,
-    [records, selectedRecordId],
+    () => records.find((r) => r.exception_id === selectedRecordId) || null,
+    [records, selectedRecordId]
   );
 
+  const selectedIndex = useMemo(
+    () => records.findIndex((r) => r.exception_id === selectedRecordId),
+    [records, selectedRecordId]
+  );
+
+  // ── Run analysis whenever selected record changes ──
   useEffect(() => {
     if (!selectedRecord) return;
     let active = true;
     (async () => {
       const requestId = ++analysisRequestRef.current;
       setAnalysisLoading(true);
+      setAnalysis(null);
+      setAgentContextOpen(false);
       try {
         const payload = {
           exception_type: selectedRecord.category_label || selectedRecord.exception_type,
           exception_id: selectedRecord.exception_id,
           invoice_id: selectedRecord.invoice_id || selectedRecord.document_number || selectedRecord.case_id || "",
           vendor_id: selectedRecord.vendor_id || "",
-          vendor_name: selectedRecord.vendor_name || "",
+          vendor_name: vendorDisplay(selectedRecord),
           invoice_amount: selectedRecord.invoice_amount || selectedRecord.value_at_risk || 0,
           currency: selectedRecord.currency || "USD",
           days_until_due: selectedRecord.days_until_due || 0,
           extra_context: selectedRecord,
         };
-        const analysisData = pickData(await analyzeExceptionRecord(payload));
+        const data = pickData(await analyzeExceptionRecord(payload));
         if (!active || analysisRequestRef.current !== requestId) return;
-        setAnalysis(analysisData);
+        setAnalysis(data);
       } catch (e) {
         if (!active || analysisRequestRef.current !== requestId) return;
-        setError(e?.response?.data?.detail || e.message || "Failed to analyze selected exception.");
+        setError(e?.response?.data?.detail || e.message || "Failed to analyze exception.");
       } finally {
         if (active && analysisRequestRef.current === requestId) setAnalysisLoading(false);
       }
@@ -156,194 +178,410 @@ export default function ExceptionIntelligence() {
     return () => { active = false; };
   }, [selectedRecord]);
 
-  const totals = useMemo(() => {
-    const totalValue = records.reduce((sum, row) => sum + Number(row.invoice_amount || row.value_at_risk || 0), 0);
-    const categoryCount = new Set(records.map((row) => row.category_id)).size;
-    const autoCandidates = records.filter((row) => String(row.risk_level || "").toUpperCase() !== "CRITICAL").length;
-    return { totalValue, categoryCount, autoCandidates };
-  }, [records]);
+  const sendToTeams = async () => {
+    if (!analysis) return;
+    setLoadingTeams(true);
+    try {
+      const d = pickData(await sendExceptionToTeams(analysis));
+      setToast({ open: true, message: d?.success ? "Sent to Microsoft Teams." : "Failed to send to Teams.", severity: d?.success ? "success" : "error" });
+    } catch (e) {
+      setToast({ open: true, message: e?.response?.data?.detail || e.message || "Failed.", severity: "error" });
+    } finally {
+      setLoadingTeams(false);
+    }
+  };
 
   if (loading) return <LoadingSpinner message="Building exception intelligence from Celonis records..." />;
 
   return (
     <div className="page-container">
-      <Box sx={{ pt: 4, pb: 3, borderBottom: "1px solid #E8E3DA", mb: 3 }}>
-        <Typography sx={{ fontFamily: S, fontSize: "2.2rem", fontWeight: 400, color: "#17140F", letterSpacing: "-0.025em", mb: 0.5 }}>
-          Exception Intelligence
-        </Typography>
-        <Typography sx={{ fontSize: "0.875rem", color: "#9C9690", fontFamily: G }}>
-          Review each exception with AI-generated happy path, exception path, next best action, and classifier verdict.
-        </Typography>
+      {/* ── Page Header ── */}
+      <Box sx={{ pt: 4, pb: 2, borderBottom: "1px solid #ECEAE4", mb: 2.5 }}>
+        {/* Breadcrumb */}
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.8, mb: 1 }}>
+          <Box
+            onClick={() => navigate("/exceptions-workbench")}
+            sx={{ display: "inline-flex", alignItems: "center", gap: 0.4, cursor: "pointer", color: "#9C9690", fontSize: "0.78rem", fontFamily: G, "&:hover": { color: "#B5742A" }, transition: "color 0.15s" }}
+          >
+            ← Exception Triage
+          </Box>
+          <Typography sx={{ color: "#C8C0B4", fontSize: "0.78rem", fontFamily: G }}>/</Typography>
+          <Typography sx={{ fontSize: "0.78rem", color: "#5C5650", fontFamily: G }}>Case Resolution</Typography>
+        </Box>
+
+        <Box sx={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 2 }}>
+          <Box>
+            <Typography sx={{ fontFamily: S, fontSize: "2.1rem", fontWeight: 400, color: "#17140F", letterSpacing: "-0.025em", mb: 0.3 }}>
+              Case Resolution
+            </Typography>
+            <Typography sx={{ fontSize: "0.85rem", color: "#9C9690", fontFamily: G }}>
+              Deep analysis per exception — process path, root cause, and action decisions.
+            </Typography>
+          </Box>
+
+          {/* Case Jump / Switch */}
+          {records.length > 0 && (
+            <FormControl size="small" sx={{ minWidth: 240 }}>
+              <InputLabel sx={{ fontFamily: G, fontSize: "0.8rem" }}>Switch Case</InputLabel>
+              <Select
+                value={selectedRecordId}
+                label="Switch Case"
+                onChange={(e) => setSelectedRecordId(e.target.value)}
+                sx={{ fontFamily: G, fontSize: "0.82rem" }}
+              >
+                {records.map((rec) => (
+                  <MenuItem key={rec.exception_id} value={rec.exception_id} sx={{ fontFamily: G, fontSize: "0.82rem" }}>
+                    {rec.invoice_id || rec.exception_id} — {vendorDisplay(rec)}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          )}
+        </Box>
       </Box>
 
-      {error && <Alert severity="warning" sx={{ mb: 2 }}>{error}</Alert>}
+      {error && <Alert severity="warning" sx={{ mb: 2, fontFamily: G }}>{error}</Alert>}
 
-      <Grid container spacing={2} sx={{ mb: 2.5 }}>
-        <Grid item xs={12} md={3}>
-          <MetricCard label="Exceptions" value={records.length} note="Actionable exception records loaded" />
-        </Grid>
-        <Grid item xs={12} md={3}>
-          <MetricCard label="Categories" value={totals.categoryCount} note="Distinct mined exception buckets" color="#A05A10" />
-        </Grid>
-        <Grid item xs={12} md={3}>
-          <MetricCard label="Value at Risk" value={money(totals.totalValue)} note="Invoice exposure represented here" color="#B03030" />
-        </Grid>
-        <Grid item xs={12} md={3}>
-          <MetricCard label="Auto Candidates" value={totals.autoCandidates} note="Non-critical cases likely fit for automation" color="#1A6B5E" />
-        </Grid>
-      </Grid>
-
-      <Grid container spacing={2.5}>
-        <Grid item xs={12} md={5}>
-          <Card sx={{ height: "100%" }}>
-            <CardContent>
-              <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 1.5, gap: 1 }}>
-                <Typography sx={{ fontFamily: S, fontSize: "1.1rem", color: "#17140F" }}>Exception Queue</Typography>
-                <Chip size="small" label={`${records.length} records`} sx={{ background: "#F0EDE6", color: "#5C5650", border: "1px solid #E8E3DA" }} />
+      {/* ── Sticky Case Header Bar ── */}
+      {selectedRecord && (
+        <Card sx={{ mb: 2.5, border: "1px solid #ECEAE4 !important", position: "sticky", top: "56px", zIndex: 100, background: "#FFFFFF !important" }}>
+          <CardContent sx={{ pb: "14px !important" }}>
+            <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 1.5 }}>
+              {/* Left: identity */}
+              <Box>
+                <Typography sx={{ fontFamily: S, fontSize: "1.15rem", color: "#17140F", mb: 0.2 }}>
+                  {selectedRecord.category_label || selectedRecord.exception_type || "Exception"}
+                </Typography>
+                <Typography sx={{ fontSize: "0.78rem", color: "#9C9690", fontFamily: G }}>
+                  Invoice <strong style={{ color: "#5C5650" }}>{selectedRecord.invoice_id || selectedRecord.document_number || selectedRecord.case_id || "N/A"}</strong>
+                  {" · "}Vendor <strong style={{ color: "#5C5650" }}>{vendorDisplay(selectedRecord)}</strong>
+                </Typography>
               </Box>
-              <TableContainer sx={{ maxHeight: 780 }}>
-                <Table size="small" stickyHeader>
-                  <TableHead>
-                    <TableRow>
-                      {["Exception", "Invoice", "Vendor", "Risk", "Value"].map((header) => <TableCell key={header}>{header}</TableCell>)}
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {records.map((row) => {
-                      const selected = row.exception_id === selectedRecordId;
-                      const tone = riskTone(row.risk_level);
-                      return (
-                        <TableRow
-                          key={row.exception_id}
-                          hover
-                          onClick={() => setSelectedRecordId(row.exception_id)}
-                          sx={{ cursor: "pointer", background: selected ? "#F5ECD9 !important" : "transparent" }}
-                        >
-                          <TableCell>
-                            <Typography sx={{ fontSize: "0.8rem", color: selected ? "#B5742A" : "#17140F", fontWeight: 600, fontFamily: G }}>{row.category_label || row.exception_type}</Typography>
-                            <Typography sx={{ fontSize: "0.7rem", color: "#9C9690", fontFamily: G }}>{row.exception_id}</Typography>
-                          </TableCell>
-                          <TableCell>{row.invoice_id || row.document_number || row.case_id || "N/A"}</TableCell>
-                          <TableCell>{row.vendor_id || "N/A"}</TableCell>
-                          <TableCell>
-                            <Box sx={{ display: "inline-block", background: tone.bg, color: tone.color, border: `1px solid ${tone.border}`, px: 0.8, py: 0.2, borderRadius: "99px" }}>
-                              <Typography sx={{ fontSize: "0.65rem", fontWeight: 700, fontFamily: G }}>{row.risk_level || "MEDIUM"}</Typography>
-                            </Box>
-                          </TableCell>
-                          <TableCell>{money(row.invoice_amount || row.value_at_risk)}</TableCell>
-                        </TableRow>
-                      );
-                    })}
-                    {records.length === 0 && (
-                      <TableRow>
-                        <TableCell colSpan={5}>
-                          <Typography sx={{ fontSize: "0.82rem", color: "#9C9690", fontFamily: G }}>No exception records are available yet.</Typography>
-                        </TableCell>
-                      </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-            </CardContent>
-          </Card>
-        </Grid>
 
-        <Grid item xs={12} md={7}>
-          {!selectedRecord ? (
-            <Card>
-              <CardContent>
-                <Typography sx={{ fontSize: "0.9rem", color: "#9C9690", fontFamily: G }}>Select an exception to inspect its AI analysis.</Typography>
-              </CardContent>
-            </Card>
-          ) : analysisLoading ? (
-            <LoadingSpinner message="Analyzing selected exception with process context..." />
-          ) : (
-            <Stack spacing={2}>
-              <Card>
-                <CardContent>
-                  <Box sx={{ display: "flex", justifyContent: "space-between", gap: 2, flexWrap: "wrap", mb: 1.5 }}>
-                    <Box>
-                      <Typography sx={{ fontFamily: S, fontSize: "1.25rem", color: "#17140F" }}>{selectedRecord.category_label || selectedRecord.exception_type}</Typography>
-                      <Typography sx={{ fontSize: "0.82rem", color: "#9C9690", fontFamily: G }}>
-                        Invoice {selectedRecord.invoice_id || selectedRecord.document_number || selectedRecord.case_id || "N/A"} · Vendor {selectedRecord.vendor_id || "N/A"}
+              {/* Centre: chips */}
+              <Stack direction="row" spacing={0.8} flexWrap="wrap" alignItems="center">
+                <Chip size="small" label={money(selectedRecord.invoice_amount || selectedRecord.value_at_risk)} sx={{ background: "#FEF3DC", color: "#A05A10", border: "1px solid #F0C870", fontFamily: G, fontSize: "0.7rem", height: 22 }} />
+                <Chip size="small" label={`DPO ${Number(selectedRecord.dpo || selectedRecord.actual_dpo || selectedRecord.avg_resolution_time_days || 0).toFixed(1)}d`} sx={{ background: "#EBF2FC", color: "#1E4E8C", border: "1px solid #90B8E8", fontFamily: G, fontSize: "0.7rem", height: 22 }} />
+                <Chip size="small" label={`Freq ${pct(selectedRecord.frequency_percentage)}`} sx={{ background: "#F0EDE6", color: "#5C5650", border: "1px solid #E4E0D8", fontFamily: G, fontSize: "0.7rem", height: 22 }} />
+                <RiskBadge risk={selectedRecord.risk_level || "MEDIUM"} />
+              </Stack>
+
+              {/* Right: prev / next */}
+              <Stack direction="row" spacing={0.8}>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  disabled={selectedIndex <= 0}
+                  onClick={() => setSelectedRecordId(records[selectedIndex - 1].exception_id)}
+                  sx={{ fontFamily: G, fontSize: "0.75rem", minWidth: 36, px: 1 }}
+                >
+                  ‹ Prev
+                </Button>
+                <Typography sx={{ fontSize: "0.72rem", color: "#9C9690", fontFamily: G, alignSelf: "center" }}>
+                  {selectedIndex + 1} / {records.length}
+                </Typography>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  disabled={selectedIndex >= records.length - 1}
+                  onClick={() => setSelectedRecordId(records[selectedIndex + 1].exception_id)}
+                  sx={{ fontFamily: G, fontSize: "0.75rem", minWidth: 36, px: 1 }}
+                >
+                  Next ›
+                </Button>
+              </Stack>
+            </Box>
+
+            {/* AI summary inline */}
+            {analysis?.summary && (
+              <Typography sx={{ fontSize: "0.8rem", color: "#6C6660", fontFamily: G, lineHeight: 1.65, mt: 1.2, pt: 1.2, borderTop: "1px solid #F0EDE6" }}>
+                {analysis.summary}
+              </Typography>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── Analysis Body ── */}
+      {!selectedRecord ? (
+        <Card sx={{ border: "1px solid #ECEAE4 !important" }}>
+          <CardContent>
+            <Box sx={{ py: 6, textAlign: "center" }}>
+              <Typography sx={{ fontSize: "0.85rem", color: "#B0A898", fontFamily: G }}>
+                Select an exception to inspect its analysis.
+              </Typography>
+            </Box>
+          </CardContent>
+        </Card>
+      ) : analysisLoading ? (
+        <LoadingSpinner message="Analyzing selected exception with process context..." />
+      ) : (
+        <Stack spacing={2}>
+
+          {/* ══ THREE-PANEL ROW ══ */}
+          <Grid container spacing={2}>
+
+            {/* Panel 1 — Process Intelligence (what happened) */}
+            <Grid item xs={12} md={4}>
+              <PanelCard title="Process Intelligence" accentColor="#1A6B5E" bg="#F7FBF9" border="#C0E8DC">
+
+                {/* Happy Path */}
+                <SectionLabel>Happy Path</SectionLabel>
+                <LabelValue label="Path" value={analysis?.happy_path?.path} />
+                <LabelValue label="Avg Duration" value={analysis?.happy_path?.avg_duration_days != null ? `${Number(analysis.happy_path.avg_duration_days).toFixed(1)} days` : null} />
+                {analysis?.happy_path?.why_it_matters && (
+                  <LabelValue label="Why it matters" value={analysis.happy_path.why_it_matters} />
+                )}
+
+                {/* Exception Path */}
+                <Box sx={{ mt: 1.5 }}>
+                  <SectionLabel>Exception Path</SectionLabel>
+                  <LabelValue label="Observed Path" value={analysis?.exception_path?.path || selectedRecord?.summary} />
+                  <LabelValue label="Exception Stage" value={analysis?.exception_path?.exception_stage} />
+                  <LabelValue label="Extra Delay" value={analysis?.exception_path?.extra_days != null ? `${Number(analysis.exception_path.extra_days).toFixed(1)} days` : null} />
+                </Box>
+
+                {/* Consolidated Celonis Signals */}
+                {analysis?.exception_context_from_celonis && (
+                  <Box sx={{ mt: 1.5, pt: 1.2, borderTop: "1px solid #C0E8DC" }}>
+                    <SectionLabel>Celonis Signals</SectionLabel>
+                    {analysis.exception_context_from_celonis.category_summary && (
+                      <Typography sx={{ fontSize: "0.75rem", color: "#2A6050", fontFamily: G, lineHeight: 1.55, mb: 1 }}>
+                        {analysis.exception_context_from_celonis.category_summary}
                       </Typography>
+                    )}
+                    {[
+                      ["Process Steps", (analysis.exception_context_from_celonis.process_step_signals || []).join(" | ")],
+                      ["Variants",      (analysis.exception_context_from_celonis.variant_signals || []).join(" | ")],
+                      ["Cycle Time",    (analysis.exception_context_from_celonis.cycle_time_signals || []).join(" | ")],
+                    ].map(([k, v]) => v ? (
+                      <Box key={k} sx={{ mb: 0.5 }}>
+                        <Typography component="span" sx={{ fontSize: "0.7rem", fontWeight: 700, color: "#1A6B5E", fontFamily: G }}>{k}: </Typography>
+                        <Typography component="span" sx={{ fontSize: "0.7rem", color: "#3A7060", fontFamily: G }}>{v}</Typography>
+                      </Box>
+                    ) : null)}
+                  </Box>
+                )}
+              </PanelCard>
+            </Grid>
+
+            {/* Panel 2 — Why it matters (root cause, breach risk, financial impact) */}
+            <Grid item xs={12} md={4}>
+              <PanelCard title="Risk & Root Cause" accentColor="#B03030" bg="#FDF7F7" border="#F0C8C8">
+
+                {/* Root cause */}
+                <SectionLabel>Root Cause</SectionLabel>
+                <Box sx={{ background: "#FAEAEA", border: "1px solid #E0A0A0", borderLeft: "3px solid #B03030", borderRadius: "0 8px 8px 0", p: 1.2, mb: 1.2 }}>
+                  <Typography sx={{ fontSize: "0.78rem", fontWeight: 600, color: "#4C4840", fontFamily: G, mb: 0.4 }}>
+                    {analysis?.root_cause_analysis?.most_likely_cause || "N/A"}
+                  </Typography>
+                  <Typography sx={{ fontSize: "0.74rem", color: "#7C7670", fontFamily: G, lineHeight: 1.6 }}>
+                    {analysis?.root_cause_analysis?.why || analysis?.root_cause_analysis?.celonis_evidence || ""}
+                  </Typography>
+                </Box>
+
+                {/* Breach probability */}
+                {analysis?.breach_probability != null && (
+                  <Box sx={{ mb: 1.2 }}>
+                    <SectionLabel>Breach Probability</SectionLabel>
+                    <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 0.5 }}>
+                      <Typography sx={{ fontSize: "0.75rem", color: "#9C9690", fontFamily: G }}>SLA breach risk</Typography>
+                      <Box sx={{ background: Number(analysis.breach_probability) >= 70 ? "#FAEAEA" : "#FEF3DC", color: Number(analysis.breach_probability) >= 70 ? "#B03030" : "#A05A10", border: `1px solid ${Number(analysis.breach_probability) >= 70 ? "#E0A0A0" : "#F0C870"}`, px: 1, py: 0.2, borderRadius: "6px" }}>
+                        <Typography sx={{ fontSize: "0.8rem", fontWeight: 700, fontFamily: G }}>{Number(analysis.breach_probability).toFixed(0)}%</Typography>
+                      </Box>
                     </Box>
-                    <Stack direction="row" spacing={1} flexWrap="wrap">
-                      <Chip size="small" label={`Value ${money(selectedRecord.invoice_amount || selectedRecord.value_at_risk)}`} color="warning" />
-                      <Chip size="small" label={`DPO ${Number(selectedRecord.dpo || selectedRecord.actual_dpo || 0).toFixed(1)}d`} sx={{ background: "#EBF2FC", color: "#1E4E8C", border: "1px solid #90B8E8" }} />
-                      <Chip size="small" label={`Frequency ${pct(selectedRecord.frequency_percentage)}`} sx={{ background: "#F0EDE6", color: "#5C5650", border: "1px solid #E8E3DA" }} />
+                    <Box sx={{ height: 4, background: "#F0EDE6", borderRadius: "99px", overflow: "hidden" }}>
+                      <Box sx={{ height: "100%", width: `${Math.min(100, Number(analysis.breach_probability))}%`, background: Number(analysis.breach_probability) >= 70 ? "#C94040" : "#C47020", borderRadius: "99px", transition: "width 0.5s ease" }} />
+                    </Box>
+                  </Box>
+                )}
+
+                {/* Stage timing */}
+                <SectionLabel>Stage Timing</SectionLabel>
+                <LabelValue
+                  label="Current Stage"
+                  value={analysis?.root_cause_analysis?.process_stage || analysis?.exception_context_from_celonis?.category_summary || "—"}
+                />
+                <LabelValue
+                  label="Time in Stage"
+                  value={analysis?.turnaround_risk?.estimated_processing_days != null ? `${Number(analysis.turnaround_risk.estimated_processing_days).toFixed(1)} days` : null}
+                />
+                <LabelValue
+                  label="Historical Avg"
+                  value={analysis?.turnaround_risk?.historical_avg_days != null ? `${Number(analysis.turnaround_risk.historical_avg_days).toFixed(1)} days` : null}
+                />
+                <LabelValue
+                  label="75th Percentile"
+                  value={analysis?.turnaround_risk?.percentile75_days != null ? `${Number(analysis.turnaround_risk.percentile75_days).toFixed(1)} days` : null}
+                />
+                {analysis?.turnaround_risk?.estimated_processing_days != null &&
+                  analysis?.turnaround_risk?.percentile75_days != null &&
+                  analysis.turnaround_risk.estimated_processing_days > analysis.turnaround_risk.percentile75_days && (
+                  <Box sx={{ mt: 0.8, display: "inline-flex", alignItems: "center", gap: 0.5, background: "#FEF3DC", border: "1px solid #F0C870", borderRadius: "99px", px: 1, py: 0.3 }}>
+                    <Box sx={{ width: 5, height: 5, borderRadius: "50%", background: "#C47020" }} />
+                    <Typography sx={{ fontSize: "0.65rem", fontWeight: 700, color: "#A05A10", fontFamily: G }}>Above 75th percentile</Typography>
+                  </Box>
+                )}
+
+                {/* Financial impact */}
+                {analysis?.financial_impact && (
+                  <Box sx={{ mt: 1.2 }}>
+                    <SectionLabel>Financial Impact</SectionLabel>
+                    <LabelValue label="Value at Risk" value={money(analysis.financial_impact.value_at_risk)} />
+                    <LabelValue label="Potential Savings" value={money(analysis.financial_impact.potential_savings)} />
+                  </Box>
+                )}
+              </PanelCard>
+            </Grid>
+
+            {/* Panel 3 — What to do (next best action + classifier) */}
+            <Grid item xs={12} md={4}>
+              <PanelCard title="Recommended Action" accentColor="#A05A10" bg="#FFFDF7" border="#EDD090">
+
+                {/* Next Best Action */}
+                <LabelValue label="Recommended Action" value={analysis?.next_best_action?.action} />
+                <LabelValue label="Why" value={analysis?.next_best_action?.why} />
+                <LabelValue label="Confidence" value={analysis?.next_best_action?.confidence != null ? Number(analysis.next_best_action.confidence).toFixed(2) : null} />
+                <LabelValue label="ETA" value={analysis?.turnaround_risk?.estimated_processing_days != null ? `${analysis.turnaround_risk.estimated_processing_days} days` : null} />
+
+                {/* Process-derived alternatives */}
+                {Array.isArray(analysis?.next_best_actions) && analysis.next_best_actions.length > 0 && (
+                  <Box sx={{ mt: 1.2, pt: 1, borderTop: "1px solid #EDD090" }}>
+                    <SectionLabel>Alternatives</SectionLabel>
+                    <Stack spacing={0.8}>
+                      {analysis.next_best_actions.slice(0, 3).map((item, idx) => (
+                        <Box key={idx} sx={{ display: "flex", gap: 1, alignItems: "flex-start" }}>
+                          <Box sx={{ background: "#F0EDE6", color: "#9C9690", width: 18, height: 18, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "0.6rem", fontWeight: 700, flexShrink: 0, fontFamily: G, mt: 0.1 }}>
+                            {idx + 1}
+                          </Box>
+                          <Typography sx={{ fontSize: "0.75rem", color: "#5C5650", fontFamily: G, lineHeight: 1.55 }}>
+                            {item.action} — {item.why}
+                          </Typography>
+                        </Box>
+                      ))}
                     </Stack>
                   </Box>
-                  <Typography sx={{ fontSize: "0.84rem", color: "#5C5650", fontFamily: G, lineHeight: 1.6 }}>
-                    {analysis?.summary || "AI summary unavailable for this record."}
+                )}
+
+                {/* Classifier */}
+                <Box sx={{ mt: 1.2, pt: 1.2, borderTop: "1px solid #EDD090" }}>
+                  <SectionLabel>Classifier Agent</SectionLabel>
+                  <LabelValue label="Decision" value={analysis?.classifier_agent?.decision || analysis?.automation_decision} />
+                  <LabelValue label="Mode" value={analysis?.classifier_agent?.recommended_mode} />
+                  <LabelValue label="Rationale" value={analysis?.classifier_agent?.rationale} />
+                  <LabelValue label="Owner" value={analysis?.vendor_name || analysis?.vendor_id || vendorDisplay(selectedRecord)} />
+                  <LabelValue label="Confidence" value={analysis?.classifier_agent?.confidence != null ? Number(analysis.classifier_agent.confidence).toFixed(2) : null} />
+                </Box>
+              </PanelCard>
+            </Grid>
+          </Grid>
+
+          {/* ══ Collapsible Agent Routing Context ══ */}
+          {analysis?.prompt_for_next_agents && (
+            <Card sx={{ border: "1px solid #ECEAE4 !important" }}>
+              <CardContent sx={{ pb: "14px !important" }}>
+                <Box
+                  sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}
+                  onClick={() => setAgentContextOpen((o) => !o)}
+                >
+                  <Typography sx={{ fontFamily: S, fontSize: "1rem", color: "#9C9690" }}>
+                    Agent Routing Context
                   </Typography>
-                </CardContent>
-              </Card>
-
-              <Grid container spacing={2}>
-                <Grid item xs={12} md={6}>
-                  <AnalysisCard title="Happy Path" color="#1A6B5E" bg="#F7FBF9" border="#DCF0EB">
-                    <LabelValue label="Path" value={analysis?.happy_path?.path} />
-                    <LabelValue label="Average Duration" value={`${Number(analysis?.happy_path?.avg_duration_days || 0).toFixed(1)} days`} />
-                    <LabelValue label="Why It Matters" value="Use this as the benchmark flow the exception should return to." />
-                  </AnalysisCard>
-                </Grid>
-                <Grid item xs={12} md={6}>
-                  <AnalysisCard title="Exception Path" color="#B03030" bg="#FDF7F7" border="#FAEAEA">
-                    <LabelValue label="Observed Path" value={analysis?.exception_path?.path || selectedRecord.summary} />
-                    <LabelValue label="Exception Stage" value={analysis?.exception_path?.exception_stage} />
-                    <LabelValue label="Extra Delay" value={`${Number(analysis?.exception_path?.extra_days || 0).toFixed(1)} days`} />
-                  </AnalysisCard>
-                </Grid>
-              </Grid>
-
-              <Grid container spacing={2}>
-                <Grid item xs={12} md={7}>
-                  <AnalysisCard title="Next Best Action" color="#A05A10" bg="#FEF3DC" border="#F0C870">
-                    <LabelValue label="Recommended Action" value={analysis?.next_best_action?.action} />
-                    <LabelValue label="Why" value={analysis?.next_best_action?.why} />
-                    <LabelValue label="Confidence" value={Number(analysis?.next_best_action?.confidence || 0).toFixed(2)} />
-                    <Divider sx={{ my: 1.2 }} />
-                    <Typography sx={{ fontSize: "0.68rem", textTransform: "uppercase", letterSpacing: "0.07em", color: "#9C9690", fontFamily: G, mb: 0.8 }}>Root Cause</Typography>
-                    <Typography sx={{ fontSize: "0.82rem", color: "#5C5650", fontFamily: G, mb: 0.5 }}>
-                      <strong>{analysis?.root_cause_analysis?.most_likely_cause || "N/A"}</strong>
-                    </Typography>
-                    <Typography sx={{ fontSize: "0.78rem", color: "#7A746E", fontFamily: G, lineHeight: 1.55 }}>
-                      {analysis?.root_cause_analysis?.why || analysis?.root_cause_analysis?.celonis_evidence || "No rationale returned."}
-                    </Typography>
-                  </AnalysisCard>
-                </Grid>
-                <Grid item xs={12} md={5}>
-                  <AnalysisCard title="Classifier Agent" color="#1E4E8C" bg="#EBF2FC" border="#90B8E8">
-                    <LabelValue label="Decision" value={analysis?.classifier_agent?.decision || analysis?.automation_decision} />
-                    <LabelValue label="Mode" value={analysis?.classifier_agent?.recommended_mode} />
-                    <LabelValue label="Owner" value={analysis?.vendor_name || analysis?.vendor_id || selectedRecord?.vendor_name || selectedRecord?.vendor_id || selectedRecord?.recurring_vendor_hint} />
-                    <LabelValue label="Rationale" value={analysis?.classifier_agent?.rationale} />
-                    <LabelValue label="Confidence" value={Number(analysis?.classifier_agent?.confidence || 0).toFixed(2)} />
-                  </AnalysisCard>
-                </Grid>
-              </Grid>
-
-              <Card>
-                <CardContent>
-                  <Typography sx={{ fontFamily: S, fontSize: "1.05rem", color: "#17140F", mb: 1.2 }}>Celonis Signals</Typography>
-                  <Grid container spacing={2}>
-                    <Grid item xs={12} md={4}>
-                      <LabelValue label="Process Steps" value={(analysis?.exception_context_from_celonis?.process_step_signals || []).join(" | ")} />
+                  <Typography sx={{ fontSize: "0.78rem", color: "#B5742A", fontFamily: G }}>
+                    {agentContextOpen ? "Hide ▲" : "Show ▼"}
+                  </Typography>
+                </Box>
+                <Collapse in={agentContextOpen}>
+                  <Box sx={{ mt: 1.5, pt: 1.5, borderTop: "1px solid #ECEAE4" }}>
+                    <Grid container spacing={1.5}>
+                      {[
+                        ["Target Agents", (analysis.prompt_for_next_agents.target_agents || []).join(", ")],
+                        ["Handoff Intent", analysis.prompt_for_next_agents.handoff_intent],
+                        ["PI Rationale", analysis.prompt_for_next_agents.pi_rationale],
+                      ].map(([k, v]) => (
+                        <Grid item xs={12} md={4} key={k}>
+                          <Box sx={{ p: 1.2, background: "#FEF8EE", border: "1px solid #EDD090", borderRadius: "8px", height: "100%" }}>
+                            <SectionLabel sx={{ mb: 0.4 }}>{k}</SectionLabel>
+                            <Typography sx={{ fontSize: "0.75rem", color: "#7A5010", fontFamily: G, lineHeight: 1.55 }}>{v || "N/A"}</Typography>
+                          </Box>
+                        </Grid>
+                      ))}
                     </Grid>
-                    <Grid item xs={12} md={4}>
-                      <LabelValue label="Variants" value={(analysis?.exception_context_from_celonis?.variant_signals || []).join(" | ")} />
-                    </Grid>
-                    <Grid item xs={12} md={4}>
-                      <LabelValue label="Cycle Time" value={(analysis?.exception_context_from_celonis?.cycle_time_signals || []).join(" | ")} />
-                    </Grid>
-                  </Grid>
-                </CardContent>
-              </Card>
-            </Stack>
+                  </Box>
+                </Collapse>
+              </CardContent>
+            </Card>
           )}
-        </Grid>
-      </Grid>
+
+          {/* ══ Sticky Action Commit Zone ══ */}
+          <Box sx={{
+            position: "sticky", bottom: 0, left: 0, right: 0,
+            background: "rgba(247,245,240,0.95)", backdropFilter: "blur(10px)",
+            borderTop: "1px solid #ECEAE4", py: 1.5, px: 0,
+            mx: -3, zIndex: 200,
+          }}>
+            <Box sx={{ maxWidth: "1380px", mx: "auto", px: 3, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 1.5 }}>
+              <Box>
+                <Typography sx={{ fontSize: "0.75rem", color: "#9C9690", fontFamily: G }}>
+                  Actions for <strong style={{ color: "#5C5650" }}>{selectedRecord?.invoice_id || selectedRecord?.exception_id}</strong>
+                </Typography>
+                {analysis?.classifier_agent?.decision && (
+                  <Typography sx={{ fontSize: "0.72rem", color: "#A09890", fontFamily: G }}>
+                    Classifier: {analysis.classifier_agent.decision}
+                  </Typography>
+                )}
+              </Box>
+              <Stack direction="row" spacing={1} flexWrap="wrap">
+                <Button
+                  variant="outlined"
+                  sx={{ fontFamily: G, fontSize: "0.8rem", borderRadius: "8px", textTransform: "none", px: 2 }}
+                  onClick={() => navigate("/exceptions-workbench")}
+                >
+                  ← Back to Triage
+                </Button>
+                <Button
+                  variant="outlined"
+                  sx={{ fontFamily: G, fontSize: "0.8rem", borderRadius: "8px", textTransform: "none", px: 2 }}
+                  disabled={!analysis}
+                >
+                  Approve Auto-Resolution
+                </Button>
+                <Button
+                  variant="outlined"
+                  sx={{ fontFamily: G, fontSize: "0.8rem", borderRadius: "8px", textTransform: "none", px: 2 }}
+                  disabled={!analysis}
+                >
+                  Escalate to Specialist
+                </Button>
+                <Button
+                  variant="contained"
+                  onClick={sendToTeams}
+                  disabled={loadingTeams || !analysis}
+                  sx={{
+                    background: "#B5742A !important", fontFamily: G, fontSize: "0.8rem",
+                    fontWeight: 600, borderRadius: "8px", textTransform: "none", px: 2.5,
+                    "&:hover": { background: "#9A6020 !important" },
+                  }}
+                >
+                  {loadingTeams ? "Sending…" : "Send to Teams"}
+                </Button>
+              </Stack>
+            </Box>
+          </Box>
+
+        </Stack>
+      )}
+
+      <Snackbar
+        open={toast.open}
+        autoHideDuration={3500}
+        onClose={() => setToast((t) => ({ ...t, open: false }))}
+        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+      >
+        <Alert severity={toast.severity} onClose={() => setToast((t) => ({ ...t, open: false }))} sx={{ fontFamily: G }}>
+          {toast.message}
+        </Alert>
+      </Snackbar>
     </div>
   );
 }
