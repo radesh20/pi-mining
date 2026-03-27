@@ -14,7 +14,7 @@ def _build_context() -> dict:
     return cache.get_process_context()
 
 
-def _build_workbench(auto_notify_human_review: bool = False) -> ExceptionWorkbenchService:
+def _build_workbench(auto_notify_human_review: bool = True) -> ExceptionWorkbenchService:
     llm = AzureOpenAIService()
     teams = TeamsWebhookService()
     return ExceptionWorkbenchService(
@@ -77,7 +77,7 @@ def next_best_action(payload: dict = Body(...)):
         if not isinstance(analysis, dict) or not analysis:
             raise HTTPException(status_code=400, detail="Body must include a non-empty 'analysis' object.")
 
-        svc = _build_workbench(auto_notify_human_review=False)
+        svc = _build_workbench(auto_notify_human_review=True)
         data = svc.next_best_action(analysis, process_context)
         return {"success": True, "data": data}
     except CelonisConnectionError as e:
