@@ -5,6 +5,38 @@ const api = axios.create({
   timeout: 300000,
 });
 
+let cacheStatusInFlight = null;
+let cacheStatusSnapshot = null;
+let cacheStatusSnapshotAt = 0;
+let waitForCacheReadyPromise = null;
+const CACHE_STATUS_TTL_MS = 2000;
+const inFlightRequests = new Map();
+
+const stableStringify = (value) => {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+};
+
+const dedupeRequest = (key, factory) => {
+  if (inFlightRequests.has(key)) {
+    return inFlightRequests.get(key);
+  }
+
+  const request = Promise.resolve()
+    .then(factory)
+    .finally(() => {
+      inFlightRequests.delete(key);
+    });
+
+  inFlightRequests.set(key, request);
+  return request;
+};
+
 export const unwrapApiData = (payload) => {
   if (payload == null) return payload;
   if (payload.data?.data !== undefined) return payload.data.data;
@@ -90,21 +122,50 @@ export const refreshCache = async () => {
   return res.data;
 };
 
-export const fetchCacheStatus = async () => {
-  const res = await api.get("/cache/status");
-  return res.data;
+export const fetchCacheStatus = async ({ force = false } = {}) => {
+  const now = Date.now();
+  if (!force && cacheStatusSnapshot && now - cacheStatusSnapshotAt < CACHE_STATUS_TTL_MS) {
+    return cacheStatusSnapshot;
+  }
+  if (!force && cacheStatusInFlight) {
+    return cacheStatusInFlight;
+  }
+
+  cacheStatusInFlight = api.get("/cache/status")
+    .then((res) => {
+      cacheStatusSnapshot = res.data;
+      cacheStatusSnapshotAt = Date.now();
+      return res.data;
+    })
+    .finally(() => {
+      cacheStatusInFlight = null;
+    });
+
+  return cacheStatusInFlight;
 };
 
 export const waitForCacheReady = async ({ timeoutMs = 120000, pollMs = 2000 } = {}) => {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    const status = unwrapApiData(await fetchCacheStatus()) || {};
-    if (status.is_loaded && !status.refresh_in_progress) {
-      return status;
-    }
-    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  if (waitForCacheReadyPromise) {
+    return waitForCacheReadyPromise;
   }
-  throw new Error("Timed out waiting for analytics cache to finish loading.");
+
+  waitForCacheReadyPromise = (async () => {
+    const startedAt = Date.now();
+    const effectivePollMs = Math.max(Number(pollMs || 0), 4000);
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const status = unwrapApiData(await fetchCacheStatus()) || {};
+      if (status.is_loaded && !status.refresh_in_progress) {
+        return status;
+      }
+      await new Promise((resolve) => setTimeout(resolve, effectivePollMs));
+    }
+    throw new Error("Timed out waiting for analytics cache to finish loading.");
+  })().finally(() => {
+    waitForCacheReadyPromise = null;
+  });
+
+  return waitForCacheReadyPromise;
 };
 
 // -----------------------------
@@ -130,8 +191,13 @@ export const fetchPromptComparison = async (agentName) => {
 // -----------------------------
 
 export const executeInvoiceFlow = async (payload) => {
-  const res = await api.post("/agents/execute-invoice", payload);
-  return res.data;
+  return dedupeRequest(
+    `POST:/agents/execute-invoice:${stableStringify(payload || {})}`,
+    async () => {
+      const res = await api.post("/agents/execute-invoice", payload);
+      return res.data;
+    }
+  );
 };
 
 export const executeException = async (payload) => {
@@ -159,27 +225,38 @@ export const prepareHumanReview = async (payload) => {
 // -----------------------------
 
 export const fetchExceptionCategories = async () => {
-  const res = await api.get("/exceptions/categories");
-  return res.data;
+  return dedupeRequest("GET:/exceptions/categories", async () => {
+    const res = await api.get("/exceptions/categories");
+    return res.data;
+  });
 };
 
 export const fetchExceptionRecords = async (exceptionType) => {
-  const res = await api.get("/exceptions/records", {
-    params: { type: exceptionType },
+  return dedupeRequest(`GET:/exceptions/records:${stableStringify({ type: exceptionType })}`, async () => {
+    const res = await api.get("/exceptions/records", {
+      params: { type: exceptionType },
+    });
+    return res.data;
   });
-  return res.data;
 };
 
 export const fetchAllExceptionRecords = async () => {
-  const res = await api.get("/exceptions/records", {
-    params: { type: "*" },
+  return dedupeRequest(`GET:/exceptions/records:${stableStringify({ type: "*" })}`, async () => {
+    const res = await api.get("/exceptions/records", {
+      params: { type: "*" },
+    });
+    return res.data;
   });
-  return res.data;
 };
 
 export const analyzeExceptionRecord = async (payload) => {
-  const res = await api.post("/exceptions/analyze", payload);
-  return res.data;
+  return dedupeRequest(
+    `POST:/exceptions/analyze:${stableStringify(payload || {})}`,
+    async () => {
+      const res = await api.post("/exceptions/analyze", payload);
+      return res.data;
+    }
+  );
 };
 
 export const fetchNextBestAction = async (analysis) => {

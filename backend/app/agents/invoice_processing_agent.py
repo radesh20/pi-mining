@@ -84,8 +84,15 @@ Celonis process context:
 Known portfolio-level signals to consider:
 {json.dumps(self._known_metrics(), indent=2, default=str)}
 """
-        result = self.llm.chat_json(system_prompt, user_prompt)
-        return self._normalize_result(result, input_data)
+        result = self.reason_json(
+            system_prompt,
+            user_prompt,
+            prompt_purpose="Validate invoice and detect exception candidates before agent handoff",
+            message_bus_input=input_data,
+        )
+        normalized = self._normalize_result(result, input_data)
+        handoff = normalized.get("handoff_payload", {}) if isinstance(normalized.get("handoff_payload"), dict) else {}
+        return self.attach_prompt_trace(normalized, handoff=handoff)
 
     def _normalize_result(self, result: Dict, input_data: Dict) -> Dict:
         result = result if isinstance(result, dict) else {}

@@ -115,8 +115,18 @@ Create high-quality prompts that explicitly cover:
 - Short payment terms 0-day (25 invoices, 15.3M, DPO 1.21)
 - Early payment optimization (23 invoices, 19M, DPO 3.08 vs potential 63)
 """
-        result = self.llm.chat_json(system_prompt, user_prompt)
-        return self._normalize_result(result, target_agent)
+        result = self.reason_json(
+            system_prompt,
+            user_prompt,
+            prompt_purpose=f"Generate downstream prompts for {target_agent}",
+            message_bus_input=input_data,
+        )
+        normalized = self._normalize_result(result, target_agent)
+        handoff = {
+            "target_agent": target_agent,
+            "generated_prompt_keys": list((normalized.get("generated_prompts", {}) or {}).keys()),
+        }
+        return self.attach_prompt_trace(normalized, handoff=handoff)
 
     def _normalize_result(self, result: Dict, target_agent: str) -> Dict:
         generated = result.get("generated_prompts", {}) if isinstance(result, dict) else {}

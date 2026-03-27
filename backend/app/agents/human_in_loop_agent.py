@@ -66,8 +66,18 @@ Escalated case payload:
 Full Celonis process context:
 {json.dumps(self.process_context, indent=2, default=str)}
 """
-        result = self.llm.chat_json(system_prompt, user_prompt)
-        return self._normalize_result(result)
+        result = self.reason_json(
+            system_prompt,
+            user_prompt,
+            prompt_purpose="Prepare human review package and escalation recommendation",
+            message_bus_input=input_data,
+        )
+        normalized = self._normalize_result(result)
+        handoff = {
+            "assigned_role": normalized.get("assigned_role"),
+            "priority": normalized.get("priority"),
+        }
+        return self.attach_prompt_trace(normalized, handoff=handoff)
 
     def _normalize_result(self, result: Dict) -> Dict:
         result = result if isinstance(result, dict) else {}

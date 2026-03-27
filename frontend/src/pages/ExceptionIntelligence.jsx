@@ -9,7 +9,7 @@ import {
 import LoadingSpinner from "../components/LoadingSpinner";
 import {
   analyzeExceptionRecord, fetchExceptionCategories,
-  fetchExceptionRecords, sendExceptionToTeams, waitForCacheReady,
+  fetchAllExceptionRecords, sendExceptionToTeams, waitForCacheReady,
 } from "../api/client";
 
 const S = "'Instrument Serif', Georgia, serif";
@@ -105,15 +105,17 @@ export default function ExceptionIntelligence() {
             .filter((row) => Number(row.case_count || 0) > 0)
             .sort((a, b) => Number(b.case_count || 0) - Number(a.case_count || 0));
         }
-        const recordGroups = await Promise.all(
-          categories.map(async (category) => {
-            const res = await fetchExceptionRecords(category.category_id);
-            const rows = Array.isArray(pickData(res)) ? pickData(res) : [];
-            return rows.map((row) => ({ ...row, category_id: category.category_id, category_label: category.category_label }));
+        const categoryMap = new Map(categories.map((category) => [category.category_id, category]));
+        const recordsRes = await fetchAllExceptionRecords();
+        const rows = Array.isArray(pickData(recordsRes)) ? pickData(recordsRes) : [];
+        const flattened = rows
+          .map((row) => {
+            const category = categoryMap.get(row.category_id) || null;
+            return {
+              ...row,
+              category_label: row.category_label || category?.category_label || row.exception_type,
+            };
           })
-        );
-        const flattened = recordGroups
-          .flat()
           .sort((a, b) => Number(b.invoice_amount || b.value_at_risk || 0) - Number(a.invoice_amount || a.value_at_risk || 0));
         if (!active) return;
         setRecords(flattened);

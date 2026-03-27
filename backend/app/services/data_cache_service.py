@@ -954,6 +954,7 @@ class DataCacheService:
                 "case_id": case_id,
                 "document_number": g["document_number"].dropna().astype(str).iloc[0] if g["document_number"].notna().any() else str(case_id),
                 "vendor_id": g["vendor_id"].dropna().astype(str).iloc[0] if g["vendor_id"].notna().any() else "UNKNOWN",
+                "vendor_id_full": g["vendor_id_full"].dropna().astype(str).iloc[0] if "vendor_id_full" in g and g["vendor_id_full"].notna().any() else None,
                 "payment_terms": g["payment_terms"].dropna().astype(str).iloc[0] if g["payment_terms"].notna().any() else None,
                 "currency": g["currency"].dropna().astype(str).iloc[0] if g["currency"].notna().any() else None,
                 "invoice_amount_case_table": float(amount_series.iloc[0]) if not amount_series.empty else None,
@@ -1359,32 +1360,73 @@ class DataCacheService:
         exception_records_map: Dict[str, List[Dict[str, Any]]],
     ) -> Dict[str, List[Dict[str, Any]]]:
         vendor_map: Dict[str, List[Dict[str, Any]]] = {}
+
+        def alias_keys(payload: Dict[str, Any]) -> List[str]:
+            keys: List[str] = []
+            for raw in [
+                payload.get("vendor_id"),
+                payload.get("vendor_id_full"),
+                payload.get("vendor_lifnr"),
+            ]:
+                normalized = str(raw or "").strip().upper()
+                if normalized and normalized not in keys:
+                    keys.append(normalized)
+            return keys
+
         for _, row in case_level.iterrows():
-            vid = str(row.get("vendor_id", "UNKNOWN")).strip().upper()
-            vendor_map.setdefault(vid, []).append(self._to_jsonable(row.to_dict()))
+            row_payload = self._to_jsonable(row.to_dict())
+            for vid in alias_keys(row_payload) or ["UNKNOWN"]:
+                vendor_map.setdefault(vid, []).append(row_payload)
 
         for records in exception_records_map.values():
             for rec in records:
-                vid = str(rec.get("vendor_id", "UNKNOWN")).strip().upper()
-                vendor_map.setdefault(vid, []).append(rec)
+                for vid in alias_keys(rec) or ["UNKNOWN"]:
+                    vendor_map.setdefault(vid, []).append(rec)
 
         return vendor_map
 
     def _build_vendor_paths_map(self, celonis: CelonisService, case_level: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
-        vendor_ids = sorted(
-            {
-                str(v).strip().upper()
-                for v in case_level.get("vendor_id", pd.Series(dtype=str)).dropna().tolist()
-                if str(v).strip()
-            }
-        )
         result: Dict[str, Dict[str, Any]] = {}
-        for vid in vendor_ids:
+        vendor_alias_map: Dict[str, List[str]] = {}
+
+        for _, row in case_level.iterrows():
+            primary = str(row.get("vendor_id", "") or "").strip().upper()
+            full = str(row.get("vendor_id_full", "") or "").strip().upper()
+            aliases = [value for value in [primary, full] if value]
+            if not aliases:
+                continue
+            vendor_alias_map.setdefault(primary or full, [])
+            for alias in aliases:
+                if alias not in vendor_alias_map[primary or full]:
+                    vendor_alias_map[primary or full].append(alias)
+
+        for vid, aliases in vendor_alias_map.items():
             try:
-                result[vid] = celonis.get_vendor_paths(vid)
+                resolved = None
+                ordered_candidates = sorted(
+                    aliases,
+                    key=lambda value: (
+                        0 if value.isdigit() else 1,
+                        -len(value),
+                    ),
+                )
+                for candidate in ordered_candidates:
+                    payload = celonis.get_vendor_paths(candidate)
+                    if payload.get("happy_paths") or payload.get("exception_paths"):
+                        resolved = payload
+                        break
+                    if resolved is None:
+                        resolved = payload
+
+                resolved = resolved or {"vendor_id": vid, "happy_paths": [], "exception_paths": []}
+                canonical = {**resolved, "vendor_id": vid}
+                for alias in aliases:
+                    result[alias] = canonical
             except Exception as e:
                 logger.warning("Failed vendor path precompute for vendor %s: %s", vid, str(e))
-                result[vid] = {"vendor_id": vid, "happy_paths": [], "exception_paths": []}
+                empty_payload = {"vendor_id": vid, "happy_paths": [], "exception_paths": []}
+                for alias in aliases:
+                    result[alias] = empty_payload
         return result
 
     def _build_vendor_stats(
@@ -1398,6 +1440,9 @@ class DataCacheService:
 
         work = case_level.copy()
         work["vendor_id"] = work.get("vendor_id", pd.Series(dtype=str)).fillna("UNKNOWN").astype(str).str.strip()
+        if "vendor_id_full" not in work.columns:
+            work["vendor_id_full"] = work["vendor_id"]
+        work["vendor_id_full"] = work.get("vendor_id_full", pd.Series(dtype=str)).fillna(work["vendor_id"]).astype(str).str.strip()
         work["invoice_amount"] = pd.to_numeric(work.get("invoice_amount"), errors="coerce").fillna(0.0)
         work["actual_dpo"] = pd.to_numeric(work.get("actual_dpo"), errors="coerce").fillna(0.0)
         work["is_exception_case"] = work.get("activity_trace_text", pd.Series(dtype=str)).astype(str).str.lower().str.contains(
@@ -1412,6 +1457,7 @@ class DataCacheService:
                 total_cases=("case_id", "nunique"),
                 total_value=("invoice_amount", "sum"),
                 avg_dpo=("actual_dpo", "mean"),
+                vendor_lifnr=("vendor_id_full", lambda s: s.dropna().astype(str).iloc[0] if not s.dropna().empty else None),
                 payment_terms=("payment_terms", "first"),
                 currency=("currency", "first"),
                 exception_case_count=("is_exception_case", "sum"),
@@ -1461,7 +1507,7 @@ class DataCacheService:
             rows.append(
                 {
                     "vendor_id": vendor_id,
-                    "vendor_lifnr": vendor_id,
+                    "vendor_lifnr": str(row.get("vendor_lifnr") or vendor_id).strip(),
                     "total_cases": total_cases,
                     "event_count": event_count,
                     "total_value": round(float(row.get("total_value", 0.0) or 0.0), 2),

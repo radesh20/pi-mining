@@ -4,7 +4,7 @@ import threading
 import warnings
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -1588,35 +1588,6 @@ class CelonisService:
             if vendor_df.empty:
                 return {"vendor_id": vendor_id, "happy_paths": [], "exception_paths": []}
 
-            vendor_df = vendor_df.sort_values(["case_id", "timestamp"]).reset_index(drop=True)
-            variant_by_case = (
-                vendor_df.groupby("case_id")["activity"]
-                .apply(lambda x: " → ".join(x.astype(str).tolist()))
-                .reset_index(name="variant")
-            )
-
-            case_duration = (
-                vendor_df.groupby("case_id")
-                .agg(start_time=("timestamp", "min"), end_time=("timestamp", "max"))
-                .reset_index()
-            )
-            case_duration["duration_days"] = (
-                (case_duration["end_time"] - case_duration["start_time"]).dt.total_seconds() / 86400
-            ).fillna(0)
-
-            variant_with_duration = variant_by_case.merge(case_duration[["case_id", "duration_days"]], on="case_id", how="left")
-            agg = (
-                variant_with_duration.groupby("variant")
-                .agg(
-                    frequency=("case_id", "nunique"),
-                    avg_duration_days=("duration_days", "mean"),
-                )
-                .reset_index()
-            )
-            total = max(int(agg["frequency"].sum()), 1)
-            agg["percentage"] = (agg["frequency"] / total * 100).round(2)
-            agg["avg_duration_days"] = agg["avg_duration_days"].round(2)
-
             def classify_exception_type(variant: str) -> str:
                 v = variant.lower()
                 if "payment terms" in v:
@@ -1633,27 +1604,85 @@ class CelonisService:
                     return "Invoice Exception"
                 return ""
 
-            happy_paths: List[Dict[str, Any]] = []
-            exception_paths: List[Dict[str, Any]] = []
-
-            for _, row in agg.sort_values("frequency", ascending=False).iterrows():
-                record = {
-                    "variant": row["variant"],
-                    "frequency": int(row["frequency"]),
-                    "percentage": float(row["percentage"]),
-                    "avg_duration_days": float(row["avg_duration_days"]),
-                }
-                exception_type = classify_exception_type(str(row["variant"]))
-                variant_lower = str(row["variant"]).lower()
-                has_exception_signal = any(
-                    kw in variant_lower
-                    for kw in ["exception", "due date passed", "block", "moved out", "short payment", "immediate", "early payment"]
+            def aggregate_variants(frame: pd.DataFrame) -> pd.DataFrame:
+                work = frame.sort_values(["case_id", "timestamp"]).reset_index(drop=True)
+                variant_by_case = (
+                    work.groupby("case_id")["activity"]
+                    .apply(lambda x: " → ".join(x.astype(str).tolist()))
+                    .reset_index(name="variant")
                 )
-                if has_exception_signal:
-                    record["exception_type"] = exception_type or "Invoice Exception"
-                    exception_paths.append(record)
-                else:
-                    happy_paths.append(record)
+
+                case_duration = (
+                    work.groupby("case_id")
+                    .agg(start_time=("timestamp", "min"), end_time=("timestamp", "max"))
+                    .reset_index()
+                )
+                case_duration["duration_days"] = (
+                    (case_duration["end_time"] - case_duration["start_time"]).dt.total_seconds() / 86400
+                ).fillna(0)
+
+                variant_with_duration = variant_by_case.merge(
+                    case_duration[["case_id", "duration_days"]],
+                    on="case_id",
+                    how="left",
+                )
+                agg = (
+                    variant_with_duration.groupby("variant")
+                    .agg(
+                        frequency=("case_id", "nunique"),
+                        avg_duration_days=("duration_days", "mean"),
+                    )
+                    .reset_index()
+                )
+                total = max(int(agg["frequency"].sum()), 1)
+                agg["percentage"] = (agg["frequency"] / total * 100).round(2)
+                agg["avg_duration_days"] = agg["avg_duration_days"].round(2)
+                return agg.sort_values("frequency", ascending=False).reset_index(drop=True)
+
+            def partition_paths(agg: pd.DataFrame, source: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+                happy: List[Dict[str, Any]] = []
+                exception: List[Dict[str, Any]] = []
+                for _, row in agg.iterrows():
+                    record = {
+                        "variant": row["variant"],
+                        "frequency": int(row["frequency"]),
+                        "percentage": float(row["percentage"]),
+                        "avg_duration_days": float(row["avg_duration_days"]),
+                        "source": source,
+                    }
+                    exception_type = classify_exception_type(str(row["variant"]))
+                    variant_lower = str(row["variant"]).lower()
+                    has_exception_signal = any(
+                        kw in variant_lower
+                        for kw in ["exception", "due date passed", "block", "moved out", "short payment", "immediate", "early payment"]
+                    )
+                    if has_exception_signal:
+                        record["exception_type"] = exception_type or "Invoice Exception"
+                        exception.append(record)
+                    else:
+                        happy.append(record)
+                return happy, exception
+
+            vendor_agg = aggregate_variants(vendor_df)
+            happy_paths, exception_paths = partition_paths(vendor_agg, "vendor")
+
+            if not happy_paths:
+                global_agg = aggregate_variants(df)
+                global_happy_paths, _ = partition_paths(global_agg, "global_baseline")
+                if global_happy_paths:
+                    happy_paths = global_happy_paths[:3]
+                elif not global_agg.empty:
+                    top_global = global_agg.iloc[0]
+                    happy_paths = [
+                        {
+                            "variant": top_global["variant"],
+                            "frequency": int(top_global["frequency"]),
+                            "percentage": float(top_global["percentage"]),
+                            "avg_duration_days": float(top_global["avg_duration_days"]),
+                            "source": "global_baseline",
+                            "note": "Using top Celonis baseline path because this vendor currently appears only in exception traces.",
+                        }
+                    ]
 
             return {
                 "vendor_id": vendor_id,

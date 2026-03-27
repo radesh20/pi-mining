@@ -61,8 +61,18 @@ Policy guidance seed from Celonis findings:
 Full process context:
 {json.dumps(self.process_context, indent=2, default=str)}
 """
-        result = self.llm.chat_json(system_prompt, user_prompt)
-        return self._normalize_result(result)
+        result = self.reason_json(
+            system_prompt,
+            user_prompt,
+            prompt_purpose="Decide automation policy, route, and human-oversight posture",
+            message_bus_input=input_data,
+        )
+        normalized = self._normalize_result(result)
+        handoff = {
+            "recommended_agent": normalized.get("recommended_agent"),
+            "automation_decision": normalized.get("automation_decision"),
+        }
+        return self.attach_prompt_trace(normalized, handoff=handoff)
 
     def _normalize_result(self, result: Dict) -> Dict:
         result = result if isinstance(result, dict) else {}
