@@ -16,9 +16,30 @@ class TeamsWebhookService:
     def send_text_message(self, title: str, message: str) -> Dict[str, Any]:
         if self._is_power_automate_webhook():
             payload = {
-                "title": title or "Notification",
-                "message": message or "",
-                "source": "process-mining-agents",
+                "type": "AdaptiveCard",
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "version": "1.4",
+                "body": [
+                    {
+                        "type": "TextBlock",
+                        "text": title or "Notification",
+                        "weight": "Bolder",
+                        "size": "Medium",
+                        "wrap": True,
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": message or "",
+                        "wrap": True,
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": "Source: Process Mining Agents",
+                        "size": "Small",
+                        "isSubtle": True,
+                        "wrap": True,
+                    },
+                ],
             }
         else:
             payload = {
@@ -70,15 +91,22 @@ class TeamsWebhookService:
         )
         priority = self._pick(
             review_payload.get("priority"),
+            turnaround.get("risk_level"),
             "N/A",
         )
         assigned_role = self._pick(
             review_payload.get("assigned_role"),
             review_payload.get("assigned_to_role"),
+            review_payload.get("recommended_resolution_role"),
+            self._dict(review_payload.get("classifier_agent")).get("owner"),
             "N/A",
         )
+        root_cause = self._dict(review_payload.get("root_cause_analysis"))
+        celonis_context = self._dict(review_payload.get("exception_context_from_celonis"))
         celonis_evidence = self._pick(
             review_payload.get("celonis_evidence"),
+            root_cause.get("celonis_evidence"),
+            celonis_context.get("category_summary"),
             ai_reco.get("celonis_evidence"),
             turnaround.get("celonis_evidence"),
         )
@@ -87,22 +115,69 @@ class TeamsWebhookService:
             ai_reco.get("suggested_action"),
         )
 
+        # Extract next_best_action details if it's a dict
+        if isinstance(ai_recommendation, dict):
+            ai_recommendation = ai_recommendation.get("action", str(ai_recommendation))
+        if isinstance(next_best_action, dict):
+            next_best_action = next_best_action.get("action", str(next_best_action))
+
         if self._is_power_automate_webhook():
             payload = {
-                "title": "P2P Human Review Required",
-                "invoice_id": str(invoice_id or "N/A"),
-                "vendor_id": str(vendor_id or "N/A"),
-                "vendor_name": str(vendor_name or "N/A"),
-                "exception_type": str(exception_type or "N/A"),
-                "financial_value_or_risk": str(value_at_risk or "N/A"),
-                "dpo_or_turnaround_risk": str(dpo_or_turnaround or "N/A"),
-                "ai_recommendation": str(ai_recommendation or "N/A"),
-                "priority": str(priority),
-                "assigned_role": str(assigned_role),
-                "celonis_evidence": str(celonis_evidence or "N/A"),
-                "next_best_action": str(next_best_action or "N/A"),
-                "review_payload": review_payload,
-                "source": "process-mining-agents",
+                "type": "AdaptiveCard",
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "version": "1.4",
+                "body": [
+                    {
+                        "type": "TextBlock",
+                        "text": "⚠️ P2P Human Review Required",
+                        "weight": "Bolder",
+                        "size": "Large",
+                        "wrap": True,
+                        "color": "Attention",
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": "Invoice Exception Escalation — AI + Celonis assisted review package",
+                        "size": "Small",
+                        "isSubtle": True,
+                        "wrap": True,
+                    },
+                    {"type": "TextBlock", "text": " ", "spacing": "Small"},
+                    {
+                        "type": "FactSet",
+                        "facts": [
+                            {"title": "Invoice ID", "value": str(invoice_id or "N/A")},
+                            {"title": "Vendor", "value": f"{vendor_id or 'N/A'} / {vendor_name or 'N/A'}"},
+                            {"title": "Exception Type", "value": str(exception_type or "N/A")},
+                            {"title": "Financial Risk", "value": str(value_at_risk or "N/A")},
+                            {"title": "DPO / Turnaround", "value": str(dpo_or_turnaround or "N/A")},
+                            {"title": "AI Recommendation", "value": str(ai_recommendation or "N/A")},
+                            {"title": "Priority", "value": str(priority)},
+                            {"title": "Assigned Role", "value": str(assigned_role)},
+                        ],
+                    },
+                    {"type": "TextBlock", "text": " ", "spacing": "Small"},
+                    {
+                        "type": "TextBlock",
+                        "text": f"**Celonis Evidence:** {celonis_evidence or 'N/A'}",
+                        "wrap": True,
+                        "size": "Small",
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": f"**Next Best Action:** {next_best_action or 'N/A'}",
+                        "wrap": True,
+                        "size": "Small",
+                    },
+                    {"type": "TextBlock", "text": " ", "spacing": "Small"},
+                    {
+                        "type": "TextBlock",
+                        "text": "Source: Process Mining Agents",
+                        "size": "Small",
+                        "isSubtle": True,
+                        "wrap": True,
+                    },
+                ],
             }
         else:
             payload = {
