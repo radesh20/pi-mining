@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Box, Card, CardContent, Chip, Grid, Stack, Typography } from "@mui/material";
 import InteractionFlow from "../components/InteractionFlow";
 import LoadingSpinner from "../components/LoadingSpinner";
-import { executeInvoiceFlow, fetchExceptionCategories, fetchExceptionRecords, waitForCacheReady } from "../api/client";
+import { executeInvoiceFlow, fetchAllExceptionRecords, fetchExceptionCategories, waitForCacheReady } from "../api/client";
 
 const S = "'Instrument Serif', Georgia, serif";
 const G = "'Geist', system-ui, sans-serif";
@@ -136,7 +136,56 @@ function normalizeAgentName(name = "") {
   if (text.includes("Exception Agent")) return "ExceptionAgent";
   if (text.includes("Invoice Processing")) return "InvoiceProcessingAgent";
   if (text.includes("Human-in-the-Loop")) return "HumanInLoopAgent";
+  if (text.includes("Prompt Writer")) return "PromptWriterAgent";
+  if (text.includes("Automation Policy")) return "AutomationPolicyAgent";
+  if (text.includes("ERP")) return "ERPPostingLayer";
   return text.replace(/\s+/g, "");
+}
+
+function buildPredictedConversation(selectedRecord) {
+  const vendorName = selectedRecord?.vendor_name || selectedRecord?.vendor_id || "the selected vendor";
+  const invoiceId = selectedRecord?.invoice_id || selectedRecord?.document_number || selectedRecord?.case_id || "the selected case";
+  const category = selectedRecord?.category_label || selectedRecord?.exception_type || "exception";
+  const risk = String(selectedRecord?.risk_level || "MEDIUM").toUpperCase();
+  const finalReceiver = ["CRITICAL", "HIGH"].includes(risk) ? "HumanInLoopAgent" : "ERPPostingLayer";
+
+  return [
+    {
+      agent: "VendorIntelligenceAgent",
+      incoming: { sender: "Orchestrator", receiver: "VendorIntelligenceAgent", intent: `Analyze vendor ${vendorName} for invoice ${invoiceId}.` },
+      reasoning: `Build vendor risk context and recurrence evidence for ${category}.`,
+      outgoing: { sender: "VendorIntelligenceAgent", receiver: "PromptWriterAgent", intent: "Pass vendor risk and exception portfolio context." },
+      promptTrace: null,
+    },
+    {
+      agent: "PromptWriterAgent",
+      incoming: { sender: "VendorIntelligenceAgent", receiver: "PromptWriterAgent", intent: "Generate downstream prompts using Celonis evidence." },
+      reasoning: "Prepare agent-ready instructions grounded in timing, exception, and financial context.",
+      outgoing: { sender: "PromptWriterAgent", receiver: "AutomationPolicyAgent", intent: "Provide process-aware prompt package and guardrails." },
+      promptTrace: null,
+    },
+    {
+      agent: "AutomationPolicyAgent",
+      incoming: { sender: "PromptWriterAgent", receiver: "AutomationPolicyAgent", intent: "Decide whether to automate, monitor, or escalate." },
+      reasoning: `Estimate control posture from ${category} severity and risk ${risk}.`,
+      outgoing: { sender: "AutomationPolicyAgent", receiver: "InvoiceProcessingAgent", intent: "Send policy decision and oversight posture." },
+      promptTrace: null,
+    },
+    {
+      agent: "InvoiceProcessingAgent",
+      incoming: { sender: "AutomationPolicyAgent", receiver: "InvoiceProcessingAgent", intent: "Validate invoice and determine if exception handoff is needed." },
+      reasoning: "Check turnaround pressure, invoice quality, and exception candidates before posting.",
+      outgoing: { sender: "InvoiceProcessingAgent", receiver: "ExceptionAgent", intent: `Handoff ${category} context with turnaround evidence.` },
+      promptTrace: null,
+    },
+    {
+      agent: "ExceptionAgent",
+      incoming: { sender: "InvoiceProcessingAgent", receiver: "ExceptionAgent", intent: `Resolve ${category} using process-path evidence.` },
+      reasoning: "Choose the next best action and create an action-agent prompt package.",
+      outgoing: { sender: "ExceptionAgent", receiver: finalReceiver, intent: ["CRITICAL", "HIGH"].includes(risk) ? "Escalate with high-priority review package." : "Send recommended action to downstream automation layer." },
+      promptTrace: null,
+    },
+  ];
 }
 
 function buildLiveConversation({ selectedRecord, executionTrace }) {
@@ -145,15 +194,12 @@ function buildLiveConversation({ selectedRecord, executionTrace }) {
   const steps = executionTrace?.steps || [];
   const handoffs = executionTrace?.handoff_messages || [];
   if (!steps.length) {
-    return [
-      {
-        agent: "VendorIntelligenceAgent",
-        incoming: { sender: "Orchestrator", receiver: "VendorIntelligenceAgent", intent: `Analyze vendor ${vendorName} and resolve open exceptions for ${invoiceId}.` },
-        reasoning: "Waiting for real orchestration trace for this case.",
-        outgoing: { sender: "VendorIntelligenceAgent", receiver: "ExceptionAgent", intent: "Prepare vendor context for exception triage." },
-        promptTrace: null,
-      },
-    ];
+    return buildPredictedConversation(selectedRecord).map((step, index) => ({
+      ...step,
+      reasoning: index === 0
+        ? `Preparing live orchestration for invoice ${invoiceId} and vendor ${vendorName}.`
+        : step.reasoning,
+    }));
   }
   return steps.map((step, idx) => {
     const trace = step.full_output?.prompt_trace || {};
@@ -224,22 +270,28 @@ export default function CrossAgentInteraction() {
           await waitForCacheReady();
           return await load(false);
         }
-        const categorySamples = await Promise.all(
-          categoryRows.slice(0, 6).map(async (category) => {
-            const res = await fetchExceptionRecords(category.category_id);
-            const rows = (res.data || res || [])
-              .filter((row) => row.exception_id)
-              .slice(0, 3)
-              .map((row) => ({
-                ...row,
-                category_id: category.category_id,
-                category_label: category.category_label,
-              }));
-            return rows;
-          }),
-        );
+        const categoryMap = new Map(categoryRows.map((category) => [category.category_id, category]));
+        const allRecordsRes = await fetchAllExceptionRecords();
+        const allRecords = (allRecordsRes.data || allRecordsRes || [])
+          .filter((row) => row.exception_id)
+          .map((row) => {
+            const category = categoryMap.get(row.category_id) || null;
+            return {
+              ...row,
+              category_label: row.category_label || category?.category_label || row.exception_type,
+            };
+          });
+        const categoryCounts = new Map();
+        const categorySamples = [];
+        for (const row of allRecords) {
+          const categoryId = row.category_id || row.exception_type || "unknown";
+          const currentCount = categoryCounts.get(categoryId) || 0;
+          if (currentCount >= 3) continue;
+          categoryCounts.set(categoryId, currentCount + 1);
+          categorySamples.push(row);
+        }
         const seen = new Set();
-        const recordRows = categorySamples.flat().filter((row) => {
+        const recordRows = categorySamples.filter((row) => {
           const key = `${row.category_id || row.exception_type}::${row.invoice_id || row.document_number || row.case_id || row.exception_id}`;
           if (seen.has(key)) return false;
           seen.add(key);
@@ -277,7 +329,12 @@ export default function CrossAgentInteraction() {
     setError("");
     if (!payloadOverride) setResult(null);
     try {
-      const response = await executeInvoiceFlow(payloadOverride || invoice);
+      const response = await executeInvoiceFlow({
+        ...(payloadOverride || invoice),
+        fast_mode: true,
+        trace_mode: "interaction_fast",
+        ui_mode: "interaction",
+      });
       if (flowRequestRef.current !== requestId) return;
       setResult(response);
     } catch (e) {
@@ -302,15 +359,18 @@ export default function CrossAgentInteraction() {
   const automationDecision = executionTrace?.steps?.find((step) => String(step.agent || "").includes("Automation Policy Agent"))?.full_output;
   const humanStep = executionTrace?.steps?.find((step) => String(step.agent || "").includes("Human-in-the-Loop Agent"))?.full_output;
   const conversationSteps = executionTrace?.steps || [];
+  const nextBestActionPrompt = executionTrace?.next_best_action_recommender_prompt || null;
   const predictedNextAgent = executionTrace
-    ? executionTrace.final_status === "ESCALATED_TO_HUMAN"
+    ? nextBestActionPrompt?.predicted_next_agent || (
+      executionTrace.final_status === "ESCALATED_TO_HUMAN"
       ? "Human-in-the-Loop Agent"
       : executionTrace.final_status === "POSTED"
       ? "ERP / Posting Layer"
       : automationDecision?.recommended_agent || "Exception Agent"
+    )
     : "Exception Agent";
   const predictedNextStep = executionTrace
-    ? executionTrace.turnaround_assessment?.recommendation || "Continue orchestration using the latest Celonis risk signal."
+    ? nextBestActionPrompt?.recommended_action || executionTrace.turnaround_assessment?.recommendation || "Continue orchestration using the latest Celonis risk signal."
     : "Run orchestration to generate the next agent handoff.";
   const liveConversation = buildLiveConversation({ selectedRecord, executionTrace });
 
@@ -372,10 +432,13 @@ export default function CrossAgentInteraction() {
           <Card sx={{ mb: 2 }}>
             <CardContent>
               <Typography sx={{ fontFamily: S, fontSize: "1.1rem", color: "#17140F", mb: 1.2 }}>Prompt Interaction Summary</Typography>
-              {selectedRecord && loadingFlow ? (
-                <LoadingSpinner message="Running live agent orchestration for the selected case..." />
-              ) : selectedRecord ? (
+              {selectedRecord ? (
                 <>
+                  {loadingFlow && (
+                    <Alert severity="info" sx={{ mb: 1.5 }}>
+                      Building the live orchestration trace. The predicted conversation appears first, then the real prompt exchange replaces it as soon as the agents finish.
+                    </Alert>
+                  )}
                   <ConversationCard title="Agent Layer (Core Intelligence)" color="#1E4E8C" background="#EBF2FC" border="#90B8E8">
                     <Typography sx={{ fontSize: "0.82rem", color: "#5C5650", fontFamily: G, mb: 0.35 }}>
                       Orchestrator starts the conversation via MessageBus for: <strong>"Analyze vendor {selectedRecord?.vendor_name || selectedRecord?.vendor_id || "the selected vendor"} and resolve open exceptions."</strong>
@@ -506,10 +569,10 @@ export default function CrossAgentInteraction() {
                 <CardContent>
                   <Typography sx={{ fontFamily: S, fontSize: "1.1rem", color: "#17140F", mb: 1.2 }}>Exception Resolution + Human Loop</Typography>
                   <Typography sx={{ fontSize: "0.82rem", color: "#5C5650", fontFamily: G, mb: 0.4 }}>
-                    Next best action: {exceptionAgentPrompt?.execution_prompt || executionTrace.turnaround_assessment?.recommendation || "N/A"}
+                    Next best action: {nextBestActionPrompt?.recommended_action || exceptionAgentPrompt?.execution_prompt || executionTrace.turnaround_assessment?.recommendation || "N/A"}
                   </Typography>
                   <Typography sx={{ fontSize: "0.76rem", color: "#1E4E8C", fontFamily: G, mb: 0.3 }}>
-                    Handoff intent: {exceptionAgentPrompt?.handoff_intent || "Exception resolution handoff"}
+                    Handoff intent: {nextBestActionPrompt?.handoff_intent || exceptionAgentPrompt?.handoff_intent || "Exception resolution handoff"}
                   </Typography>
                   <Typography sx={{ fontSize: "0.76rem", color: "#B03030", fontFamily: G, mb: 0.3 }}>
                     Human review package: {humanStep?.case_summary || humanStep?.reason_for_review || "Will be prepared when escalation is required."}
@@ -517,6 +580,24 @@ export default function CrossAgentInteraction() {
                   <Typography sx={{ fontSize: "0.76rem", color: "#5C5650", fontFamily: G }}>
                     Teams-ready evidence: {humanStep?.celonis_evidence || executionTrace.steps?.[0]?.celonis_evidence_used || "Celonis evidence attached in the HITL package."}
                   </Typography>
+                </CardContent>
+              </Card>
+
+              <Card sx={{ mt: 2 }}>
+                <CardContent>
+                  <Typography sx={{ fontFamily: S, fontSize: "1.1rem", color: "#17140F", mb: 1.2 }}>Next Best Action Recommender Prompt</Typography>
+                  <Typography sx={{ fontSize: "0.82rem", color: "#5C5650", fontFamily: G, mb: 0.5 }}>
+                    Downstream target agents: {(nextBestActionPrompt?.target_action_agents || []).join(", ") || "N/A"}
+                  </Typography>
+                  <Typography sx={{ fontSize: "0.76rem", color: "#1E4E8C", fontFamily: G, mb: 0.4 }}>
+                    Reason: {nextBestActionPrompt?.reason || executionTrace.orchestration_reasoning?.recommended_next_action || "N/A"}
+                  </Typography>
+                  <Typography sx={{ fontSize: "0.76rem", color: "#7C5A1F", fontFamily: G, mb: 0.7 }}>
+                    PI rationale: {nextBestActionPrompt?.pi_rationale || "Celonis turnaround and exception context are included for the action agent."}
+                  </Typography>
+                  <JsonBlock label="Execution Prompt For Action Agent" value={nextBestActionPrompt?.execution_prompt || "N/A"} color="#1A6B5E" />
+                  <JsonBlock label="Required Payload Fields" value={nextBestActionPrompt?.required_payload_fields || []} color="#A05A10" />
+                  <JsonBlock label="Recommended Payload" value={nextBestActionPrompt?.payload || {}} color="#B03030" />
                 </CardContent>
               </Card>
             </>

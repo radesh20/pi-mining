@@ -4,14 +4,18 @@ from app.services.data_cache_service import get_data_cache_service
 router = APIRouter()
 
 
+def _build_context():
+    cache = get_data_cache_service()
+    return cache.get_process_context()
+
+
 def _build_context_and_llm():
     """
     Lazy import all backend services to avoid startup-time import failures.
     """
     from app.services.azure_openai_service import AzureOpenAIService
 
-    cache = get_data_cache_service()
-    process_context = cache.get_process_context()
+    process_context = _build_context()
     llm = AzureOpenAIService()
     return process_context, llm
 
@@ -22,9 +26,15 @@ def execute_invoice_flow(payload: dict = Body(...)):
     Full 6-agent orchestration entry point.
     """
     try:
-        process_context, llm = _build_context_and_llm()
         from app.services.orchestrator_service import OrchestratorService
 
+        if bool(payload.get("fast_mode")):
+            process_context = _build_context()
+            orchestrator = OrchestratorService(None, process_context)
+            result = orchestrator.execute_invoice_flow(payload)
+            return {"success": True, "data": result}
+
+        process_context, llm = _build_context_and_llm()
         orchestrator = OrchestratorService(llm, process_context)
         result = orchestrator.execute_invoice_flow(payload)
         return {"success": True, "data": result}

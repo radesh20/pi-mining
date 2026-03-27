@@ -10,6 +10,32 @@ let cacheStatusSnapshot = null;
 let cacheStatusSnapshotAt = 0;
 let waitForCacheReadyPromise = null;
 const CACHE_STATUS_TTL_MS = 2000;
+const inFlightRequests = new Map();
+
+const stableStringify = (value) => {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+};
+
+const dedupeRequest = (key, factory) => {
+  if (inFlightRequests.has(key)) {
+    return inFlightRequests.get(key);
+  }
+
+  const request = Promise.resolve()
+    .then(factory)
+    .finally(() => {
+      inFlightRequests.delete(key);
+    });
+
+  inFlightRequests.set(key, request);
+  return request;
+};
 
 export const unwrapApiData = (payload) => {
   if (payload == null) return payload;
@@ -165,8 +191,13 @@ export const fetchPromptComparison = async (agentName) => {
 // -----------------------------
 
 export const executeInvoiceFlow = async (payload) => {
-  const res = await api.post("/agents/execute-invoice", payload);
-  return res.data;
+  return dedupeRequest(
+    `POST:/agents/execute-invoice:${stableStringify(payload || {})}`,
+    async () => {
+      const res = await api.post("/agents/execute-invoice", payload);
+      return res.data;
+    }
+  );
 };
 
 export const executeException = async (payload) => {
@@ -194,27 +225,38 @@ export const prepareHumanReview = async (payload) => {
 // -----------------------------
 
 export const fetchExceptionCategories = async () => {
-  const res = await api.get("/exceptions/categories");
-  return res.data;
+  return dedupeRequest("GET:/exceptions/categories", async () => {
+    const res = await api.get("/exceptions/categories");
+    return res.data;
+  });
 };
 
 export const fetchExceptionRecords = async (exceptionType) => {
-  const res = await api.get("/exceptions/records", {
-    params: { type: exceptionType },
+  return dedupeRequest(`GET:/exceptions/records:${stableStringify({ type: exceptionType })}`, async () => {
+    const res = await api.get("/exceptions/records", {
+      params: { type: exceptionType },
+    });
+    return res.data;
   });
-  return res.data;
 };
 
 export const fetchAllExceptionRecords = async () => {
-  const res = await api.get("/exceptions/records", {
-    params: { type: "*" },
+  return dedupeRequest(`GET:/exceptions/records:${stableStringify({ type: "*" })}`, async () => {
+    const res = await api.get("/exceptions/records", {
+      params: { type: "*" },
+    });
+    return res.data;
   });
-  return res.data;
 };
 
 export const analyzeExceptionRecord = async (payload) => {
-  const res = await api.post("/exceptions/analyze", payload);
-  return res.data;
+  return dedupeRequest(
+    `POST:/exceptions/analyze:${stableStringify(payload || {})}`,
+    async () => {
+      const res = await api.post("/exceptions/analyze", payload);
+      return res.data;
+    }
+  );
 };
 
 export const fetchNextBestAction = async (analysis) => {

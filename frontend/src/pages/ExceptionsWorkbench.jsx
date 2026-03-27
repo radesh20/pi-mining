@@ -8,7 +8,7 @@ import {
 } from "@mui/material";
 import {
   analyzeExceptionRecord, fetchExceptionCategories,
-  fetchExceptionRecords, waitForCacheReady
+  fetchAllExceptionRecords, waitForCacheReady
 } from "../api/client";
 
 const S = "'Instrument Serif', Georgia, serif";
@@ -88,23 +88,21 @@ export default function ExceptionsWorkbench() {
         if (!active) return;
         setCategories(cats);
 
-        // load records for all categories in parallel
+        // load records once, then enrich them locally with category labels
         setLoadingRecords(true);
         const requestId = ++recordsRequestRef.current;
-        const groups = await Promise.all(
-          cats.map(async (cat) => {
-            const r = await fetchExceptionRecords(cat.category_id);
-            const rows = Array.isArray(pickData(r)) ? pickData(r) : [];
-            return rows.map((row) => ({
-              ...row,
-              category_id: cat.category_id,
-              category_label: cat.category_label,
-            }));
-          })
-        );
+        const categoryMap = new Map(cats.map((cat) => [cat.category_id, cat]));
+        const recordsRes = await fetchAllExceptionRecords();
+        const rows = Array.isArray(pickData(recordsRes)) ? pickData(recordsRes) : [];
         if (!active || recordsRequestRef.current !== requestId) return;
-        const flat = groups
-          .flat()
+        const flat = rows
+          .map((row) => {
+            const category = categoryMap.get(row.category_id) || null;
+            return {
+              ...row,
+              category_label: row.category_label || category?.category_label || row.exception_type,
+            };
+          })
           .sort((a, b) => Number(b.invoice_amount || b.value_at_risk || 0) - Number(a.invoice_amount || a.value_at_risk || 0));
         setAllRecords(flat);
       } catch (e) {
