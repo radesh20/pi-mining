@@ -5,15 +5,6 @@ import api, { waitForCacheReady } from "../api/client";
 const S = "'Instrument Serif', Georgia, serif";
 const G = "'Geist', system-ui, sans-serif";
 
-const FALLBACK_VENDORS = [
-  { vendor_id: "D4", vendor_lifnr: "7003198830", total_cases: 3, total_value: 5700000 },
-  { vendor_id: "B2", vendor_lifnr: "", total_cases: 2, total_value: 6200000 },
-  { vendor_id: "A27", vendor_lifnr: "", total_cases: 2, total_value: 4100000 },
-  { vendor_id: "F6", vendor_lifnr: "", total_cases: 2, total_value: 3300000 },
-  { vendor_id: "H8", vendor_lifnr: "7003204990", total_cases: 1, total_value: 2900000 },
-  { vendor_id: "C3", vendor_lifnr: "7003205015", total_cases: 1, total_value: 1500000 },
-];
-
 const EXCEPTION_META = [
   { key: "payment_terms_mismatch", title: "Payment Terms Mismatch", color: "#B03030", subtle: "#FAEAEA", border: "#E0A0A0" },
   { key: "invoice_exception", title: "Invoice Exception", color: "#A05A10", subtle: "#FEF3DC", border: "#F0C870" },
@@ -96,14 +87,17 @@ export default function VendorAnalysis() {
           await waitForCacheReady();
           return await load(false);
         }
-        const normalized = rows.length ? rows.map(r => ({ vendor_id: r.vendor_id || r.vendor || "UNKNOWN", vendor_lifnr: r.vendor_lifnr || r.lifnr || "", total_cases: Number(r.total_cases ?? r.case_count ?? 0), total_value: Number(r.total_value ?? r.value_usd ?? 0), exception_rate: Number(r.exception_rate ?? r.exception_rate_pct ?? 0), avg_dpo: Number(r.avg_dpo ?? r.avg_duration_days ?? 0), payment_behavior: r.payment_behavior || null, risk_score: r.risk_score || withFallbackRisk(r) })) : FALLBACK_VENDORS.map(v => ({ ...v, exception_rate: 100, avg_dpo: 15, payment_behavior: null, risk_score: "CRITICAL" }));
-        if (active) { setVendors(normalized); setSelectedVendorId(normalized[0]?.vendor_id || "D4"); }
+        const normalized = rows.map(r => ({ vendor_id: r.vendor_id || r.vendor || "UNKNOWN", vendor_lifnr: r.vendor_lifnr || r.lifnr || "", total_cases: Number(r.total_cases ?? r.case_count ?? 0), total_value: Number(r.total_value ?? r.value_usd ?? 0), exception_rate: Number(r.exception_rate ?? r.exception_rate_pct ?? 0), avg_dpo: Number(r.avg_dpo ?? r.avg_duration_days ?? 0), payment_behavior: r.payment_behavior || null, risk_score: r.risk_score || withFallbackRisk(r), exception_breakdown: r.exception_breakdown || {} }));
+        if (active) {
+          setVendors(normalized);
+          setSelectedVendorId(normalized[0]?.vendor_id || "");
+          if (normalized.length === 0) setError("No live vendor statistics were returned from Celonis.");
+        }
       } catch (e) {
         if (active) {
           setError(e?.response?.data?.detail || e.message || "Failed to load vendors");
-          const fallback = FALLBACK_VENDORS.map(v => ({ ...v, exception_rate: 100, avg_dpo: 15, payment_behavior: null, risk_score: "CRITICAL" }));
-          setVendors(fallback);
-          setSelectedVendorId(fallback[0]?.vendor_id || "D4");
+          setVendors([]);
+          setSelectedVendorId("");
         }
       } finally { if (active) setLoading(false); }
     };
@@ -112,16 +106,18 @@ export default function VendorAnalysis() {
   }, []);
 
   useEffect(() => {
-    if (!selectedVendorId) return;
+    const activeVendor = vendors.find(v => v.vendor_id === selectedVendorId) || null;
+    if (!selectedVendorId || !activeVendor) return;
     let active = true;
     setPathsLoading(true);
-    api.get(`/process/vendor/${encodeURIComponent(selectedVendorId)}/paths`)
+    const vendorPathId = activeVendor.vendor_lifnr || selectedVendorId;
+    api.get(`/process/vendor/${encodeURIComponent(vendorPathId)}/paths`)
       .then(res => { const d = pickData(res) || {}; if (active) setVendorPaths({ happy_paths: Array.isArray(d.happy_paths) ? d.happy_paths : [], exception_paths: Array.isArray(d.exception_paths) ? d.exception_paths : [] }); })
       .catch(() => { if (active) setVendorPaths({ happy_paths: [], exception_paths: [] }); })
       .finally(() => { if (active) setPathsLoading(false); });
     setAiResult(null);
     return () => { active = false; };
-  }, [selectedVendorId]);
+  }, [selectedVendorId, vendors]);
 
   const selectedVendor = useMemo(() => vendors.find(v => v.vendor_id === selectedVendorId) || null, [vendors, selectedVendorId]);
 
@@ -184,6 +180,15 @@ export default function VendorAnalysis() {
   };
 
   if (loading) return <div className="page-container"><Box sx={{ pt: 6, display: "flex", justifyContent: "center" }}><CircularProgress /></Box></div>;
+  if (!loading && vendors.length === 0) {
+    return (
+      <div className="page-container">
+        <Box sx={{ pt: 6, maxWidth: 900 }}>
+          <Alert severity="info">{error || "No live vendor data is available yet. Refresh the Celonis cache and try again."}</Alert>
+        </Box>
+      </div>
+    );
+  }
 
   return (
     <div className="page-container">

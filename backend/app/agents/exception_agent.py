@@ -82,8 +82,15 @@ Celonis process context:
 Known exception portfolio context:
 {json.dumps(self._known_exception_facts(), indent=2, default=str)}
 """
-        result = self.llm.chat_json(system_prompt, user_prompt)
-        return self._normalize_result(result)
+        result = self.reason_json(
+            system_prompt,
+            user_prompt,
+            prompt_purpose="Resolve exception and decide whether to auto-correct or escalate",
+            message_bus_input=input_data,
+        )
+        normalized = self._normalize_result(result)
+        handoff = normalized.get("prompt_for_next_agents", {}) if isinstance(normalized.get("prompt_for_next_agents"), dict) else {}
+        return self.attach_prompt_trace(normalized, handoff=handoff)
 
     def _normalize_result(self, result: Dict) -> Dict:
         result = result if isinstance(result, dict) else {}

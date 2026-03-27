@@ -40,6 +40,7 @@ export default function InteractionFlow({ executionTrace }) {
         const style = getAgentStyle(step.agent);
         const stepOutput = getStepOutput(step);
         const handoff = handoffs[index];
+        const promptTrace = stepOutput?.prompt_trace || {};
 
         return (
           <React.Fragment key={`${step.step_number || index}-${step.agent}`}>
@@ -119,6 +120,42 @@ export default function InteractionFlow({ executionTrace }) {
                   <Typography variant="body2" sx={{ color: "#374151", mb: 0.8 }}>
                     Output: {step.output_summary}
                   </Typography>
+                )}
+
+                {promptTrace?.prompt_purpose && (
+                  <Box sx={{ mt: 1, mb: 1, p: 1.2, background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "10px" }}>
+                    <Typography sx={{ fontSize: "0.68rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "#475569", mb: 0.6 }}>
+                      MessageBus Conversation
+                    </Typography>
+                    <Typography variant="caption" sx={{ display: "block", color: "#0f172a", mb: 0.4 }}>
+                      Prompt Purpose: {promptTrace.prompt_purpose}
+                    </Typography>
+                    {Array.isArray(promptTrace.guardrails) && promptTrace.guardrails.length > 0 && (
+                      <Typography variant="caption" sx={{ display: "block", color: "#7c2d12", mb: 0.4 }}>
+                        Guardrails: {promptTrace.guardrails.join(" | ")}
+                      </Typography>
+                    )}
+                    <Typography variant="caption" sx={{ display: "block", color: "#1d4ed8", mb: 0.4 }}>
+                      MessageBus Input keys: {Object.keys(promptTrace.message_bus_input || {}).join(", ") || "N/A"}
+                    </Typography>
+                    <details>
+                      <summary style={{ cursor: "pointer", color: "#1976d2" }}>Prompt sent to agent</summary>
+                      <Box sx={{ mt: 0.8 }}>
+                        <Typography variant="caption" sx={{ display: "block", color: "#475569", mb: 0.3 }}>System Prompt</Typography>
+                        <pre className="json-display" style={{ whiteSpace: "pre-wrap" }}>{promptTrace.system_prompt || "N/A"}</pre>
+                        <Typography variant="caption" sx={{ display: "block", color: "#475569", mt: 1, mb: 0.3 }}>User Prompt</Typography>
+                        <pre className="json-display" style={{ whiteSpace: "pre-wrap" }}>{promptTrace.user_prompt || "N/A"}</pre>
+                      </Box>
+                    </details>
+                    <details style={{ marginTop: 6 }}>
+                      <summary style={{ cursor: "pointer", color: "#1976d2" }}>Agent output sent back to MessageBus</summary>
+                      <pre className="json-display">{JSON.stringify(promptTrace.model_output || {}, null, 2)}</pre>
+                    </details>
+                    <details style={{ marginTop: 6 }}>
+                      <summary style={{ cursor: "pointer", color: "#1976d2" }}>Handoff to next agent</summary>
+                      <pre className="json-display">{JSON.stringify(promptTrace.handoff || {}, null, 2)}</pre>
+                    </details>
+                  </Box>
                 )}
 
                 <details>

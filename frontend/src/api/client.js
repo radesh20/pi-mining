@@ -5,6 +5,12 @@ const api = axios.create({
   timeout: 300000,
 });
 
+let cacheStatusInFlight = null;
+let cacheStatusSnapshot = null;
+let cacheStatusSnapshotAt = 0;
+let waitForCacheReadyPromise = null;
+const CACHE_STATUS_TTL_MS = 2000;
+
 export const unwrapApiData = (payload) => {
   if (payload == null) return payload;
   if (payload.data?.data !== undefined) return payload.data.data;
@@ -90,21 +96,50 @@ export const refreshCache = async () => {
   return res.data;
 };
 
-export const fetchCacheStatus = async () => {
-  const res = await api.get("/cache/status");
-  return res.data;
+export const fetchCacheStatus = async ({ force = false } = {}) => {
+  const now = Date.now();
+  if (!force && cacheStatusSnapshot && now - cacheStatusSnapshotAt < CACHE_STATUS_TTL_MS) {
+    return cacheStatusSnapshot;
+  }
+  if (!force && cacheStatusInFlight) {
+    return cacheStatusInFlight;
+  }
+
+  cacheStatusInFlight = api.get("/cache/status")
+    .then((res) => {
+      cacheStatusSnapshot = res.data;
+      cacheStatusSnapshotAt = Date.now();
+      return res.data;
+    })
+    .finally(() => {
+      cacheStatusInFlight = null;
+    });
+
+  return cacheStatusInFlight;
 };
 
 export const waitForCacheReady = async ({ timeoutMs = 120000, pollMs = 2000 } = {}) => {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    const status = unwrapApiData(await fetchCacheStatus()) || {};
-    if (status.is_loaded && !status.refresh_in_progress) {
-      return status;
-    }
-    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  if (waitForCacheReadyPromise) {
+    return waitForCacheReadyPromise;
   }
-  throw new Error("Timed out waiting for analytics cache to finish loading.");
+
+  waitForCacheReadyPromise = (async () => {
+    const startedAt = Date.now();
+    const effectivePollMs = Math.max(Number(pollMs || 0), 4000);
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const status = unwrapApiData(await fetchCacheStatus()) || {};
+      if (status.is_loaded && !status.refresh_in_progress) {
+        return status;
+      }
+      await new Promise((resolve) => setTimeout(resolve, effectivePollMs));
+    }
+    throw new Error("Timed out waiting for analytics cache to finish loading.");
+  })().finally(() => {
+    waitForCacheReadyPromise = null;
+  });
+
+  return waitForCacheReadyPromise;
 };
 
 // -----------------------------
