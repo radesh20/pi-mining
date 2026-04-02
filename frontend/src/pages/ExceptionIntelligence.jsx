@@ -24,6 +24,23 @@ const money = (v) => {
   return `${n.toFixed(0)} $`;
 };
 const pct = (v) => `${Number(v || 0).toFixed(1)}%`;
+const confidencePct = (v) => {
+  const n = Number(v ?? 0);
+  if (!Number.isFinite(n)) return "0%";
+  return `${Math.round(n <= 1 ? n * 100 : n)}%`;
+};
+const confidencePercentNumber = (v) => {
+  const n = Number(v ?? 0);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, Math.round(n <= 1 ? n * 100 : n)));
+};
+const normalizeConfidenceText = (text) => {
+  if (!text) return "";
+  const convert = (raw) => confidencePct(raw);
+  return String(text)
+    .replace(/confidence\s+(-?\d+(?:\.\d+)?)/gi, (_m, num) => `confidence ${convert(num)}`)
+    .replace(/(-?\d+(?:\.\d+)?)(?=\s*threshold)/gi, (_m, num) => convert(num));
+};
 const vendorDisplay = (rec) => rec?.vendor_name || rec?.vendor_id || rec?.recurring_vendor_hint || "—";
 
 const RISK_STYLES = {
@@ -33,35 +50,10 @@ const RISK_STYLES = {
   LOW:      { bg: "#E0F0E8", border: "#80C0A0", color: "#1D5C3A", dot: "#2A7A50" },
 };
 
-// TODO: Replace this hardcoded fallback with live guardrail checks from backend guardrails.py output.
-const HARDCODED_RESOLUTION_GUARDRAILS = [
-  {
-    ruleId: "EVIDENCE_REQUIRED",
-    status: "pass",
-    title: "Evidence gate",
-    detail: "Celonis evidence present — 3 signals cited.",
-    enforcement: "code",
-  },
-  {
-    ruleId: "AUTO_CORRECT_CONFIDENCE",
-    status: "warn",
-    title: "Auto-correct confidence",
-    detail: "AUTO_CORRECT overridden to HUMAN_REQUIRED — confidence 0.72 below 0.80 threshold.",
-    enforcement: "code",
-  },
-  {
-    ruleId: "SCHEMA_GATE",
-    status: "pass",
-    title: "Schema gate",
-    detail: "All required output fields present.",
-    enforcement: "code",
-  },
-];
-
 const GUARDRAIL_STATUS_STYLE = {
-  pass: { dot: "#3B6D11", bg: "#EAF3DE", label: "passed" },
-  fail: { dot: "#A32D2D", bg: "#FCEBEB", label: "failed" },
-  warn: { dot: "#854F0B", bg: "#FAEEDA", label: "warning" },
+  pass: { dot: "#3B6D11", bg: "#EAF3DE", title: "#27500A", detail: "#3B6D11", label: "passed" },
+  warn: { dot: "#854F0B", bg: "#FAEEDA", title: "#633806", detail: "#854F0B", label: "warning" },
+  fail: { dot: "#A32D2D", bg: "#FCEBEB", title: "#791F1F", detail: "#A32D2D", label: "failed" },
 };
 
 const toGuardrailSummary = (checks = []) => {
@@ -74,6 +66,11 @@ const toGuardrailSummary = (checks = []) => {
   if (warnings) chunks.push(`${warnings} warning${warnings === 1 ? "" : "s"}`);
   if (failed) chunks.push(`${failed} failed`);
   return chunks.join(" · ");
+};
+const toGuardrailSummaryStyle = (checks = []) => {
+  const failed = checks.some((c) => c.status === "fail");
+  if (failed) return { background: "#FCEBEB", color: "#791F1F", border: "1px solid #F09595" };
+  return { background: "#EAF3DE", color: "#27500A", border: "1px solid #97C459" };
 };
 
 function RiskBadge({ risk }) {
@@ -188,19 +185,29 @@ export default function ExceptionIntelligence() {
     () => records.findIndex((r) => r.exception_id === selectedRecordId),
     [records, selectedRecordId]
   );
-  const guardrailChecks = useMemo(
-    () => (Array.isArray(analysis?.guardrail_checks) ? analysis.guardrail_checks : HARDCODED_RESOLUTION_GUARDRAILS),
-    [analysis]
-  );
+  // TODO: This is the live backend hook consumption point for guardrail strip rendering in Case Resolution.
+  const guardrailChecks = useMemo(() => {
+    if (!Array.isArray(analysis?.guardrail_results)) return [];
+    return analysis.guardrail_results.map((item, idx) => ({
+      ruleId: item?.rule_id || item?.ruleId || `RULE_${idx + 1}`,
+      label: item?.label || item?.title || "Guardrail",
+      status: String(item?.status || "").toLowerCase(),
+      detail: normalizeConfidenceText(item?.detail || item?.reason || ""),
+      enforcement: item?.enforcement || "code",
+      agentName: item?.agent_name || item?.agentName || "ExceptionAgent",
+    }));
+  }, [analysis]);
   const guardrailSummary = useMemo(() => toGuardrailSummary(guardrailChecks), [guardrailChecks]);
+  const guardrailSummaryStyle = useMemo(() => toGuardrailSummaryStyle(guardrailChecks), [guardrailChecks]);
   const guardrailTrigger = useMemo(() => {
-    const triggered =
-      guardrailChecks.find((c) => c.ruleId === "AUTO_CORRECT_CONFIDENCE" && c.status !== "pass") ||
-      guardrailChecks.find((c) => c.status !== "pass") ||
-      null;
+    const triggered = guardrailChecks.find((c) => c.status === "fail" || c.status === "warn") || null;
     if (!triggered) return null;
-    return `Guardrail trigger: ${triggered.ruleId} fired on ExceptionAgent — ${triggered.detail}`;
+    return `Guardrail trigger: ${triggered.ruleId} fired on ${triggered.agentName} — ${triggered.detail}`;
   }, [guardrailChecks]);
+  const routingFinalStatus = Boolean(analysis?.send_to_human_review) ? "ESCALATED_TO_HUMAN" : analysis?.automation_decision || "MONITOR";
+  const routingUrgency = analysis?.turnaround_risk?.risk_level || "MEDIUM";
+  const routingEta = analysis?.turnaround_risk?.estimated_processing_days != null ? `${Number(analysis.turnaround_risk.estimated_processing_days).toFixed(2)}d` : "N/A";
+  const routingDecision = analysis?.classifier_agent?.decision || analysis?.automation_decision || "MONITOR";
 
   // ── Run analysis whenever selected record changes ──
   useEffect(() => {
@@ -499,80 +506,97 @@ export default function ExceptionIntelligence() {
                 {/* Next Best Action */}
                 <LabelValue label="Recommended Action" value={analysis?.next_best_action?.action} />
                 <LabelValue label="Why" value={analysis?.next_best_action?.why} />
-                <LabelValue label="Confidence" value={analysis?.next_best_action?.confidence != null ? Number(analysis.next_best_action.confidence).toFixed(2) : null} />
                 <LabelValue label="ETA" value={analysis?.turnaround_risk?.estimated_processing_days != null ? `${analysis.turnaround_risk.estimated_processing_days} days` : null} />
-
-                {/* Process-derived alternatives */}
-                {Array.isArray(analysis?.next_best_actions) && analysis.next_best_actions.length > 0 && (
-                  <Box sx={{ mt: 1.2, pt: 1, borderTop: "1px solid #EDD090" }}>
-                    <SectionLabel>Alternatives</SectionLabel>
-                    <Stack spacing={0.8}>
-                      {analysis.next_best_actions.slice(0, 3).map((item, idx) => (
-                        <Box key={idx} sx={{ display: "flex", gap: 1, alignItems: "flex-start" }}>
-                          <Box sx={{ background: "#F0EDE6", color: "#9C9690", width: 18, height: 18, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "0.6rem", fontWeight: 700, flexShrink: 0, fontFamily: G, mt: 0.1 }}>
-                            {idx + 1}
-                          </Box>
-                          <Typography sx={{ fontSize: "0.75rem", color: "#5C5650", fontFamily: G, lineHeight: 1.55 }}>
-                            {item.action} — {item.why}
-                          </Typography>
-                        </Box>
-                      ))}
-                    </Stack>
-                  </Box>
-                )}
 
                 {/* Classifier */}
                 <Box sx={{ mt: 1.2, pt: 1.2, borderTop: "1px solid #EDD090" }}>
-                  <SectionLabel>Classifier Agent</SectionLabel>
-                  <LabelValue label="Decision" value={analysis?.classifier_agent?.decision || analysis?.automation_decision} />
-                  <LabelValue label="Mode" value={analysis?.classifier_agent?.recommended_mode} />
-                  <LabelValue label="Rationale" value={analysis?.classifier_agent?.rationale} />
-                  <LabelValue label="Owner" value={analysis?.vendor_name || analysis?.vendor_id || vendorDisplay(selectedRecord)} />
-                  <LabelValue label="Confidence" value={analysis?.classifier_agent?.confidence != null ? Number(analysis.classifier_agent.confidence).toFixed(2) : null} />
-                </Box>
-
-                {guardrailChecks.length > 0 && (
-                  <Box sx={{ mt: 1.2, pt: 1.2, borderTop: "1px solid #EDD090" }}>
-                    <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 0.8 }}>
-                      <SectionLabel sx={{ mb: 0 }}>Guardrail checks — before handoff</SectionLabel>
-                      <Box sx={{ px: 0.8, py: 0.2, borderRadius: "999px", border: "1px solid #E8E3DA", background: "#F5F3EF" }}>
-                        <Typography sx={{ fontSize: "0.64rem", color: "#5C5650", fontFamily: G }}>{guardrailSummary}</Typography>
-                      </Box>
-                    </Box>
-                    <Stack spacing={0.6}>
-                      {guardrailChecks.map((check, idx) => {
-                        const style = GUARDRAIL_STATUS_STYLE[check.status] || GUARDRAIL_STATUS_STYLE.warn;
-                        return (
-                          <Box
-                            key={`${check.ruleId || idx}`}
-                            sx={{ p: 0.8, borderRadius: "8px", background: style.bg, display: "flex", gap: 0.7, alignItems: "flex-start" }}
-                          >
-                            <Box sx={{ width: 8, height: 8, borderRadius: "50%", background: style.dot, mt: 0.45, flexShrink: 0 }} />
-                            <Box>
-                              <Typography sx={{ fontSize: "0.78rem", color: "#17140F", fontFamily: G, fontWeight: 500 }}>
-                                {check.title} — {style.label}
-                              </Typography>
-                              <Typography sx={{ fontSize: "12px", color: "#5C5650", fontFamily: G, lineHeight: 1.45 }}>
-                                {check.detail}
-                              </Typography>
-                              <Typography sx={{ fontSize: "11px", color: "#9C9690", fontFamily: G }}>
-                                Rule: {check.ruleId} · enforcement: {check.enforcement || "code"}
-                              </Typography>
-                            </Box>
-                          </Box>
-                        );
-                      })}
-                    </Stack>
-                    {guardrailTrigger && (
-                      <Typography sx={{ fontSize: "12px", color: "#A05A10", fontFamily: G, mt: 0.8 }}>
-                        {guardrailTrigger}
+                  <SectionLabel>Classifier Decision</SectionLabel>
+                  <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 0.8 }}>
+                    <Box sx={{ px: 1, py: 0.3, borderRadius: "999px", border: "1px solid #E4E0D8", background: "#F5F3EF" }}>
+                      <Typography sx={{ fontSize: "0.72rem", color: "#5C5650", fontFamily: G, fontWeight: 600 }}>
+                        {analysis?.classifier_agent?.decision || analysis?.automation_decision || "MONITOR"}
                       </Typography>
-                    )}
+                    </Box>
+                    <Typography sx={{ fontSize: "0.78rem", color: "#5C5650", fontFamily: G, fontWeight: 600 }}>
+                      {confidencePct(analysis?.classifier_agent?.confidence)}
+                    </Typography>
                   </Box>
-                )}
+                  <Box sx={{ height: 5, background: "#F0EDE6", borderRadius: "99px", overflow: "hidden" }}>
+                    <Box
+                      sx={{
+                        height: "100%",
+                        width: `${confidencePercentNumber(analysis?.classifier_agent?.confidence)}%`,
+                        background: "#B5742A",
+                        borderRadius: "99px",
+                        transition: "width 0.5s ease",
+                      }}
+                    />
+                  </Box>
+                </Box>
               </PanelCard>
             </Grid>
           </Grid>
+
+          {guardrailChecks.length > 0 && (
+            <Card sx={{ border: "1px solid #ECEAE4 !important" }}>
+              <CardContent sx={{ pb: "14px !important" }}>
+                <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1 }}>
+                  <Typography sx={{ fontSize: "11px", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.05em", color: "#A09890", fontFamily: G }}>
+                    Guardrail checks — before action
+                  </Typography>
+                  <Box sx={{ px: "8px", py: "2px", borderRadius: "20px", ...guardrailSummaryStyle }}>
+                    <Typography sx={{ fontSize: "11px", fontFamily: G }}>{guardrailSummary}</Typography>
+                  </Box>
+                </Box>
+                <Stack spacing={0.7}>
+                  {guardrailChecks.map((check, idx) => {
+                    const style = GUARDRAIL_STATUS_STYLE[check.status] || GUARDRAIL_STATUS_STYLE.warn;
+                    return (
+                      <Box
+                        key={`${check.ruleId || idx}`}
+                        sx={{ p: "8px 10px", borderRadius: "8px", background: style.bg, display: "flex", gap: 0.9, alignItems: "flex-start" }}
+                      >
+                        <Box sx={{ width: 7, height: 7, borderRadius: "50%", background: style.dot, mt: "4px", flexShrink: 0 }} />
+                        <Box>
+                          <Typography sx={{ fontSize: "12px", color: style.title, fontFamily: G, fontWeight: 500 }}>
+                            {check.label} — {style.label}
+                          </Typography>
+                          <Typography sx={{ fontSize: "12px", color: style.detail, fontFamily: G, lineHeight: 1.45, mt: "1px" }}>
+                            {check.detail}
+                          </Typography>
+                          <Typography sx={{ fontSize: "11px", color: "#9C9690", fontFamily: G, mt: "2px" }}>
+                            Rule: {check.ruleId} · enforcement: {check.enforcement || "code"}
+                          </Typography>
+                        </Box>
+                      </Box>
+                    );
+                  })}
+                </Stack>
+              </CardContent>
+            </Card>
+          )}
+
+          <Card sx={{ border: "1px solid #ECEAE4 !important" }}>
+            <CardContent sx={{ pb: "14px !important" }}>
+              <Typography sx={{ fontFamily: S, fontSize: "1.05rem", color: "#A05A10", mb: 0.9 }}>
+                Routing Outcome
+              </Typography>
+              <Typography sx={{ fontSize: "0.78rem", color: "#6C6660", fontFamily: G, mb: 0.5 }}>
+                Final status: {routingFinalStatus} | Urgency: {routingUrgency} | ETA {routingEta}
+              </Typography>
+              <Typography sx={{ fontSize: "0.78rem", color: "#7A5010", fontFamily: G, lineHeight: 1.55 }}>
+                Automation posture is {routingDecision} based on process risk, root cause, and due-date timing context.
+              </Typography>
+              <Typography sx={{ fontSize: "0.78rem", color: "#7A5010", fontFamily: G, lineHeight: 1.55 }}>
+                Auto route / human decision: {routingDecision} · Teams handoff ready: {Boolean(analysis?.send_to_human_review) ? "Yes" : "No"}
+              </Typography>
+              {guardrailTrigger && (
+                <Typography sx={{ fontSize: "12px", color: "#A05A10", fontFamily: G, mt: 0.5 }}>
+                  {guardrailTrigger}
+                </Typography>
+              )}
+            </CardContent>
+          </Card>
 
           {/* ══ Collapsible Agent Routing Context ══ */}
           {analysis?.prompt_for_next_agents && (
