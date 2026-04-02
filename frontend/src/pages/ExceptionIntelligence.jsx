@@ -193,6 +193,14 @@ export default function ExceptionIntelligence() {
     [analysis]
   );
   const guardrailSummary = useMemo(() => toGuardrailSummary(guardrailChecks), [guardrailChecks]);
+  const guardrailTrigger = useMemo(() => {
+    const triggered =
+      guardrailChecks.find((c) => c.ruleId === "AUTO_CORRECT_CONFIDENCE" && c.status !== "pass") ||
+      guardrailChecks.find((c) => c.status !== "pass") ||
+      null;
+    if (!triggered) return null;
+    return `Guardrail trigger: ${triggered.ruleId} fired on ExceptionAgent — ${triggered.detail}`;
+  }, [guardrailChecks]);
 
   // ── Run analysis whenever selected record changes ──
   useEffect(() => {
@@ -555,9 +563,11 @@ export default function ExceptionIntelligence() {
                         );
                       })}
                     </Stack>
-                    <Typography sx={{ fontSize: "12px", color: "#A05A10", fontFamily: G, mt: 0.8 }}>
-                      Guardrail trigger: AUTO_CORRECT_CONFIDENCE fired on ExceptionAgent — confidence 0.72 overridden to HUMAN_REQUIRED
-                    </Typography>
+                    {guardrailTrigger && (
+                      <Typography sx={{ fontSize: "12px", color: "#A05A10", fontFamily: G, mt: 0.8 }}>
+                        {guardrailTrigger}
+                      </Typography>
+                    )}
                   </Box>
                 )}
               </PanelCard>
