@@ -2,6 +2,7 @@
 Exception registry — replaces all inline keyword if/else blocks in orchestrator_service.py.
 Add new exception types here. Do not add them to the orchestrator.
 """
+import re
 
 EXCEPTION_REGISTRY = {
     "payment_terms_mismatch": {
@@ -57,9 +58,16 @@ def classify_exception(scenario_text: str) -> dict:
     Returns the registry entry dict, or the invoice_exception fallback.
     """
     text = scenario_text.lower()
-    for exception_type, config in EXCEPTION_REGISTRY.items():
-        if any(kw in text for kw in config["keywords"]):
-            return {"id": exception_type, **config}
+    ordered = sorted(
+        EXCEPTION_REGISTRY.items(),
+        key=lambda item: max(len(kw) for kw in item[1]["keywords"]),
+        reverse=True,
+    )
+    for exception_type, config in ordered:
+        for kw in config["keywords"]:
+            pattern = r"\b" + re.escape(kw.lower()) + r"\b"
+            if re.search(pattern, text):
+                return {"id": exception_type, **config}
     return {"id": "invoice_exception", **EXCEPTION_REGISTRY["invoice_exception"]}
 
 

@@ -5,7 +5,6 @@ No agent .py file should contain prompt strings after this is in place.
 """
 import yaml
 from pathlib import Path
-from string import Template
 
 PROMPTS_DIR = Path(__file__).parent
 _cache = {}
@@ -29,10 +28,17 @@ def load_prompt(agent_name: str, **kwargs) -> dict:
         agent_path = PROMPTS_DIR / f"{agent_name}.yaml"
         base_path = PROMPTS_DIR / "shared_base.yaml"
 
-        with open(agent_path) as f:
-            agent_data = yaml.safe_load(f)
-        with open(base_path) as f:
-            base_data = yaml.safe_load(f)
+        try:
+            with open(agent_path) as f:
+                agent_data = yaml.safe_load(f)
+            with open(base_path) as f:
+                base_data = yaml.safe_load(f)
+        except FileNotFoundError as exc:
+            raise ValueError(f"Prompt file not found for agent '{agent_name}': {exc}") from exc
+        except yaml.YAMLError as exc:
+            raise ValueError(f"Invalid YAML for agent '{agent_name}': {exc}") from exc
+        except OSError as exc:
+            raise ValueError(f"Unable to read prompt files for agent '{agent_name}': {exc}") from exc
 
         _cache[agent_name] = {
             "system_prompt": base_data["shared_instructions"] + "\n\n" + agent_data["system_prompt"],
