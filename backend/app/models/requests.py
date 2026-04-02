@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Any, List, Optional
 
 
 class InvoiceRequest(BaseModel):
@@ -28,4 +28,14 @@ class TableConfig(BaseModel):
     resource_role_column: str = ""
     case_table: str = ""
 
-    
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    case_id: Optional[str] = None
+    vendor_id: Optional[str] = None
+    conversation_history: List[ChatMessage] = []

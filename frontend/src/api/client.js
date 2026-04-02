@@ -269,4 +269,17 @@ export const sendExceptionToTeams = async (analysis) => {
   return res.data;
 };
 
+
+export const sendChatMessage = async ({ message, caseId, vendorId, conversationHistory = [] }) => {
+  const res = await api.post("/chat/", {
+    message,
+    case_id: caseId || null,
+    vendor_id: vendorId || null,
+    conversation_history: conversationHistory.map((m) => ({
+      role: m.role,
+      content: m.content,
+    })),
+  });
+  return res.data;
+};
 export default api;

@@ -11,6 +11,7 @@ from app.api.routes_prompts import router as prompts_router
 from app.api.routes_agents import router as agents_router
 from app.api.routes_exceptions import router as exceptions_router
 from app.api.routes_vendors import router as vendors_router
+from app.api.routes_chat import router as chat_router
 from app.services.data_cache_service import get_data_cache_service
 from app.config import settings
 
@@ -30,11 +31,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(process_router, prefix="/api", tags=["Process"])
-app.include_router(prompts_router, prefix="/api", tags=["Prompts"])
-app.include_router(agents_router, prefix="/api", tags=["Agents"])
+app.include_router(process_router,    prefix="/api", tags=["Process"])
+app.include_router(prompts_router,    prefix="/api", tags=["Prompts"])
+app.include_router(agents_router,     prefix="/api", tags=["Agents"])
 app.include_router(exceptions_router, prefix="/api", tags=["Exceptions"])
-app.include_router(vendors_router, prefix="/api", tags=["Vendors"])
+app.include_router(vendors_router,    prefix="/api", tags=["Vendors"])
+app.include_router(chat_router,       prefix="/api", tags=["Chat"])
 
 
 @app.get("/")
@@ -76,12 +78,11 @@ def preload_data_cache() -> None:
                 try:
                     cache = get_data_cache_service()
                     cache.ensure_loaded()
-                except Exception as e:  # noqa: BLE001
+                except Exception as e:
                     logger.warning("Startup cache warmup failed (non-blocking): %s", str(e))
 
             threading.Thread(target=_warm_cache_once, daemon=True, name="cache-startup-warmup").start()
     except Exception:
-        # Do not block API startup; cache can still be refreshed manually.
         pass
 
     refresh_seconds = max(int(getattr(settings, "CACHE_AUTO_REFRESH_SECONDS", 0) or 0), 0)
@@ -97,7 +98,7 @@ def preload_data_cache() -> None:
                 if policy == "stale_only" and not cache.is_stale():
                     continue
                 cache.refresh_all_data()
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 logger.warning("Background cache refresh failed: %s", str(e))
 
     t = threading.Thread(target=_auto_refresh_loop, daemon=True, name="cache-auto-refresh")
