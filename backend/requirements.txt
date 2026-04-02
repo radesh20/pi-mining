@@ -9,3 +9,4 @@ pydantic==2.6.1
 python-multipart==0.0.9
 
 #pip install --extra-index-url=https://pypi.celonis.cloud/ pycelonis
+PyYAML==6.0.2

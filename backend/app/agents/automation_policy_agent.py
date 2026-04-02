@@ -3,6 +3,11 @@ from typing import Dict
 from app.agents.base_agent import BaseAgent
 from app.services.azure_openai_service import AzureOpenAIService
 
+try:
+    from backend.app.prompts.prompt_loader import load_prompt
+except ModuleNotFoundError:
+    from app.prompts.prompt_loader import load_prompt
+
 
 class AutomationPolicyAgent(BaseAgent):
     def __init__(self, llm: AzureOpenAIService, process_context: Dict):
@@ -17,53 +22,21 @@ class AutomationPolicyAgent(BaseAgent):
                 "Do not output deterministic static mappings without explanation.",
             ],
         )
+        self.prompt_config = load_prompt("automation_policy_agent")
 
     def process(self, input_data: Dict) -> Dict:
         import json
 
         policy_seed = self._policy_seed()
-        system_prompt = """
-You are the Automation Policy Agent for P2P exception automation.
-You must produce AI-driven policy recommendations using Celonis evidence and turnaround risk.
-
-Return strict JSON:
-{
-  "automation_decision": "AUTOMATE|MONITOR|HUMAN_REQUIRED|BLOCK|AUTOMATE_WITH_MONITORING|AUTO_ESCALATE|ANALYZE",
-  "confidence": 0.0,
-  "risk_level": "LOW|MEDIUM|HIGH|CRITICAL",
-  "reasoning": "...",
-  "celonis_evidence": "...",
-  "recommended_agent": "...",
-  "human_oversight_needed": true,
-  "exception_specific_policies": {
-    "payment_terms_mismatch": {"policy": "...", "reasoning": "...", "celonis_evidence": "..."},
-    "invoice_exception": {"policy": "...", "reasoning": "...", "celonis_evidence": "..."},
-    "short_payment_terms": {"policy": "...", "reasoning": "...", "celonis_evidence": "..."},
-    "early_payment": {"policy": "...", "reasoning": "...", "celonis_evidence": "..."},
-    "open_invoices": {"policy": "...", "reasoning": "...", "celonis_evidence": "..."},
-    "paid_late": {"policy": "...", "reasoning": "...", "celonis_evidence": "..."}
-  }
-}
-
-Requirements:
-1. Include explicit turnaround-time pressure in global decision and each high-risk policy.
-2. Use policy_seed as guidance but adapt based on process_context and case details.
-3. Keep policies AI-driven; avoid hardcoded if/else phrasing.
-"""
-
-        user_prompt = f"""
-Case input:
-{json.dumps(input_data, indent=2, default=str)}
-
-Policy guidance seed from Celonis findings:
-{json.dumps(policy_seed, indent=2, default=str)}
-
-Full process context:
-{json.dumps(self.process_context, indent=2, default=str)}
-"""
+        prompt_config = load_prompt(
+            "automation_policy_agent",
+            input_data_json=json.dumps(input_data, indent=2, default=str),
+            policy_seed_json=json.dumps(policy_seed, indent=2, default=str),
+            process_context_json=json.dumps(self.process_context, indent=2, default=str),
+        )
         result = self.reason_json(
-            system_prompt,
-            user_prompt,
+            prompt_config["system_prompt"],
+            prompt_config["user_prompt"],
             prompt_purpose="Decide automation policy, route, and human-oversight posture",
             message_bus_input=input_data,
         )

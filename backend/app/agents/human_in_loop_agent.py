@@ -3,6 +3,11 @@ from typing import Dict
 from app.agents.base_agent import BaseAgent
 from app.services.azure_openai_service import AzureOpenAIService
 
+try:
+    from backend.app.prompts.prompt_loader import load_prompt
+except ModuleNotFoundError:
+    from app.prompts.prompt_loader import load_prompt
+
 
 class HumanInLoopAgent(BaseAgent):
     def __init__(self, llm: AzureOpenAIService, process_context: Dict):
@@ -17,58 +22,19 @@ class HumanInLoopAgent(BaseAgent):
                 "Explicitly surface turnaround and financial impact risk.",
             ],
         )
+        self.prompt_config = load_prompt("human_in_loop_agent")
 
     def process(self, input_data: Dict) -> Dict:
         import json
 
-        system_prompt = """
-You are the Human-in-the-Loop Agent for escalated P2P exceptions.
-Your role is to prepare concise and high-context review packages for human experts.
-
-Return strict JSON:
-{
-  "case_summary": "...",
-  "reason_for_review": "...",
-  "ai_recommendation": {
-    "suggested_action": "...",
-    "confidence": 0.0,
-    "reasoning": "...",
-    "celonis_evidence": "..."
-  },
-  "priority": "LOW|MEDIUM|HIGH|CRITICAL",
-  "assigned_role": "...",
-  "turnaround_risk": {
-    "days_remaining": 0.0,
-    "estimated_processing_days": 0.0,
-    "risk_assessment": "...",
-    "celonis_evidence": "..."
-  },
-  "financial_impact": {
-    "value_at_risk": 0.0,
-    "potential_savings": 0.0,
-    "working_capital_impact": "..."
-  },
-  "celonis_evidence": "...",
-  "ai_reasoning": "..."
-}
-
-Preparation requirements by case type:
-- Payment terms mismatch: show invoice vs PO vs vendor master terms and recommendation.
-- Invoice exception: show subtype, age in queue, similar case signals, urgency.
-- Short payment terms: clarify if 0-day is valid or data issue; include late-risk warning.
-- Early payment: show current vs optimal pay date and discount tradeoff.
-"""
-
-        user_prompt = f"""
-Escalated case payload:
-{json.dumps(input_data, indent=2, default=str)}
-
-Full Celonis process context:
-{json.dumps(self.process_context, indent=2, default=str)}
-"""
+        prompt_config = load_prompt(
+            "human_in_loop_agent",
+            input_data_json=json.dumps(input_data, indent=2, default=str),
+            process_context_json=json.dumps(self.process_context, indent=2, default=str),
+        )
         result = self.reason_json(
-            system_prompt,
-            user_prompt,
+            prompt_config["system_prompt"],
+            prompt_config["user_prompt"],
             prompt_purpose="Prepare human review package and escalation recommendation",
             message_bus_input=input_data,
         )

@@ -1,10 +1,18 @@
 import copy
 import hashlib
 import json
+import logging
 import threading
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+
+try:
+    from backend.app.guardrails import classify_exception, get_handler, GuardrailViolation
+except ModuleNotFoundError:
+    from app.guardrails import classify_exception, get_handler, GuardrailViolation
+
+logger = logging.getLogger(__name__)
 
 
 class OrchestratorService:
@@ -230,12 +238,31 @@ class OrchestratorService:
             agent_factory=lambda: self._agent_exception(),
         )
 
+        # Cross-agent handoff guardrail
+        exception_result = exception_output or {}
+        valid_strategies = {"AUTO_CORRECT", "MANUAL_REVIEW", "HUMAN_REQUIRED"}
+        if exception_result.get("resolution_strategy") not in valid_strategies:
+            logger.warning("[GUARDRAIL] HANDOFF_INVALID_STRATEGY — routing to human_in_loop")
+            return self._route_to_human(invoice_data, reason="Invalid resolution strategy from exception_agent")
+
+        if not exception_result.get("celonis_evidence"):
+            logger.warning("[GUARDRAIL] HANDOFF_MISSING_EVIDENCE — routing to human_in_loop")
+            return self._route_to_human(invoice_data, reason="No Celonis evidence in exception_agent output")
+
         resolved = bool((exception_output or {}).get("resolved", False)) and not exception_error
         resolution_strategy = str(
             (exception_output or {}).get("resolution_strategy", "")
         ).upper()
 
         if resolved and resolution_strategy != "HUMAN_REQUIRED":
+            accumulated_result = dict(exception_output or {})
+            accumulated_result["policy_decision"] = (policy_output or {}).get("automation_decision")
+            required_final_fields = {"resolution_strategy", "policy_decision", "celonis_evidence"}
+            missing = required_final_fields - accumulated_result.keys()
+            if missing:
+                logger.error(f"[GUARDRAIL] FINAL_POST_MISSING_FIELDS: {missing}")
+                return self._route_to_human(invoice_data, reason=f"Missing required fields before post: {missing}")
+            logger.info(f"[GUARDRAIL] All pre-post checks passed for invoice {invoice_data.get('invoice_id', 'UNKNOWN')}")
             trace["final_status"] = self._derive_posted_status(
                 invoice_data=invoice_data,
                 exception_output=exception_output or {},
@@ -1130,42 +1157,36 @@ class OrchestratorService:
         return value
 
     def _detect_scenario(self, invoice_data: Dict) -> Dict[str, str]:
-        scenario_text = str(invoice_data.get("scenario", "") or "").lower()
+        scenario_text = str(invoice_data.get("scenario", "") or "")
         invoice_terms = str(invoice_data.get("invoice_payment_terms", "") or "").strip().lower()
         po_terms = str(invoice_data.get("po_payment_terms", "") or "").strip().lower()
         vendor_terms = str(invoice_data.get("vendor_master_terms", "") or "").strip().lower()
         actual_dpo = float(invoice_data.get("actual_dpo", 0) or 0)
         potential_dpo = float(invoice_data.get("potential_dpo", 0) or 0)
+        label_map = {
+            "payment_terms_mismatch": "Payment Terms Mismatch",
+            "tax_mismatch": "Tax Mismatch",
+            "short_payment_terms": "Short Payment Terms",
+            "paid_late": "Paid Late",
+            "invoice_exception": "Invoice Exception",
+            "early_payment": "Early Payment",
+        }
+        description_map = {
+            "payment_terms_mismatch": "Invoice, PO, or vendor master terms are not aligned.",
+            "tax_mismatch": "Tax code or tax treatment mismatch requires exception handling.",
+            "short_payment_terms": "Terms imply an avoidably short payment runway.",
+            "paid_late": "The current path suggests a late-payment outcome without intervention.",
+            "invoice_exception": "The invoice requires exception handling before posting or approval.",
+            "early_payment": "Payment was or will be executed earlier than the working-capital optimum.",
+        }
 
-        if "payment terms mismatch" in scenario_text or "terms mismatch" in scenario_text:
+        if scenario_text:
+            classified = classify_exception(scenario_text)
+            scenario_id = classified.get("id", "invoice_exception")
             return {
-                "id": "payment_terms_mismatch",
-                "label": "Payment Terms Mismatch",
-                "description": "Invoice, PO, or vendor master terms are not aligned.",
-            }
-        if "short payment" in scenario_text or "0-day" in scenario_text or "0 day" in scenario_text:
-            return {
-                "id": "short_payment_terms",
-                "label": "Short Payment Terms",
-                "description": "Terms imply an avoidably short payment runway.",
-            }
-        if "late" in scenario_text:
-            return {
-                "id": "paid_late",
-                "label": "Paid Late",
-                "description": "The current path suggests a late-payment outcome without intervention.",
-            }
-        if "invoice exception" in scenario_text or "exception" in scenario_text:
-            return {
-                "id": "invoice_exception",
-                "label": "Invoice Exception",
-                "description": "The invoice requires exception handling before posting or approval.",
-            }
-        if "early payment" in scenario_text:
-            return {
-                "id": "early_payment",
-                "label": "Early Payment",
-                "description": "Payment was or will be executed earlier than the working-capital optimum.",
+                "id": scenario_id,
+                "label": label_map.get(scenario_id, "Invoice Exception"),
+                "description": description_map.get(scenario_id, description_map["invoice_exception"]),
             }
         if (invoice_terms and po_terms and invoice_terms != po_terms) or (invoice_terms and vendor_terms and invoice_terms != vendor_terms):
             return {
@@ -1363,19 +1384,43 @@ class OrchestratorService:
         if str(current_status).upper() == "BLOCKED":
             return current_status
 
-        scenario = str(invoice_data.get("scenario", "")).lower()
-        if not scenario:
+        scenario_text = str(invoice_data.get("scenario", "") or "")
+        if not scenario_text:
             return current_status
 
-        if any(key in scenario for key in ["tax mismatch", "stuck 80", "80 days", "payment overdue"]):
+        scenario = classify_exception(scenario_text).get("id", "invoice_exception")
+        if scenario in {"tax_mismatch", "paid_late", "invoice_exception"}:
             return "ESCALATED_TO_HUMAN"
-        if any(key in scenario for key in ["0-day", "short payment terms"]):
+        if scenario in {"short_payment_terms", "payment_terms_mismatch"}:
             return "POSTED"
-        if "payment terms mismatch" in scenario:
-            return "POSTED"
-        if "early payment" in scenario:
+        if scenario == "early_payment":
             return "APPROVED_EARLY_PAYMENT"
         return current_status
+
+    def _route_to_human(self, invoice_data: Dict, reason: str) -> Dict:
+        trace = self._init_trace(invoice_data)
+        trace["final_status"] = "ESCALATED_TO_HUMAN"
+        trace["exception_summary"] = {
+            "exception_detected": True,
+            "exception_type": "invoice_exception",
+            "resolution": "Escalated for human decision",
+            "resolved_by": "Human-in-the-Loop Agent",
+            "reasoning": reason,
+        }
+        trace["financial_summary"] = self._build_financial_summary(
+            invoice_data=invoice_data,
+            invoice_output=None,
+            exception_output=None,
+        )
+        trace["turnaround_assessment"] = self._build_turnaround_assessment(
+            invoice_data=invoice_data,
+            invoice_output=None,
+            exception_output=None,
+            human_output=None,
+        )
+        trace["orchestration_reasoning"] = reason
+        trace["next_best_action_recommender_prompt"] = {}
+        return {"execution_trace": trace}
 
     @staticmethod
     def _has_exception(invoice_output: Optional[Dict]) -> bool:
