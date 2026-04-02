@@ -9,6 +9,7 @@ import ExceptionsWorkbench from "./pages/ExceptionsWorkbench";
 import ExceptionIntelligence from "./pages/ExceptionIntelligence";
 import CrossAgentInteraction from "./pages/CrossAgentInteraction";
 import VendorAnalysis from "./pages/VendorAnalysis";
+import PIChat from "./pages/PIChat";          // ← new
 import "./App.css";
 
 const theme = createTheme({
@@ -36,9 +37,7 @@ const theme = createTheme({
   shape: { borderRadius: 10 },
   components: {
     MuiCssBaseline: {
-      styleOverrides: {
-        body: { background: "#F7F5F0" },
-      },
+      styleOverrides: { body: { background: "#F7F5F0" } },
     },
     MuiCard: {
       styleOverrides: {
@@ -60,12 +59,8 @@ const theme = createTheme({
     MuiButton: {
       styleOverrides: {
         root: {
-          textTransform: "none",
-          fontWeight: 600,
-          borderRadius: "10px",
-          fontSize: "0.82rem",
-          letterSpacing: 0,
-          boxShadow: "none",
+          textTransform: "none", fontWeight: 600, borderRadius: "10px",
+          fontSize: "0.82rem", letterSpacing: 0, boxShadow: "none",
           "&:hover": { boxShadow: "none" },
         },
         containedPrimary: {
@@ -73,21 +68,14 @@ const theme = createTheme({
           "&:hover": { background: "#9A6020", boxShadow: "none" },
         },
         outlinedPrimary: {
-          borderColor: "#D8D2C8",
-          color: "#5C5650",
+          borderColor: "#D8D2C8", color: "#5C5650",
           "&:hover": { background: "#F5F2EC", borderColor: "#C4BDB0" },
         },
       },
     },
     MuiChip: {
       styleOverrides: {
-        root: {
-          fontFamily: "'Geist', system-ui, sans-serif",
-          fontWeight: 600,
-          fontSize: "0.7rem",
-          borderRadius: "99px",
-          letterSpacing: "0.02em",
-        },
+        root: { fontFamily: "'Geist', system-ui, sans-serif", fontWeight: 600, fontSize: "0.7rem", borderRadius: "99px", letterSpacing: "0.02em" },
         colorError: { background: "#FAEAEA", color: "#B03030", border: "1px solid #E0A0A0" },
         colorWarning: { background: "#FEF3DC", color: "#A05A10", border: "1px solid #F0C870" },
         colorSuccess: { background: "#E0F0E8", color: "#1D5C3A", border: "1px solid #80C0A0" },
@@ -96,11 +84,7 @@ const theme = createTheme({
     },
     MuiAlert: {
       styleOverrides: {
-        root: {
-          borderRadius: "10px",
-          fontFamily: "'Geist', system-ui, sans-serif",
-          fontSize: "0.875rem",
-        },
+        root: { borderRadius: "10px", fontFamily: "'Geist', system-ui, sans-serif", fontSize: "0.875rem" },
         standardInfo: { background: "#EBF2FC", color: "#1E4E8C" },
         standardSuccess: { background: "#E0F0E8", color: "#1D5C3A" },
         standardWarning: { background: "#FEF3DC", color: "#A05A10" },
@@ -111,26 +95,16 @@ const theme = createTheme({
       styleOverrides: {
         root: {
           "& .MuiTableCell-head": {
-            background: "#F0EDE6",
-            color: "#9C9690",
-            fontWeight: 700,
-            fontSize: "0.69rem",
-            textTransform: "uppercase",
-            letterSpacing: "0.07em",
-            borderBottom: "1px solid #E8E3DA",
-            fontFamily: "'Geist', system-ui, sans-serif",
+            background: "#F0EDE6", color: "#9C9690", fontWeight: 700,
+            fontSize: "0.69rem", textTransform: "uppercase", letterSpacing: "0.07em",
+            borderBottom: "1px solid #E8E3DA", fontFamily: "'Geist', system-ui, sans-serif",
           },
         },
       },
     },
     MuiTableCell: {
       styleOverrides: {
-        body: {
-          borderBottom: "1px solid #E8E3DA",
-          color: "#5C5650",
-          fontFamily: "'Geist', system-ui, sans-serif",
-          fontSize: "0.875rem",
-        },
+        body: { borderBottom: "1px solid #E8E3DA", color: "#5C5650", fontFamily: "'Geist', system-ui, sans-serif", fontSize: "0.875rem" },
       },
     },
     MuiTableRow: {
@@ -145,28 +119,18 @@ const theme = createTheme({
       styleOverrides: {
         root: {
           "& .MuiOutlinedInput-root": {
-            borderRadius: "10px",
-            background: "#FFFFFF",
-            fontFamily: "'Geist', system-ui, sans-serif",
-            fontSize: "0.875rem",
+            borderRadius: "10px", background: "#FFFFFF",
+            fontFamily: "'Geist', system-ui, sans-serif", fontSize: "0.875rem",
             "& fieldset": { borderColor: "#D8D2C8" },
             "&:hover fieldset": { borderColor: "#C4BDB0" },
             "&.Mui-focused fieldset": { borderColor: "#B5742A" },
           },
-          "& .MuiInputLabel-root": {
-            fontFamily: "'Geist', system-ui, sans-serif",
-            fontSize: "0.82rem",
-            color: "#9C9690",
-          },
+          "& .MuiInputLabel-root": { fontFamily: "'Geist', system-ui, sans-serif", fontSize: "0.82rem", color: "#9C9690" },
         },
       },
     },
-    MuiDivider: {
-      styleOverrides: { root: { borderColor: "#E8E3DA" } },
-    },
-    MuiAppBar: {
-      styleOverrides: { root: { display: "none" } },
-    },
+    MuiDivider: { styleOverrides: { root: { borderColor: "#E8E3DA" } } },
+    MuiAppBar: { styleOverrides: { root: { display: "none" } } },
   },
 });
 
@@ -185,6 +149,7 @@ export default function App() {
               <Route path="/exception-intelligence" element={<ExceptionIntelligence />} />
               <Route path="/vendor-analysis" element={<VendorAnalysis />} />
               <Route path="/interaction" element={<CrossAgentInteraction />} />
+              <Route path="/chat" element={<PIChat />} />   {/* ← new */}
               <Route path="/process-agents" element={<Navigate to="/" replace />} />
               <Route path="/deep-dive" element={<Navigate to="/" replace />} />
             </Routes>

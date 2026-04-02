@@ -2,12 +2,10 @@ import React, { useState, useEffect } from "react";
 import { Link, useLocation } from "react-router-dom";
 
 const NAV_ITEMS = [
-  { label: "Dashboard", path: "/" },
   { label: "Celonis Setup", path: "/setup" },
   { label: "Exception Triage", path: "/exceptions-workbench" },
-  { label: "Case Resolution", path: "/exception-intelligence" },
-  { label: "Vendor Analysis", path: "/vendor-analysis" },
   { label: "Cross-Agent Flow", path: "/interaction" },
+  { label: "PI Chat", path: "/chat", highlight: true },
 ];
 
 export default function Navbar() {
@@ -68,6 +66,55 @@ export default function Navbar() {
         <div style={{ display: "flex", alignItems: "center", gap: "2px", overflow: "auto", flex: 1 }}>
           {NAV_ITEMS.map((item) => {
             const active = location.pathname === item.path;
+            const isHighlight = item.highlight;
+
+            if (isHighlight) {
+              return (
+                <Link
+                  key={item.path}
+                  to={item.path}
+                  style={{
+                    position: "relative",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    padding: "5px 12px",
+                    borderRadius: "8px",
+                    fontSize: "0.8rem",
+                    fontWeight: 600,
+                    color: active ? "#FFFFFF" : "#B5742A",
+                    textDecoration: "none",
+                    background: active ? "#B5742A" : "rgba(181,116,42,0.08)",
+                    border: `1px solid ${active ? "#B5742A" : "rgba(181,116,42,0.25)"}`,
+                    transition: "all 0.15s",
+                    whiteSpace: "nowrap",
+                    fontFamily: "'Geist', system-ui, sans-serif",
+                    letterSpacing: "-0.01em",
+                    marginLeft: "6px",
+                  }}
+                  onMouseEnter={e => {
+                    if (!active) {
+                      e.currentTarget.style.background = "rgba(181,116,42,0.15)";
+                      e.currentTarget.style.borderColor = "rgba(181,116,42,0.4)";
+                    }
+                  }}
+                  onMouseLeave={e => {
+                    if (!active) {
+                      e.currentTarget.style.background = "rgba(181,116,42,0.08)";
+                      e.currentTarget.style.borderColor = "rgba(181,116,42,0.25)";
+                    }
+                  }}
+                >
+                  {/* Chat icon */}
+                  <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                    <path d="M11 1H2C1.45 1 1 1.45 1 2v7c0 .55.45 1 1 1h1.5l1.5 2 1.5-2H11c.55 0 1-.45 1-1V2c0-.55-.45-1-1-1Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+                    <path d="M4 5h5M4 7.5h3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                  </svg>
+                  {item.label}
+                </Link>
+              );
+            }
+
             return (
               <Link
                 key={item.path}
@@ -87,7 +134,6 @@ export default function Navbar() {
                   whiteSpace: "nowrap",
                   fontFamily: "'Geist', system-ui, sans-serif",
                   letterSpacing: "-0.01em",
-                  ...(active ? {} : {}),
                 }}
                 onMouseEnter={e => { if (!active) { e.currentTarget.style.background = "#F0EDE6"; e.currentTarget.style.color = "#17140F"; } }}
                 onMouseLeave={e => { if (!active) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "#7A746E"; } }}
