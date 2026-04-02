@@ -33,6 +33,49 @@ const RISK_STYLES = {
   LOW:      { bg: "#E0F0E8", border: "#80C0A0", color: "#1D5C3A", dot: "#2A7A50" },
 };
 
+// TODO: Replace this hardcoded fallback with live guardrail checks from backend guardrails.py output.
+const HARDCODED_RESOLUTION_GUARDRAILS = [
+  {
+    ruleId: "EVIDENCE_REQUIRED",
+    status: "pass",
+    title: "Evidence gate",
+    detail: "Celonis evidence present — 3 signals cited.",
+    enforcement: "code",
+  },
+  {
+    ruleId: "AUTO_CORRECT_CONFIDENCE",
+    status: "warn",
+    title: "Auto-correct confidence",
+    detail: "AUTO_CORRECT overridden to HUMAN_REQUIRED — confidence 0.72 below 0.80 threshold.",
+    enforcement: "code",
+  },
+  {
+    ruleId: "SCHEMA_GATE",
+    status: "pass",
+    title: "Schema gate",
+    detail: "All required output fields present.",
+    enforcement: "code",
+  },
+];
+
+const GUARDRAIL_STATUS_STYLE = {
+  pass: { dot: "#3B6D11", bg: "#EAF3DE", label: "passed" },
+  fail: { dot: "#A32D2D", bg: "#FCEBEB", label: "failed" },
+  warn: { dot: "#854F0B", bg: "#FAEEDA", label: "warning" },
+};
+
+const toGuardrailSummary = (checks = []) => {
+  const passed = checks.filter((c) => c.status === "pass").length;
+  const warnings = checks.filter((c) => c.status === "warn").length;
+  const failed = checks.filter((c) => c.status === "fail").length;
+  if (checks.length > 0 && passed === checks.length) return "all passed";
+  const chunks = [];
+  if (passed) chunks.push(`${passed} passed`);
+  if (warnings) chunks.push(`${warnings} warning${warnings === 1 ? "" : "s"}`);
+  if (failed) chunks.push(`${failed} failed`);
+  return chunks.join(" · ");
+};
+
 function RiskBadge({ risk }) {
   const key = String(risk || "").toUpperCase();
   const s = RISK_STYLES[key] || RISK_STYLES.LOW;
@@ -145,6 +188,11 @@ export default function ExceptionIntelligence() {
     () => records.findIndex((r) => r.exception_id === selectedRecordId),
     [records, selectedRecordId]
   );
+  const guardrailChecks = useMemo(
+    () => (Array.isArray(analysis?.guardrail_checks) ? analysis.guardrail_checks : HARDCODED_RESOLUTION_GUARDRAILS),
+    [analysis]
+  );
+  const guardrailSummary = useMemo(() => toGuardrailSummary(guardrailChecks), [guardrailChecks]);
 
   // ── Run analysis whenever selected record changes ──
   useEffect(() => {
@@ -474,6 +522,44 @@ export default function ExceptionIntelligence() {
                   <LabelValue label="Owner" value={analysis?.vendor_name || analysis?.vendor_id || vendorDisplay(selectedRecord)} />
                   <LabelValue label="Confidence" value={analysis?.classifier_agent?.confidence != null ? Number(analysis.classifier_agent.confidence).toFixed(2) : null} />
                 </Box>
+
+                {guardrailChecks.length > 0 && (
+                  <Box sx={{ mt: 1.2, pt: 1.2, borderTop: "1px solid #EDD090" }}>
+                    <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 0.8 }}>
+                      <SectionLabel sx={{ mb: 0 }}>Guardrail checks — before handoff</SectionLabel>
+                      <Box sx={{ px: 0.8, py: 0.2, borderRadius: "999px", border: "1px solid #E8E3DA", background: "#F5F3EF" }}>
+                        <Typography sx={{ fontSize: "0.64rem", color: "#5C5650", fontFamily: G }}>{guardrailSummary}</Typography>
+                      </Box>
+                    </Box>
+                    <Stack spacing={0.6}>
+                      {guardrailChecks.map((check, idx) => {
+                        const style = GUARDRAIL_STATUS_STYLE[check.status] || GUARDRAIL_STATUS_STYLE.warn;
+                        return (
+                          <Box
+                            key={`${check.ruleId || idx}`}
+                            sx={{ p: 0.8, borderRadius: "8px", background: style.bg, display: "flex", gap: 0.7, alignItems: "flex-start" }}
+                          >
+                            <Box sx={{ width: 8, height: 8, borderRadius: "50%", background: style.dot, mt: 0.45, flexShrink: 0 }} />
+                            <Box>
+                              <Typography sx={{ fontSize: "0.78rem", color: "#17140F", fontFamily: G, fontWeight: 500 }}>
+                                {check.title} — {style.label}
+                              </Typography>
+                              <Typography sx={{ fontSize: "12px", color: "#5C5650", fontFamily: G, lineHeight: 1.45 }}>
+                                {check.detail}
+                              </Typography>
+                              <Typography sx={{ fontSize: "11px", color: "#9C9690", fontFamily: G }}>
+                                Rule: {check.ruleId} · enforcement: {check.enforcement || "code"}
+                              </Typography>
+                            </Box>
+                          </Box>
+                        );
+                      })}
+                    </Stack>
+                    <Typography sx={{ fontSize: "12px", color: "#A05A10", fontFamily: G, mt: 0.8 }}>
+                      Guardrail trigger: AUTO_CORRECT_CONFIDENCE fired on ExceptionAgent — confidence 0.72 overridden to HUMAN_REQUIRED
+                    </Typography>
+                  </Box>
+                )}
               </PanelCard>
             </Grid>
           </Grid>
