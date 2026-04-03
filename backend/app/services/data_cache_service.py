@@ -3,7 +3,7 @@ import threading
 import time
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import pandas as pd
 
@@ -525,7 +525,7 @@ class DataCacheService:
             logger.warning("Serving flattened exception records due to refresh/load error: %s", str(e))
         with self._lock:
             rows: List[Dict[str, Any]] = []
-            seen: set[str] = set()
+            seen: Set[str] = set()
             for record_list in self.exception_records_map.values():
                 for row in record_list or []:
                     record_id = str(row.get("exception_id") or row.get("case_id") or "")

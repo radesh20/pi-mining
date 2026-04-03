@@ -91,7 +91,7 @@ async def get_exception_workbench_data():
                     "records": snapshot.get("records", []),
                     "warning": (
                         "Serving cached data while refresh is in progress."
-                        if snapshot.get("is_stale")
+                        if snapshot.get("is_stale") and snapshot.get("refresh_in_progress")
                         else None
                     ),
                     "served_from_cache": True,
