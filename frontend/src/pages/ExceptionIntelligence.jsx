@@ -69,7 +69,9 @@ const toGuardrailSummary = (checks = []) => {
 };
 const toGuardrailSummaryStyle = (checks = []) => {
   const failed = checks.some((c) => c.status === "fail");
+  const warned = checks.some((c) => c.status === "warn");
   if (failed) return { background: "#FCEBEB", color: "#791F1F", border: "1px solid #F09595" };
+  if (warned) return { background: "#FAEEDA", color: "#633806", border: "1px solid #FAC775" };
   return { background: "#EAF3DE", color: "#27500A", border: "1px solid #97C459" };
 };
 
