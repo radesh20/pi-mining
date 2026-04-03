@@ -125,6 +125,7 @@ export default function ExceptionIntelligence() {
   const [records, setRecords] = useState([]);
   const [selectedRecordId, setSelectedRecordId] = useState("");
   const [analysis, setAnalysis] = useState(null);
+  const [agentGuardrailSteps, setAgentGuardrailSteps] = useState([]);
   const [agentContextOpen, setAgentContextOpen] = useState(false);
   const [toast, setToast] = useState({ open: false, message: "", severity: "success" });
   const analysisRequestRef = useRef(0);
@@ -220,6 +221,7 @@ export default function ExceptionIntelligence() {
       const requestId = ++analysisRequestRef.current;
       setAnalysisLoading(true);
       setAnalysis(null);
+      setAgentGuardrailSteps([]);
       setAgentContextOpen(false);
       try {
         const payload = {
@@ -236,6 +238,7 @@ export default function ExceptionIntelligence() {
         const data = pickData(await analyzeExceptionRecord(payload));
         if (!active || analysisRequestRef.current !== requestId) return;
         setAnalysis(data);
+        setAgentGuardrailSteps(Array.isArray(data?.agent_guardrail_steps) ? data.agent_guardrail_steps : []);
       } catch (e) {
         if (!active || analysisRequestRef.current !== requestId) return;
         setError(e?.response?.data?.detail || e.message || "Failed to analyze exception.");
