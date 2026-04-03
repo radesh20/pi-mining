@@ -393,4 +393,26 @@ export const sendChatMessage = async ({ message, caseId, vendorId, conversationH
   return res.data;
 };
 
+export const sendSqlChatMessage = async ({
+  message,
+  tableName,
+  dialect = "PostgreSQL",
+  caseId,
+  vendorId,
+  conversationHistory = [],
+}) => {
+  const res = await api.post("/chat/sql", {
+    message,
+    table_name: tableName || null,
+    dialect,
+    case_id: caseId || null,
+    vendor_id: vendorId || null,
+    conversation_history: conversationHistory.map((m) => ({
+      role: m.role,
+      content: m.content,
+    })),
+  });
+  return res.data;
+};
+
 export default api;

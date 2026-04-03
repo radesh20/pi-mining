@@ -17,30 +17,6 @@ import { sendChatMessage } from "../api/client";
 const S = "'Instrument Serif', Georgia, serif";
 const G = "'Geist', system-ui, sans-serif";
 
-const GLOBAL_QUESTIONS = [
-    "What is causing the most delays in our invoice process?",
-    "Which exception type has the highest frequency?",
-    "What is the main bottleneck and how long does it take?",
-    "Which process variant is most common?",
-    "What is the average end-to-end cycle time?",
-    "Are there any conformance violations detected?",
-];
-const VENDOR_QUESTIONS = [
-    "What is this vendor's exception rate compared to average?",
-    "What process paths does this vendor follow?",
-    "How long does this vendor's invoices take to process?",
-    "What exception types does this vendor trigger most?",
-    "How does this vendor compare to the overall process average?",
-    "What should we do about this vendor's invoices?",
-];
-const CASE_QUESTIONS = [
-    "Why is this invoice stuck?",
-    "How long has this invoice been in the current stage?",
-    "What should we do to resolve this invoice?",
-    "Is this invoice on track or delayed?",
-    "What is the next step for this invoice?",
-    "How does this invoice compare to similar cases?",
-];
 
 // ── Agent config ──────────────────────────────────────────────────────────────
 
@@ -452,7 +428,6 @@ export default function PIChat() {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages, isTyping]);
 
-    const quickQuestions = vendorId ? VENDOR_QUESTIONS : caseId ? CASE_QUESTIONS : GLOBAL_QUESTIONS;
     const scopeActive = caseId || vendorId;
     const hasReplied = messages.some((m) => m.role === "assistant" && !m.isError);
     const showRight = dataSources.length > 0 || hasReplied;
@@ -567,23 +542,6 @@ export default function PIChat() {
                         </CardContent>
                     </Card>
 
-                    <Card sx={{ flex: 1, overflow: "hidden" }}>
-                        <CardContent sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-                            <SectionHeader label="Quick questions" meta={vendorId ? "Vendor" : caseId ? "Case" : "Global"} />
-                            <Stack spacing={0.7} sx={{ overflow: "auto", flex: 1 }}>
-                                {quickQuestions.map((q) => (
-                                    <Box key={q} onClick={() => handleSend(q)} sx={{
-                                        background: "#F7F5F0", border: "1px solid #E8E3DA", borderRadius: "8px",
-                                        px: 1.5, py: 0.9, fontSize: "0.77rem", fontFamily: G, color: "#5C5650",
-                                        cursor: "pointer", lineHeight: 1.4, transition: "all 0.15s",
-                                        "&:hover": { background: "#FEF3DC", borderColor: "#F0C870", color: "#A05A10" },
-                                    }}>
-                                        {q}
-                                    </Box>
-                                ))}
-                            </Stack>
-                        </CardContent>
-                    </Card>
                 </Grid>
 
                 {/* Chat */}

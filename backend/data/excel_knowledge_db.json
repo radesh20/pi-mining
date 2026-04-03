@@ -1,0 +1,5041 @@
+{
+  "dataset_name": "SAP_AP_Excel_Knowledge_DB",
+  "generated_at_utc": "2026-04-03T09:55:01.248147+00:00",
+  "source_type": "excel",
+  "source_files": {
+    "TCURF": "/Users/radeshchakravarthy/Desktop/TCURF.xlsx",
+    "TCURR": "/Users/radeshchakravarthy/Desktop/TCURR.xlsx",
+    "TCURX": "/Users/radeshchakravarthy/Desktop/TCURX.xlsx",
+    "VIM_HEADER": "/Users/radeshchakravarthy/Desktop/VIM header.xlsx",
+    "AP_BKPF": "/Users/radeshchakravarthy/Desktop/Ap BKPF.xlsx",
+    "AP_BSEG": "/Users/radeshchakravarthy/Desktop/Ap BSEG.xlsx",
+    "AP_RSEG": "/Users/radeshchakravarthy/Desktop/AP_RSEG.xlsx",
+    "AR_AGEING": "/Users/radeshchakravarthy/Desktop/AR_Ageing_Sheet1 (1).xlsx",
+    "EBAN": "/Users/radeshchakravarthy/Desktop/EBAN.xlsx",
+    "EKBE": "/Users/radeshchakravarthy/Desktop/EKBE (2).xlsx",
+    "EKKO": "/Users/radeshchakravarthy/Desktop/EKKO.xlsx",
+    "EKPO": "/Users/radeshchakravarthy/Desktop/EKPO.xlsx",
+    "LFA1": "/Users/radeshchakravarthy/Desktop/LFA1.xlsx"
+  },
+  "table_count": 13,
+  "relationship_count": 20,
+  "tables": [
+    {
+      "table_name": "TCURF",
+      "source_file": "/Users/radeshchakravarthy/Desktop/TCURF.xlsx",
+      "row_count": 2,
+      "column_count": 9,
+      "columns": [
+        {
+          "name": "Mandt",
+          "normalized_name": "mandt",
+          "dtype": "int64",
+          "non_null_count": 2,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "300"
+          ]
+        },
+        {
+          "name": "Kurst",
+          "normalized_name": "kurst",
+          "dtype": "object",
+          "non_null_count": 2,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": true,
+          "sample_values": [
+            "INR",
+            "USD"
+          ]
+        },
+        {
+          "name": "Fcurr",
+          "normalized_name": "fcurr",
+          "dtype": "object",
+          "non_null_count": 2,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": true,
+          "sample_values": [
+            "INR",
+            "USD"
+          ]
+        },
+        {
+          "name": "Tcurr",
+          "normalized_name": "tcurr",
+          "dtype": "object",
+          "non_null_count": 2,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": true,
+          "sample_values": [
+            "USD",
+            "INR"
+          ]
+        },
+        {
+          "name": "Gdatu",
+          "normalized_name": "gdatu",
+          "dtype": "object",
+          "non_null_count": 2,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2025-03-25 00:00:00"
+          ]
+        },
+        {
+          "name": "Ffact",
+          "normalized_name": "ffact",
+          "dtype": "int64",
+          "non_null_count": 2,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Tfact",
+          "normalized_name": "tfact",
+          "dtype": "int64",
+          "non_null_count": 2,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Abwct",
+          "normalized_name": "abwct",
+          "dtype": "float64",
+          "non_null_count": 0,
+          "unique_count": 0,
+          "null_count": 2,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Abwga",
+          "normalized_name": "abwga",
+          "dtype": "float64",
+          "non_null_count": 0,
+          "unique_count": 0,
+          "null_count": 2,
+          "key_candidate": false,
+          "sample_values": []
+        }
+      ],
+      "sample_rows": [
+        {
+          "Mandt": "300",
+          "Kurst": "INR",
+          "Fcurr": "INR",
+          "Tcurr": "USD",
+          "Gdatu": "2025-03-25 00:00:00",
+          "Ffact": "0",
+          "Tfact": "0",
+          "Abwct": null,
+          "Abwga": null
+        },
+        {
+          "Mandt": "300",
+          "Kurst": "USD",
+          "Fcurr": "USD",
+          "Tcurr": "INR",
+          "Gdatu": "2025-03-25 00:00:00",
+          "Ffact": "0",
+          "Tfact": "0",
+          "Abwct": null,
+          "Abwga": null
+        }
+      ]
+    },
+    {
+      "table_name": "TCURR",
+      "source_file": "/Users/radeshchakravarthy/Desktop/TCURR.xlsx",
+      "row_count": 2,
+      "column_count": 8,
+      "columns": [
+        {
+          "name": "Mandt",
+          "normalized_name": "mandt",
+          "dtype": "int64",
+          "non_null_count": 2,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "300"
+          ]
+        },
+        {
+          "name": "Kurst",
+          "normalized_name": "kurst",
+          "dtype": "object",
+          "non_null_count": 2,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": true,
+          "sample_values": [
+            "INR",
+            "USD"
+          ]
+        },
+        {
+          "name": "Fcurr",
+          "normalized_name": "fcurr",
+          "dtype": "object",
+          "non_null_count": 2,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": true,
+          "sample_values": [
+            "INR",
+            "USD"
+          ]
+        },
+        {
+          "name": "Tcurr",
+          "normalized_name": "tcurr",
+          "dtype": "object",
+          "non_null_count": 2,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": true,
+          "sample_values": [
+            "USD",
+            "INR"
+          ]
+        },
+        {
+          "name": "Gdatu",
+          "normalized_name": "gdatu",
+          "dtype": "object",
+          "non_null_count": 2,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2025-03-25 00:00:00"
+          ]
+        },
+        {
+          "name": "Ukurs",
+          "normalized_name": "ukurs",
+          "dtype": "float64",
+          "non_null_count": 2,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": true,
+          "sample_values": [
+            "85.72",
+            "0.012"
+          ]
+        },
+        {
+          "name": "Ffact",
+          "normalized_name": "ffact",
+          "dtype": "int64",
+          "non_null_count": 2,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Tfact",
+          "normalized_name": "tfact",
+          "dtype": "int64",
+          "non_null_count": 2,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        }
+      ],
+      "sample_rows": [
+        {
+          "Mandt": "300",
+          "Kurst": "INR",
+          "Fcurr": "INR",
+          "Tcurr": "USD",
+          "Gdatu": "2025-03-25 00:00:00",
+          "Ukurs": "85.72",
+          "Ffact": "0",
+          "Tfact": "0"
+        },
+        {
+          "Mandt": "300",
+          "Kurst": "USD",
+          "Fcurr": "USD",
+          "Tcurr": "INR",
+          "Gdatu": "2025-03-25 00:00:00",
+          "Ukurs": "0.012",
+          "Ffact": "0",
+          "Tfact": "0"
+        }
+      ]
+    },
+    {
+      "table_name": "TCURX",
+      "source_file": "/Users/radeshchakravarthy/Desktop/TCURX.xlsx",
+      "row_count": 2,
+      "column_count": 3,
+      "columns": [
+        {
+          "name": "Currkey",
+          "normalized_name": "currkey",
+          "dtype": "object",
+          "non_null_count": 2,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": true,
+          "sample_values": [
+            "INR",
+            "USD"
+          ]
+        },
+        {
+          "name": "Currdec",
+          "normalized_name": "currdec",
+          "dtype": "int64",
+          "non_null_count": 2,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2"
+          ]
+        },
+        {
+          "name": "Celonis Change Date",
+          "normalized_name": "celonischangedate",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 2,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2025-03-26 08:12:21.005000"
+          ]
+        }
+      ],
+      "sample_rows": [
+        {
+          "Currkey": "INR",
+          "Currdec": "2",
+          "Celonis Change Date": "2025-03-26 08:12:21.005000"
+        },
+        {
+          "Currkey": "USD",
+          "Currdec": "2",
+          "Celonis Change Date": "2025-03-26 08:12:21.005000"
+        }
+      ]
+    },
+    {
+      "table_name": "VIM_HEADER",
+      "source_file": "/Users/radeshchakravarthy/Desktop/VIM header.xlsx",
+      "row_count": 140,
+      "column_count": 18,
+      "columns": [
+        {
+          "name": "CaseKey",
+          "normalized_name": "casekey",
+          "dtype": "object",
+          "non_null_count": 140,
+          "unique_count": 35,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "300V41130634800003",
+            "300V41132795500001",
+            "300V41134546400001"
+          ]
+        },
+        {
+          "name": "Mandt",
+          "normalized_name": "mandt",
+          "dtype": "int64",
+          "non_null_count": 140,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "300"
+          ]
+        },
+        {
+          "name": "Ebeln",
+          "normalized_name": "ebeln",
+          "dtype": "object",
+          "non_null_count": 140,
+          "unique_count": 24,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "V411306348",
+            "V411327955",
+            "V411345464"
+          ]
+        },
+        {
+          "name": "Ebelp",
+          "normalized_name": "ebelp",
+          "dtype": "int64",
+          "non_null_count": 140,
+          "unique_count": 10,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "3",
+            "1"
+          ]
+        },
+        {
+          "name": "ActivityEn",
+          "normalized_name": "activityen",
+          "dtype": "object",
+          "non_null_count": 140,
+          "unique_count": 4,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "INVOICE EXCEPTION END",
+            "INVOICE EXCEPTION START",
+            "INVOICE MOVED OUT OF VIM",
+            "INVOICE RECEIVED IN VIM"
+          ]
+        },
+        {
+          "name": "Eventtime",
+          "normalized_name": "eventtime",
+          "dtype": "object",
+          "non_null_count": 140,
+          "unique_count": 102,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2023-10-08T00:00:01",
+            "2023-10-07T00:00:01",
+            "2023-10-09T00:00:01",
+            "2023-10-06T00:00:01",
+            "2023-12-04T00:00:01",
+            "2023-12-03T00:00:01"
+          ]
+        },
+        {
+          "name": "Sorting",
+          "normalized_name": "sorting",
+          "dtype": "int64",
+          "non_null_count": 140,
+          "unique_count": 3,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "15",
+            "10",
+            "100"
+          ]
+        },
+        {
+          "name": "UserName",
+          "normalized_name": "username",
+          "dtype": "object",
+          "non_null_count": 24,
+          "unique_count": 2,
+          "null_count": 116,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "UserType",
+          "normalized_name": "usertype",
+          "dtype": "float64",
+          "non_null_count": 0,
+          "unique_count": 0,
+          "null_count": 140,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "ChangedTable",
+          "normalized_name": "changedtable",
+          "dtype": "object",
+          "non_null_count": 12,
+          "unique_count": 2,
+          "null_count": 128,
+          "key_candidate": false,
+          "sample_values": [
+            "VIM"
+          ]
+        },
+        {
+          "name": "ChangedTableTextEn",
+          "normalized_name": "changedtabletexten",
+          "dtype": "float64",
+          "non_null_count": 0,
+          "unique_count": 0,
+          "null_count": 140,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "ChangedFieldTextDe",
+          "normalized_name": "changedfieldtextde",
+          "dtype": "float64",
+          "non_null_count": 0,
+          "unique_count": 0,
+          "null_count": 140,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "ChangedFieldTextEn",
+          "normalized_name": "changedfieldtexten",
+          "dtype": "float64",
+          "non_null_count": 0,
+          "unique_count": 0,
+          "null_count": 140,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "ChangedField",
+          "normalized_name": "changedfield",
+          "dtype": "object",
+          "non_null_count": 4,
+          "unique_count": 1,
+          "null_count": 136,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "ChangedFrom",
+          "normalized_name": "changedfrom",
+          "dtype": "float64",
+          "non_null_count": 4,
+          "unique_count": 1,
+          "null_count": 136,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "ChangedTo",
+          "normalized_name": "changedto",
+          "dtype": "float64",
+          "non_null_count": 4,
+          "unique_count": 1,
+          "null_count": 136,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "ChangedFromFloat",
+          "normalized_name": "changedfromfloat",
+          "dtype": "float64",
+          "non_null_count": 0,
+          "unique_count": 0,
+          "null_count": 140,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "TransactionCode",
+          "normalized_name": "transactioncode",
+          "dtype": "object",
+          "non_null_count": 4,
+          "unique_count": 1,
+          "null_count": 136,
+          "key_candidate": false,
+          "sample_values": []
+        }
+      ],
+      "sample_rows": [
+        {
+          "CaseKey": "300V41130634800003",
+          "Mandt": "300",
+          "Ebeln": "V411306348",
+          "Ebelp": "3",
+          "ActivityEn": "Invoice Exception End",
+          "Eventtime": "2023-10-08T00:00:01",
+          "Sorting": "15",
+          "UserName": null,
+          "UserType": null,
+          "ChangedTable": "VIM",
+          "ChangedTableTextEn": null,
+          "ChangedFieldTextDe": null,
+          "ChangedFieldTextEn": null,
+          "ChangedField": null,
+          "ChangedFrom": null,
+          "ChangedTo": null,
+          "ChangedFromFloat": null,
+          "TransactionCode": null
+        },
+        {
+          "CaseKey": "300V41130634800003",
+          "Mandt": "300",
+          "Ebeln": "V411306348",
+          "Ebelp": "3",
+          "ActivityEn": "Invoice Exception Start",
+          "Eventtime": "2023-10-07T00:00:01",
+          "Sorting": "10",
+          "UserName": null,
+          "UserType": null,
+          "ChangedTable": "VIM",
+          "ChangedTableTextEn": null,
+          "ChangedFieldTextDe": null,
+          "ChangedFieldTextEn": null,
+          "ChangedField": null,
+          "ChangedFrom": null,
+          "ChangedTo": null,
+          "ChangedFromFloat": null,
+          "TransactionCode": null
+        },
+        {
+          "CaseKey": "300V41130634800003",
+          "Mandt": "300",
+          "Ebeln": "V411306348",
+          "Ebelp": "3",
+          "ActivityEn": "Invoice moved out of VIM",
+          "Eventtime": "2023-10-09T00:00:01",
+          "Sorting": "100",
+          "UserName": null,
+          "UserType": null,
+          "ChangedTable": "VIM",
+          "ChangedTableTextEn": null,
+          "ChangedFieldTextDe": null,
+          "ChangedFieldTextEn": null,
+          "ChangedField": null,
+          "ChangedFrom": null,
+          "ChangedTo": null,
+          "ChangedFromFloat": null,
+          "TransactionCode": null
+        },
+        {
+          "CaseKey": "300V41130634800003",
+          "Mandt": "300",
+          "Ebeln": "V411306348",
+          "Ebelp": "3",
+          "ActivityEn": "Invoice received in VIM",
+          "Eventtime": "2023-10-06T00:00:01",
+          "Sorting": "100",
+          "UserName": null,
+          "UserType": null,
+          "ChangedTable": "VIM",
+          "ChangedTableTextEn": null,
+          "ChangedFieldTextDe": null,
+          "ChangedFieldTextEn": null,
+          "ChangedField": null,
+          "ChangedFrom": null,
+          "ChangedTo": null,
+          "ChangedFromFloat": null,
+          "TransactionCode": null
+        }
+      ]
+    },
+    {
+      "table_name": "AP_BKPF",
+      "source_file": "/Users/radeshchakravarthy/Desktop/Ap BKPF.xlsx",
+      "row_count": 117,
+      "column_count": 31,
+      "columns": [
+        {
+          "name": "Mandt",
+          "normalized_name": "mandt",
+          "dtype": "int64",
+          "non_null_count": 117,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "300"
+          ]
+        },
+        {
+          "name": "Bukrs",
+          "normalized_name": "bukrs",
+          "dtype": "object",
+          "non_null_count": 117,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "AC33"
+          ]
+        },
+        {
+          "name": "Belnr",
+          "normalized_name": "belnr",
+          "dtype": "int64",
+          "non_null_count": 117,
+          "unique_count": 117,
+          "null_count": 0,
+          "key_candidate": true,
+          "sample_values": [
+            "5700028037",
+            "5700028038",
+            "5700028039",
+            "5700028040",
+            "5700028041",
+            "5700028042"
+          ]
+        },
+        {
+          "name": "Gjahr",
+          "normalized_name": "gjahr",
+          "dtype": "int64",
+          "non_null_count": 117,
+          "unique_count": 3,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2023",
+            "2025"
+          ]
+        },
+        {
+          "name": "Blart",
+          "normalized_name": "blart",
+          "dtype": "object",
+          "non_null_count": 117,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "RE"
+          ]
+        },
+        {
+          "name": "Bldat",
+          "normalized_name": "bldat",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 117,
+          "unique_count": 81,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2023-11-17 00:00:00",
+            "2025-02-01 00:00:00",
+            "2025-02-05 00:00:00",
+            "2025-02-10 00:00:00",
+            "2025-02-20 00:00:00",
+            "2025-02-25 00:00:00"
+          ]
+        },
+        {
+          "name": "Cpudt",
+          "normalized_name": "cpudt",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 117,
+          "unique_count": 69,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2023-11-28 00:00:00",
+            "2025-02-02 00:00:00",
+            "2025-02-06 00:00:00",
+            "2025-02-11 00:00:00",
+            "2025-02-21 00:00:00",
+            "2025-02-26 00:00:00"
+          ]
+        },
+        {
+          "name": "Cputm",
+          "normalized_name": "cputm",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 117,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "1970-01-01 00:00:00"
+          ]
+        },
+        {
+          "name": "Budat",
+          "normalized_name": "budat",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 117,
+          "unique_count": 67,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2023-11-28 00:00:00",
+            "2025-02-04 00:00:00",
+            "2025-02-08 00:00:00",
+            "2025-02-13 00:00:00",
+            "2025-02-23 00:00:00",
+            "2025-02-28 00:00:00"
+          ]
+        },
+        {
+          "name": "Monat",
+          "normalized_name": "monat",
+          "dtype": "float64",
+          "non_null_count": 61,
+          "unique_count": 8,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "11"
+          ]
+        },
+        {
+          "name": "Aedat",
+          "normalized_name": "aedat",
+          "dtype": "object",
+          "non_null_count": 9,
+          "unique_count": 4,
+          "null_count": 108,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Usnam",
+          "normalized_name": "usnam",
+          "dtype": "int64",
+          "non_null_count": 117,
+          "unique_count": 60,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "11392395",
+            "11373578",
+            "11373579",
+            "11373580",
+            "11373581",
+            "11373582"
+          ]
+        },
+        {
+          "name": "Waers",
+          "normalized_name": "waers",
+          "dtype": "object",
+          "non_null_count": 117,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "USD"
+          ]
+        },
+        {
+          "name": "Kursf",
+          "normalized_name": "kursf",
+          "dtype": "float64",
+          "non_null_count": 117,
+          "unique_count": 5,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "1.3577"
+          ]
+        },
+        {
+          "name": "Glvor",
+          "normalized_name": "glvor",
+          "dtype": "object",
+          "non_null_count": 117,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "RMRP"
+          ]
+        },
+        {
+          "name": "Awtyp",
+          "normalized_name": "awtyp",
+          "dtype": "object",
+          "non_null_count": 117,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "RMRP"
+          ]
+        },
+        {
+          "name": "Awkey",
+          "normalized_name": "awkey",
+          "dtype": "int64",
+          "non_null_count": 117,
+          "unique_count": 117,
+          "null_count": 0,
+          "key_candidate": true,
+          "sample_values": [
+            "57092018622023",
+            "57000280382025",
+            "57000280392025",
+            "57000280402025",
+            "57000280412025",
+            "57000280422025"
+          ]
+        },
+        {
+          "name": "Hwaer",
+          "normalized_name": "hwaer",
+          "dtype": "object",
+          "non_null_count": 117,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "CAD"
+          ]
+        },
+        {
+          "name": "Hwae2",
+          "normalized_name": "hwae2",
+          "dtype": "object",
+          "non_null_count": 117,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "USD"
+          ]
+        },
+        {
+          "name": "Kurs2",
+          "normalized_name": "kurs2",
+          "dtype": "float64",
+          "non_null_count": 61,
+          "unique_count": 26,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Basw2",
+          "normalized_name": "basw2",
+          "dtype": "float64",
+          "non_null_count": 61,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "1"
+          ]
+        },
+        {
+          "name": "Umrd2",
+          "normalized_name": "umrd2",
+          "dtype": "float64",
+          "non_null_count": 61,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "3"
+          ]
+        },
+        {
+          "name": "Curt2",
+          "normalized_name": "curt2",
+          "dtype": "float64",
+          "non_null_count": 61,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "30"
+          ]
+        },
+        {
+          "name": "Kuty2",
+          "normalized_name": "kuty2",
+          "dtype": "object",
+          "non_null_count": 117,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "M"
+          ]
+        },
+        {
+          "name": "Xsnet",
+          "normalized_name": "xsnet",
+          "dtype": "float64",
+          "non_null_count": 0,
+          "unique_count": 0,
+          "null_count": 117,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Xstov",
+          "normalized_name": "xstov",
+          "dtype": "float64",
+          "non_null_count": 0,
+          "unique_count": 0,
+          "null_count": 117,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Xmwst",
+          "normalized_name": "xmwst",
+          "dtype": "object",
+          "non_null_count": 61,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "X"
+          ]
+        },
+        {
+          "name": "Doccat",
+          "normalized_name": "doccat",
+          "dtype": "object",
+          "non_null_count": 61,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "INVREC"
+          ]
+        },
+        {
+          "name": "Kurst",
+          "normalized_name": "kurst",
+          "dtype": "object",
+          "non_null_count": 117,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "M"
+          ]
+        },
+        {
+          "name": "Celonis Change Date",
+          "normalized_name": "celonischangedate",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 117,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2025-05-21 06:27:55.080000"
+          ]
+        },
+        {
+          "name": "Posting Date",
+          "normalized_name": "postingdate",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 117,
+          "unique_count": 67,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2023-11-28 00:00:00",
+            "2025-02-04 00:00:00",
+            "2025-02-08 00:00:00",
+            "2025-02-13 00:00:00",
+            "2025-02-23 00:00:00",
+            "2025-02-28 00:00:00"
+          ]
+        }
+      ],
+      "sample_rows": [
+        {
+          "Mandt": "300",
+          "Bukrs": "AC33",
+          "Belnr": "5700028037",
+          "Gjahr": "2023",
+          "Blart": "RE",
+          "Bldat": "2023-11-17 00:00:00",
+          "Cpudt": "2023-11-28 00:00:00",
+          "Cputm": "1970-01-01 00:00:00",
+          "Budat": "2023-11-28 00:00:00",
+          "Monat": "11.0",
+          "Aedat": null,
+          "Usnam": "11392395",
+          "Waers": "USD",
+          "Kursf": "1.3577",
+          "Glvor": "RMRP",
+          "Awtyp": "RMRP",
+          "Awkey": "57092018622023",
+          "Hwaer": "CAD",
+          "Hwae2": "USD",
+          "Kurs2": "0.0",
+          "Basw2": "1.0",
+          "Umrd2": "3.0",
+          "Curt2": "30.0",
+          "Kuty2": "M",
+          "Xsnet": null,
+          "Xstov": null,
+          "Xmwst": "X",
+          "Doccat": "INVREC",
+          "Kurst": "M",
+          "Celonis Change Date": "2025-05-21 06:27:55.080000",
+          "Posting Date": "2023-11-28 00:00:00"
+        },
+        {
+          "Mandt": "300",
+          "Bukrs": "AC33",
+          "Belnr": "5700028038",
+          "Gjahr": "2025",
+          "Blart": "RE",
+          "Bldat": "2025-02-01 00:00:00",
+          "Cpudt": "2025-02-02 00:00:00",
+          "Cputm": "1970-01-01 00:00:00",
+          "Budat": "2025-02-04 00:00:00",
+          "Monat": null,
+          "Aedat": null,
+          "Usnam": "11373578",
+          "Waers": "USD",
+          "Kursf": "1.3577",
+          "Glvor": "RMRP",
+          "Awtyp": "RMRP",
+          "Awkey": "57000280382025",
+          "Hwaer": "CAD",
+          "Hwae2": "USD",
+          "Kurs2": null,
+          "Basw2": null,
+          "Umrd2": null,
+          "Curt2": null,
+          "Kuty2": "M",
+          "Xsnet": null,
+          "Xstov": null,
+          "Xmwst": null,
+          "Doccat": null,
+          "Kurst": "M",
+          "Celonis Change Date": "2025-05-21 06:27:55.080000",
+          "Posting Date": "2025-02-04 00:00:00"
+        },
+        {
+          "Mandt": "300",
+          "Bukrs": "AC33",
+          "Belnr": "5700028039",
+          "Gjahr": "2025",
+          "Blart": "RE",
+          "Bldat": "2025-02-05 00:00:00",
+          "Cpudt": "2025-02-06 00:00:00",
+          "Cputm": "1970-01-01 00:00:00",
+          "Budat": "2025-02-08 00:00:00",
+          "Monat": null,
+          "Aedat": null,
+          "Usnam": "11373579",
+          "Waers": "USD",
+          "Kursf": "1.3577",
+          "Glvor": "RMRP",
+          "Awtyp": "RMRP",
+          "Awkey": "57000280392025",
+          "Hwaer": "CAD",
+          "Hwae2": "USD",
+          "Kurs2": null,
+          "Basw2": null,
+          "Umrd2": null,
+          "Curt2": null,
+          "Kuty2": "M",
+          "Xsnet": null,
+          "Xstov": null,
+          "Xmwst": null,
+          "Doccat": null,
+          "Kurst": "M",
+          "Celonis Change Date": "2025-05-21 06:27:55.080000",
+          "Posting Date": "2025-02-08 00:00:00"
+        },
+        {
+          "Mandt": "300",
+          "Bukrs": "AC33",
+          "Belnr": "5700028040",
+          "Gjahr": "2025",
+          "Blart": "RE",
+          "Bldat": "2025-02-10 00:00:00",
+          "Cpudt": "2025-02-11 00:00:00",
+          "Cputm": "1970-01-01 00:00:00",
+          "Budat": "2025-02-13 00:00:00",
+          "Monat": null,
+          "Aedat": null,
+          "Usnam": "11373580",
+          "Waers": "USD",
+          "Kursf": "1.3577",
+          "Glvor": "RMRP",
+          "Awtyp": "RMRP",
+          "Awkey": "57000280402025",
+          "Hwaer": "CAD",
+          "Hwae2": "USD",
+          "Kurs2": null,
+          "Basw2": null,
+          "Umrd2": null,
+          "Curt2": null,
+          "Kuty2": "M",
+          "Xsnet": null,
+          "Xstov": null,
+          "Xmwst": null,
+          "Doccat": null,
+          "Kurst": "M",
+          "Celonis Change Date": "2025-05-21 06:27:55.080000",
+          "Posting Date": "2025-02-13 00:00:00"
+        }
+      ]
+    },
+    {
+      "table_name": "AP_BSEG",
+      "source_file": "/Users/radeshchakravarthy/Desktop/Ap BSEG.xlsx",
+      "row_count": 134,
+      "column_count": 91,
+      "columns": [
+        {
+          "name": "Num 1",
+          "normalized_name": "num1",
+          "dtype": "int64",
+          "non_null_count": 134,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "1"
+          ]
+        },
+        {
+          "name": "Num",
+          "normalized_name": "num",
+          "dtype": "int64",
+          "non_null_count": 134,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "1"
+          ]
+        },
+        {
+          "name": "Mandt",
+          "normalized_name": "mandt",
+          "dtype": "int64",
+          "non_null_count": 134,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "300"
+          ]
+        },
+        {
+          "name": "Bukrs",
+          "normalized_name": "bukrs",
+          "dtype": "object",
+          "non_null_count": 134,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "AC33"
+          ]
+        },
+        {
+          "name": "Supplier Number",
+          "normalized_name": "suppliernumber",
+          "dtype": "int64",
+          "non_null_count": 134,
+          "unique_count": 26,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "7003255948",
+            "7000026156",
+            "7003198830",
+            "7003198849"
+          ]
+        },
+        {
+          "name": "Augbl",
+          "normalized_name": "augbl",
+          "dtype": "float64",
+          "non_null_count": 116,
+          "unique_count": 78,
+          "null_count": 18,
+          "key_candidate": false,
+          "sample_values": [
+            "1300720009",
+            "3000501009",
+            "3000127222",
+            "3000127223"
+          ]
+        },
+        {
+          "name": "Gjahr",
+          "normalized_name": "gjahr",
+          "dtype": "int64",
+          "non_null_count": 134,
+          "unique_count": 3,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2023"
+          ]
+        },
+        {
+          "name": "Bschl",
+          "normalized_name": "bschl",
+          "dtype": "int64",
+          "non_null_count": 134,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "31"
+          ]
+        },
+        {
+          "name": "Shkzg",
+          "normalized_name": "shkzg",
+          "dtype": "object",
+          "non_null_count": 134,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "H"
+          ]
+        },
+        {
+          "name": "Mwskz",
+          "normalized_name": "mwskz",
+          "dtype": "object",
+          "non_null_count": 78,
+          "unique_count": 6,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "I1",
+            "H1"
+          ]
+        },
+        {
+          "name": "Invoice Number",
+          "normalized_name": "invoicenumber",
+          "dtype": "int64",
+          "non_null_count": 134,
+          "unique_count": 117,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "5700028037",
+            "5700103010",
+            "5700138097",
+            "5700138603",
+            "5700144522",
+            "5700148528"
+          ]
+        },
+        {
+          "name": "Buzei",
+          "normalized_name": "buzei",
+          "dtype": "int64",
+          "non_null_count": 134,
+          "unique_count": 4,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "1",
+            "2",
+            "3"
+          ]
+        },
+        {
+          "name": "Zfbdt",
+          "normalized_name": "zfbdt",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 134,
+          "unique_count": 92,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2023-10-31 00:00:00",
+            "2023-11-02 00:00:00",
+            "2023-11-03 00:00:00",
+            "2023-09-08 00:00:00",
+            "2023-09-11 00:00:00",
+            "2023-09-15 00:00:00"
+          ]
+        },
+        {
+          "name": "Augdt",
+          "normalized_name": "augdt",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 111,
+          "unique_count": 51,
+          "null_count": 23,
+          "key_candidate": false,
+          "sample_values": [
+            "2023-12-20 00:00:00",
+            "2023-12-01 00:00:00",
+            "2024-02-01 00:00:00",
+            "2024-01-10 00:00:00",
+            "2023-12-12 00:00:00",
+            "2024-01-07 00:00:00"
+          ]
+        },
+        {
+          "name": "Dmbe2",
+          "normalized_name": "dmbe2",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 73,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "43100.5",
+            "40000.5",
+            "123100.5",
+            "801000.4",
+            "608000.4",
+            "406000.4"
+          ]
+        },
+        {
+          "name": "Total Invoice Value",
+          "normalized_name": "totalinvoicevalue",
+          "dtype": "float64",
+          "non_null_count": 134,
+          "unique_count": 129,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "43100.5",
+            "40000.5",
+            "123100.5",
+            "801000.4",
+            "608000.4",
+            "406000.4"
+          ]
+        },
+        {
+          "name": "Skfbt Converted",
+          "normalized_name": "skfbtconverted",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 73,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "43100.5",
+            "40000.5",
+            "123100.5",
+            "801000.4",
+            "608000.4",
+            "406000.4"
+          ]
+        },
+        {
+          "name": "Wskto Converted",
+          "normalized_name": "wsktoconverted",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Mwsts",
+          "normalized_name": "mwsts",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Wmwst",
+          "normalized_name": "wmwst",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Bdiff",
+          "normalized_name": "bdiff",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Bdif2",
+          "normalized_name": "bdif2",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Projn",
+          "normalized_name": "projn",
+          "dtype": "float64",
+          "non_null_count": 0,
+          "unique_count": 0,
+          "null_count": 134,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Aufnr",
+          "normalized_name": "aufnr",
+          "dtype": "float64",
+          "non_null_count": 0,
+          "unique_count": 0,
+          "null_count": 134,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Anln1",
+          "normalized_name": "anln1",
+          "dtype": "float64",
+          "non_null_count": 0,
+          "unique_count": 0,
+          "null_count": 134,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Anln2",
+          "normalized_name": "anln2",
+          "dtype": "float64",
+          "non_null_count": 0,
+          "unique_count": 0,
+          "null_count": 134,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Ebeln",
+          "normalized_name": "ebeln",
+          "dtype": "float64",
+          "non_null_count": 0,
+          "unique_count": 0,
+          "null_count": 134,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Ebelp",
+          "normalized_name": "ebelp",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Saknr",
+          "normalized_name": "saknr",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "455000"
+          ]
+        },
+        {
+          "name": "Hkont",
+          "normalized_name": "hkont",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "455000"
+          ]
+        },
+        {
+          "name": "Fkont",
+          "normalized_name": "fkont",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Zterm",
+          "normalized_name": "zterm",
+          "dtype": "object",
+          "non_null_count": 134,
+          "unique_count": 14,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "NT90",
+            "NT120",
+            "NT15",
+            "NT40"
+          ]
+        },
+        {
+          "name": "Zbd1t",
+          "normalized_name": "zbd1t",
+          "dtype": "int64",
+          "non_null_count": 134,
+          "unique_count": 12,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "90",
+            "120",
+            "15",
+            "40"
+          ]
+        },
+        {
+          "name": "Zbd2t",
+          "normalized_name": "zbd2t",
+          "dtype": "int64",
+          "non_null_count": 134,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Zbd3t",
+          "normalized_name": "zbd3t",
+          "dtype": "int64",
+          "non_null_count": 134,
+          "unique_count": 3,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Zbd1p",
+          "normalized_name": "zbd1p",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Zbd2p",
+          "normalized_name": "zbd2p",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Sknto",
+          "normalized_name": "sknto",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Wskto",
+          "normalized_name": "wskto",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Zlspr",
+          "normalized_name": "zlspr",
+          "dtype": "object",
+          "non_null_count": 34,
+          "unique_count": 1,
+          "null_count": 100,
+          "key_candidate": false,
+          "sample_values": [
+            "R"
+          ]
+        },
+        {
+          "name": "Bvtyp",
+          "normalized_name": "bvtyp",
+          "dtype": "float64",
+          "non_null_count": 70,
+          "unique_count": 1,
+          "null_count": 64,
+          "key_candidate": false,
+          "sample_values": [
+            "1"
+          ]
+        },
+        {
+          "name": "Rebzg",
+          "normalized_name": "rebzg",
+          "dtype": "float64",
+          "non_null_count": 13,
+          "unique_count": 9,
+          "null_count": 121,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Rebzz",
+          "normalized_name": "rebzz",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 2,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Samnr",
+          "normalized_name": "samnr",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Landl",
+          "normalized_name": "landl",
+          "dtype": "object",
+          "non_null_count": 14,
+          "unique_count": 1,
+          "null_count": 120,
+          "key_candidate": false,
+          "sample_values": [
+            "US"
+          ]
+        },
+        {
+          "name": "Anfbj",
+          "normalized_name": "anfbj",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Vbund",
+          "normalized_name": "vbund",
+          "dtype": "float64",
+          "non_null_count": 0,
+          "unique_count": 0,
+          "null_count": 134,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Rebzt",
+          "normalized_name": "rebzt",
+          "dtype": "object",
+          "non_null_count": 13,
+          "unique_count": 1,
+          "null_count": 121,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Qsznr",
+          "normalized_name": "qsznr",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "1"
+          ]
+        },
+        {
+          "name": "Qsfbt",
+          "normalized_name": "qsfbt",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Projk",
+          "normalized_name": "projk",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Aufpl",
+          "normalized_name": "aufpl",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Aplzl",
+          "normalized_name": "aplzl",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Xragl",
+          "normalized_name": "xragl",
+          "dtype": "object",
+          "non_null_count": 4,
+          "unique_count": 1,
+          "null_count": 130,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Uzawe",
+          "normalized_name": "uzawe",
+          "dtype": "object",
+          "non_null_count": 67,
+          "unique_count": 1,
+          "null_count": 67,
+          "key_candidate": false,
+          "sample_values": [
+            "W"
+          ]
+        },
+        {
+          "name": "Kzbtr",
+          "normalized_name": "kzbtr",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Lnran",
+          "normalized_name": "lnran",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Pswsl",
+          "normalized_name": "pswsl",
+          "dtype": "object",
+          "non_null_count": 78,
+          "unique_count": 2,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "USD",
+            "CAD"
+          ]
+        },
+        {
+          "name": "Zekkn",
+          "normalized_name": "zekkn",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Prctr",
+          "normalized_name": "prctr",
+          "dtype": "float64",
+          "non_null_count": 0,
+          "unique_count": 0,
+          "null_count": 134,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Dtws1",
+          "normalized_name": "dtws1",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Dtws2",
+          "normalized_name": "dtws2",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Dtws3",
+          "normalized_name": "dtws3",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Dtws4",
+          "normalized_name": "dtws4",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Ppdif2",
+          "normalized_name": "ppdif2",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Ppdif3",
+          "normalized_name": "ppdif3",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Penlc1",
+          "normalized_name": "penlc1",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Penlc2",
+          "normalized_name": "penlc2",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Penlc3",
+          "normalized_name": "penlc3",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Penfc",
+          "normalized_name": "penfc",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Pendays",
+          "normalized_name": "pendays",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Kblpos",
+          "normalized_name": "kblpos",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Auggj",
+          "normalized_name": "auggj",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 3,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "2023"
+          ]
+        },
+        {
+          "name": "Case Type",
+          "normalized_name": "casetype",
+          "dtype": "object",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "MM_POSTED"
+          ]
+        },
+        {
+          "name": "Cashdiscount20",
+          "normalized_name": "cashdiscount20",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 4,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0",
+            "10",
+            "15"
+          ]
+        },
+        {
+          "name": "Cashdiscount10",
+          "normalized_name": "cashdiscount10",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 3,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0",
+            "8",
+            "10"
+          ]
+        },
+        {
+          "name": "Cashdiscount05",
+          "normalized_name": "cashdiscount05",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 3,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0",
+            "5"
+          ]
+        },
+        {
+          "name": "Penalty",
+          "normalized_name": "penalty",
+          "dtype": "float64",
+          "non_null_count": 78,
+          "unique_count": 1,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": [
+            "0.5"
+          ]
+        },
+        {
+          "name": "Case Key",
+          "normalized_name": "casekey",
+          "dtype": "object",
+          "non_null_count": 134,
+          "unique_count": 134,
+          "null_count": 0,
+          "key_candidate": true,
+          "sample_values": [
+            "300AC3357000280372023001",
+            "300AC3357000280372023002",
+            "300AC3357000280372023003",
+            "300AC3357001030102023001",
+            "300AC3357001030102023002",
+            "300AC3357001030102023003"
+          ]
+        },
+        {
+          "name": "Zbd1t Duplicate",
+          "normalized_name": "zbd1tduplicate",
+          "dtype": "int64",
+          "non_null_count": 134,
+          "unique_count": 12,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "90",
+            "120",
+            "15",
+            "40"
+          ]
+        },
+        {
+          "name": "Po Pt",
+          "normalized_name": "popt",
+          "dtype": "float64",
+          "non_null_count": 60,
+          "unique_count": 7,
+          "null_count": 74,
+          "key_candidate": false,
+          "sample_values": [
+            "120",
+            "15",
+            "90"
+          ]
+        },
+        {
+          "name": "Vendor Master Pt",
+          "normalized_name": "vendormasterpt",
+          "dtype": "float64",
+          "non_null_count": 55,
+          "unique_count": 6,
+          "null_count": 79,
+          "key_candidate": false,
+          "sample_values": [
+            "90"
+          ]
+        },
+        {
+          "name": "Better Pt Available",
+          "normalized_name": "betterptavailable",
+          "dtype": "object",
+          "non_null_count": 107,
+          "unique_count": 2,
+          "null_count": 27,
+          "key_candidate": false,
+          "sample_values": [
+            "NO"
+          ]
+        },
+        {
+          "name": "Recommended Payment Term",
+          "normalized_name": "recommendedpaymentterm",
+          "dtype": "float64",
+          "non_null_count": 42,
+          "unique_count": 3,
+          "null_count": 92,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Wrbtr Converted Duplicate",
+          "normalized_name": "wrbtrconvertedduplicate",
+          "dtype": "float64",
+          "non_null_count": 134,
+          "unique_count": 129,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "43100.5",
+            "40000.5",
+            "123100.5",
+            "801000.4",
+            "608000.4",
+            "406000.4"
+          ]
+        },
+        {
+          "name": "Opportunity Value",
+          "normalized_name": "opportunityvalue",
+          "dtype": "float64",
+          "non_null_count": 134,
+          "unique_count": 43,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Test",
+          "normalized_name": "test",
+          "dtype": "float64",
+          "non_null_count": 0,
+          "unique_count": 0,
+          "null_count": 134,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Test2",
+          "normalized_name": "test2",
+          "dtype": "float64",
+          "non_null_count": 29,
+          "unique_count": 6,
+          "null_count": 105,
+          "key_candidate": false,
+          "sample_values": [
+            "0",
+            "15",
+            "90"
+          ]
+        },
+        {
+          "name": "Celonis Change Date",
+          "normalized_name": "celonischangedate",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 134,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2025-05-22 07:58:27.609000"
+          ]
+        },
+        {
+          "name": "Case Key 1",
+          "normalized_name": "casekey1",
+          "dtype": "object",
+          "non_null_count": 134,
+          "unique_count": 134,
+          "null_count": 0,
+          "key_candidate": true,
+          "sample_values": [
+            "300AC3357000280372023001",
+            "300AC3357000280372023002",
+            "300AC3357000280372023003",
+            "300AC3357001030102023001",
+            "300AC3357001030102023002",
+            "300AC3357001030102023003"
+          ]
+        },
+        {
+          "name": "Recommended Date",
+          "normalized_name": "recommendeddate",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 42,
+          "unique_count": 37,
+          "null_count": 92,
+          "key_candidate": false,
+          "sample_values": []
+        }
+      ],
+      "sample_rows": [
+        {
+          "Num 1": "1",
+          "Num": "1",
+          "Mandt": "300",
+          "Bukrs": "AC33",
+          "Supplier Number": "7003255948",
+          "Augbl": "1300720009.0",
+          "Gjahr": "2023",
+          "Bschl": "31",
+          "Shkzg": "H",
+          "Mwskz": "I1",
+          "Invoice Number": "5700028037",
+          "Buzei": "1",
+          "Zfbdt": "2023-10-31 00:00:00",
+          "Augdt": "2023-12-20 00:00:00",
+          "Dmbe2": "43100.5",
+          "Total Invoice Value": "43100.5",
+          "Skfbt Converted": "43100.5",
+          "Wskto Converted": "0.0",
+          "Mwsts": "0.0",
+          "Wmwst": "0.0",
+          "Bdiff": "0.0",
+          "Bdif2": "0.0",
+          "Projn": null,
+          "Aufnr": null,
+          "Anln1": null,
+          "Anln2": null,
+          "Ebeln": null,
+          "Ebelp": "0.0",
+          "Saknr": "455000.0",
+          "Hkont": "455000.0",
+          "Fkont": "0.0",
+          "Zterm": "NT90",
+          "Zbd1t": "90",
+          "Zbd2t": "0",
+          "Zbd3t": "0",
+          "Zbd1p": "0.0",
+          "Zbd2p": "0.0",
+          "Sknto": "0.0",
+          "Wskto": "0.0",
+          "Zlspr": "R",
+          "Bvtyp": "1.0",
+          "Rebzg": null,
+          "Rebzz": "0.0",
+          "Samnr": "0.0",
+          "Landl": "US",
+          "Anfbj": "0.0",
+          "Vbund": null,
+          "Rebzt": null,
+          "Qsznr": "1.0",
+          "Qsfbt": "0.0",
+          "Projk": "0.0",
+          "Aufpl": "0.0",
+          "Aplzl": "0.0",
+          "Xragl": null,
+          "Uzawe": "W",
+          "Kzbtr": "0.0",
+          "Lnran": "0.0",
+          "Pswsl": "USD",
+          "Zekkn": "0.0",
+          "Prctr": null,
+          "Dtws1": "0.0",
+          "Dtws2": "0.0",
+          "Dtws3": "0.0",
+          "Dtws4": "0.0",
+          "Ppdif2": "0.0",
+          "Ppdif3": "0.0",
+          "Penlc1": "0.0",
+          "Penlc2": "0.0",
+          "Penlc3": "0.0",
+          "Penfc": "0.0",
+          "Pendays": "0.0",
+          "Kblpos": "0.0",
+          "Auggj": "2023.0",
+          "Case Type": "MM_POSTED",
+          "Cashdiscount20": "0.0",
+          "Cashdiscount10": "0.0",
+          "Cashdiscount05": "0.0",
+          "Penalty": "0.5",
+          "Case Key": "300AC3357000280372023001",
+          "Zbd1t Duplicate": "90",
+          "Po Pt": null,
+          "Vendor Master Pt": "90.0",
+          "Better Pt Available": "No",
+          "Recommended Payment Term": null,
+          "Wrbtr Converted Duplicate": "43100.5",
+          "Opportunity Value": "0.0",
+          "Test": null,
+          "Test2": null,
+          "Celonis Change Date": "2025-05-22 07:58:27.609000",
+          "Case Key 1": "300AC3357000280372023001",
+          "Recommended Date": null
+        },
+        {
+          "Num 1": "1",
+          "Num": "1",
+          "Mandt": "300",
+          "Bukrs": "AC33",
+          "Supplier Number": "7003255948",
+          "Augbl": "1300720009.0",
+          "Gjahr": "2023",
+          "Bschl": "31",
+          "Shkzg": "H",
+          "Mwskz": "I1",
+          "Invoice Number": "5700028037",
+          "Buzei": "2",
+          "Zfbdt": "2023-11-02 00:00:00",
+          "Augdt": "2023-12-20 00:00:00",
+          "Dmbe2": "40000.5",
+          "Total Invoice Value": "40000.5",
+          "Skfbt Converted": "40000.5",
+          "Wskto Converted": "0.0",
+          "Mwsts": "0.0",
+          "Wmwst": "0.0",
+          "Bdiff": "0.0",
+          "Bdif2": "0.0",
+          "Projn": null,
+          "Aufnr": null,
+          "Anln1": null,
+          "Anln2": null,
+          "Ebeln": null,
+          "Ebelp": "0.0",
+          "Saknr": "455000.0",
+          "Hkont": "455000.0",
+          "Fkont": "0.0",
+          "Zterm": "NT90",
+          "Zbd1t": "90",
+          "Zbd2t": "0",
+          "Zbd3t": "0",
+          "Zbd1p": "0.0",
+          "Zbd2p": "0.0",
+          "Sknto": "0.0",
+          "Wskto": "0.0",
+          "Zlspr": "R",
+          "Bvtyp": "1.0",
+          "Rebzg": null,
+          "Rebzz": "0.0",
+          "Samnr": "0.0",
+          "Landl": "US",
+          "Anfbj": "0.0",
+          "Vbund": null,
+          "Rebzt": null,
+          "Qsznr": "1.0",
+          "Qsfbt": "0.0",
+          "Projk": "0.0",
+          "Aufpl": "0.0",
+          "Aplzl": "0.0",
+          "Xragl": null,
+          "Uzawe": "W",
+          "Kzbtr": "0.0",
+          "Lnran": "0.0",
+          "Pswsl": "USD",
+          "Zekkn": "0.0",
+          "Prctr": null,
+          "Dtws1": "0.0",
+          "Dtws2": "0.0",
+          "Dtws3": "0.0",
+          "Dtws4": "0.0",
+          "Ppdif2": "0.0",
+          "Ppdif3": "0.0",
+          "Penlc1": "0.0",
+          "Penlc2": "0.0",
+          "Penlc3": "0.0",
+          "Penfc": "0.0",
+          "Pendays": "0.0",
+          "Kblpos": "0.0",
+          "Auggj": "2023.0",
+          "Case Type": "MM_POSTED",
+          "Cashdiscount20": "0.0",
+          "Cashdiscount10": "0.0",
+          "Cashdiscount05": "0.0",
+          "Penalty": "0.5",
+          "Case Key": "300AC3357000280372023002",
+          "Zbd1t Duplicate": "90",
+          "Po Pt": null,
+          "Vendor Master Pt": "90.0",
+          "Better Pt Available": "No",
+          "Recommended Payment Term": null,
+          "Wrbtr Converted Duplicate": "40000.5",
+          "Opportunity Value": "0.0",
+          "Test": null,
+          "Test2": null,
+          "Celonis Change Date": "2025-05-22 07:58:27.609000",
+          "Case Key 1": "300AC3357000280372023002",
+          "Recommended Date": null
+        },
+        {
+          "Num 1": "1",
+          "Num": "1",
+          "Mandt": "300",
+          "Bukrs": "AC33",
+          "Supplier Number": "7003255948",
+          "Augbl": "1300720009.0",
+          "Gjahr": "2023",
+          "Bschl": "31",
+          "Shkzg": "H",
+          "Mwskz": "I1",
+          "Invoice Number": "5700028037",
+          "Buzei": "3",
+          "Zfbdt": "2023-11-03 00:00:00",
+          "Augdt": "2023-12-20 00:00:00",
+          "Dmbe2": "123100.5",
+          "Total Invoice Value": "123100.5",
+          "Skfbt Converted": "123100.5",
+          "Wskto Converted": "0.0",
+          "Mwsts": "0.0",
+          "Wmwst": "0.0",
+          "Bdiff": "0.0",
+          "Bdif2": "0.0",
+          "Projn": null,
+          "Aufnr": null,
+          "Anln1": null,
+          "Anln2": null,
+          "Ebeln": null,
+          "Ebelp": "0.0",
+          "Saknr": "455000.0",
+          "Hkont": "455000.0",
+          "Fkont": "0.0",
+          "Zterm": "NT90",
+          "Zbd1t": "90",
+          "Zbd2t": "0",
+          "Zbd3t": "0",
+          "Zbd1p": "0.0",
+          "Zbd2p": "0.0",
+          "Sknto": "0.0",
+          "Wskto": "0.0",
+          "Zlspr": "R",
+          "Bvtyp": "1.0",
+          "Rebzg": null,
+          "Rebzz": "0.0",
+          "Samnr": "0.0",
+          "Landl": "US",
+          "Anfbj": "0.0",
+          "Vbund": null,
+          "Rebzt": null,
+          "Qsznr": "1.0",
+          "Qsfbt": "0.0",
+          "Projk": "0.0",
+          "Aufpl": "0.0",
+          "Aplzl": "0.0",
+          "Xragl": null,
+          "Uzawe": "W",
+          "Kzbtr": "0.0",
+          "Lnran": "0.0",
+          "Pswsl": "USD",
+          "Zekkn": "0.0",
+          "Prctr": null,
+          "Dtws1": "0.0",
+          "Dtws2": "0.0",
+          "Dtws3": "0.0",
+          "Dtws4": "0.0",
+          "Ppdif2": "0.0",
+          "Ppdif3": "0.0",
+          "Penlc1": "0.0",
+          "Penlc2": "0.0",
+          "Penlc3": "0.0",
+          "Penfc": "0.0",
+          "Pendays": "0.0",
+          "Kblpos": "0.0",
+          "Auggj": "2023.0",
+          "Case Type": "MM_POSTED",
+          "Cashdiscount20": "0.0",
+          "Cashdiscount10": "0.0",
+          "Cashdiscount05": "0.0",
+          "Penalty": "0.5",
+          "Case Key": "300AC3357000280372023003",
+          "Zbd1t Duplicate": "90",
+          "Po Pt": null,
+          "Vendor Master Pt": "90.0",
+          "Better Pt Available": "No",
+          "Recommended Payment Term": null,
+          "Wrbtr Converted Duplicate": "123100.5",
+          "Opportunity Value": "0.0",
+          "Test": null,
+          "Test2": null,
+          "Celonis Change Date": "2025-05-22 07:58:27.609000",
+          "Case Key 1": "300AC3357000280372023003",
+          "Recommended Date": null
+        },
+        {
+          "Num 1": "1",
+          "Num": "1",
+          "Mandt": "300",
+          "Bukrs": "AC33",
+          "Supplier Number": "7000026156",
+          "Augbl": "3000501009.0",
+          "Gjahr": "2023",
+          "Bschl": "31",
+          "Shkzg": "H",
+          "Mwskz": "I1",
+          "Invoice Number": "5700103010",
+          "Buzei": "1",
+          "Zfbdt": "2023-09-08 00:00:00",
+          "Augdt": "2023-12-01 00:00:00",
+          "Dmbe2": "801000.4",
+          "Total Invoice Value": "801000.4",
+          "Skfbt Converted": "801000.4",
+          "Wskto Converted": "0.0",
+          "Mwsts": "0.0",
+          "Wmwst": "0.0",
+          "Bdiff": "0.0",
+          "Bdif2": "0.0",
+          "Projn": null,
+          "Aufnr": null,
+          "Anln1": null,
+          "Anln2": null,
+          "Ebeln": null,
+          "Ebelp": "0.0",
+          "Saknr": "455000.0",
+          "Hkont": "455000.0",
+          "Fkont": "0.0",
+          "Zterm": "NT120",
+          "Zbd1t": "120",
+          "Zbd2t": "0",
+          "Zbd3t": "0",
+          "Zbd1p": "0.0",
+          "Zbd2p": "0.0",
+          "Sknto": "0.0",
+          "Wskto": "0.0",
+          "Zlspr": null,
+          "Bvtyp": "1.0",
+          "Rebzg": null,
+          "Rebzz": "0.0",
+          "Samnr": "0.0",
+          "Landl": "US",
+          "Anfbj": "0.0",
+          "Vbund": null,
+          "Rebzt": null,
+          "Qsznr": "1.0",
+          "Qsfbt": "0.0",
+          "Projk": "0.0",
+          "Aufpl": "0.0",
+          "Aplzl": "0.0",
+          "Xragl": null,
+          "Uzawe": "W",
+          "Kzbtr": "0.0",
+          "Lnran": "0.0",
+          "Pswsl": "USD",
+          "Zekkn": "0.0",
+          "Prctr": null,
+          "Dtws1": "0.0",
+          "Dtws2": "0.0",
+          "Dtws3": "0.0",
+          "Dtws4": "0.0",
+          "Ppdif2": "0.0",
+          "Ppdif3": "0.0",
+          "Penlc1": "0.0",
+          "Penlc2": "0.0",
+          "Penlc3": "0.0",
+          "Penfc": "0.0",
+          "Pendays": "0.0",
+          "Kblpos": "0.0",
+          "Auggj": "2023.0",
+          "Case Type": "MM_POSTED",
+          "Cashdiscount20": "10.0",
+          "Cashdiscount10": "8.0",
+          "Cashdiscount05": "5.0",
+          "Penalty": "0.5",
+          "Case Key": "300AC3357001030102023001",
+          "Zbd1t Duplicate": "120",
+          "Po Pt": "120.0",
+          "Vendor Master Pt": "90.0",
+          "Better Pt Available": "No",
+          "Recommended Payment Term": null,
+          "Wrbtr Converted Duplicate": "801000.4",
+          "Opportunity Value": "0.0",
+          "Test": null,
+          "Test2": null,
+          "Celonis Change Date": "2025-05-22 07:58:27.609000",
+          "Case Key 1": "300AC3357001030102023001",
+          "Recommended Date": null
+        }
+      ]
+    },
+    {
+      "table_name": "AP_RSEG",
+      "source_file": "/Users/radeshchakravarthy/Desktop/AP_RSEG.xlsx",
+      "row_count": 243,
+      "column_count": 24,
+      "columns": [
+        {
+          "name": "Mandt",
+          "normalized_name": "mandt",
+          "dtype": "int64",
+          "non_null_count": 243,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "300"
+          ]
+        },
+        {
+          "name": "Belnr",
+          "normalized_name": "belnr",
+          "dtype": "int64",
+          "non_null_count": 243,
+          "unique_count": 109,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "5700028038",
+            "5700028039",
+            "5700028040",
+            "5700028041",
+            "5700028042",
+            "5700028043"
+          ]
+        },
+        {
+          "name": "Gjahr",
+          "normalized_name": "gjahr",
+          "dtype": "int64",
+          "non_null_count": 243,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2025"
+          ]
+        },
+        {
+          "name": "Buzei",
+          "normalized_name": "buzei",
+          "dtype": "int64",
+          "non_null_count": 243,
+          "unique_count": 19,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "1"
+          ]
+        },
+        {
+          "name": "Lfbnr",
+          "normalized_name": "lfbnr",
+          "dtype": "float64",
+          "non_null_count": 3,
+          "unique_count": 2,
+          "null_count": 240,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Lfgja",
+          "normalized_name": "lfgja",
+          "dtype": "float64",
+          "non_null_count": 187,
+          "unique_count": 2,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Lfpos",
+          "normalized_name": "lfpos",
+          "dtype": "float64",
+          "non_null_count": 187,
+          "unique_count": 2,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Shkzg",
+          "normalized_name": "shkzg",
+          "dtype": "object",
+          "non_null_count": 187,
+          "unique_count": 2,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Spgrm",
+          "normalized_name": "spgrm",
+          "dtype": "object",
+          "non_null_count": 36,
+          "unique_count": 1,
+          "null_count": 207,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Wrbtr",
+          "normalized_name": "wrbtr",
+          "dtype": "float64",
+          "non_null_count": 187,
+          "unique_count": 77,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Menge",
+          "normalized_name": "menge",
+          "dtype": "float64",
+          "non_null_count": 187,
+          "unique_count": 56,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Ebeln Ekpo",
+          "normalized_name": "ebelnekpo",
+          "dtype": "object",
+          "non_null_count": 243,
+          "unique_count": 43,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "V411655984"
+          ]
+        },
+        {
+          "name": "Ebelp Ekpo",
+          "normalized_name": "ebelpekpo",
+          "dtype": "int64",
+          "non_null_count": 243,
+          "unique_count": 21,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "1"
+          ]
+        },
+        {
+          "name": "Bukrs Ekpo",
+          "normalized_name": "bukrsekpo",
+          "dtype": "object",
+          "non_null_count": 243,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "AC33"
+          ]
+        },
+        {
+          "name": "Netpr Ekpo",
+          "normalized_name": "netprekpo",
+          "dtype": "float64",
+          "non_null_count": 187,
+          "unique_count": 39,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Netwr Ekpo",
+          "normalized_name": "netwrekpo",
+          "dtype": "float64",
+          "non_null_count": 187,
+          "unique_count": 69,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Matnr Ekpo",
+          "normalized_name": "matnrekpo",
+          "dtype": "float64",
+          "non_null_count": 0,
+          "unique_count": 0,
+          "null_count": 243,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Werks Ekpo",
+          "normalized_name": "werksekpo",
+          "dtype": "object",
+          "non_null_count": 187,
+          "unique_count": 12,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Zterm Ekko",
+          "normalized_name": "ztermekko",
+          "dtype": "object",
+          "non_null_count": 187,
+          "unique_count": 10,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Waers Ekko",
+          "normalized_name": "waersekko",
+          "dtype": "object",
+          "non_null_count": 187,
+          "unique_count": 2,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Supplier Number",
+          "normalized_name": "suppliernumber",
+          "dtype": "float64",
+          "non_null_count": 187,
+          "unique_count": 26,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Bedat Ekko",
+          "normalized_name": "bedatekko",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 187,
+          "unique_count": 35,
+          "null_count": 56,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Case Key",
+          "normalized_name": "casekey",
+          "dtype": "object",
+          "non_null_count": 243,
+          "unique_count": 126,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "300AC3357000280382025001",
+            "300AC3357000280392025001",
+            "300AC3357000280402025001",
+            "300AC3357000280412025001",
+            "300AC3357000280422025001",
+            "300AC3357000280432025001"
+          ]
+        },
+        {
+          "name": "Celonis Change Date",
+          "normalized_name": "celonischangedate",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 243,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2025-05-21 07:22:50.243000"
+          ]
+        }
+      ],
+      "sample_rows": [
+        {
+          "Mandt": "300",
+          "Belnr": "5700028038",
+          "Gjahr": "2025",
+          "Buzei": "1",
+          "Lfbnr": null,
+          "Lfgja": null,
+          "Lfpos": null,
+          "Shkzg": null,
+          "Spgrm": null,
+          "Wrbtr": null,
+          "Menge": null,
+          "Ebeln Ekpo": "V411655984",
+          "Ebelp Ekpo": "1",
+          "Bukrs Ekpo": "AC33",
+          "Netpr Ekpo": null,
+          "Netwr Ekpo": null,
+          "Matnr Ekpo": null,
+          "Werks Ekpo": null,
+          "Zterm Ekko": null,
+          "Waers Ekko": null,
+          "Supplier Number": null,
+          "Bedat Ekko": null,
+          "Case Key": "300AC3357000280382025001",
+          "Celonis Change Date": "2025-05-21 07:22:50.243000"
+        },
+        {
+          "Mandt": "300",
+          "Belnr": "5700028039",
+          "Gjahr": "2025",
+          "Buzei": "1",
+          "Lfbnr": null,
+          "Lfgja": null,
+          "Lfpos": null,
+          "Shkzg": null,
+          "Spgrm": null,
+          "Wrbtr": null,
+          "Menge": null,
+          "Ebeln Ekpo": "V411655984",
+          "Ebelp Ekpo": "1",
+          "Bukrs Ekpo": "AC33",
+          "Netpr Ekpo": null,
+          "Netwr Ekpo": null,
+          "Matnr Ekpo": null,
+          "Werks Ekpo": null,
+          "Zterm Ekko": null,
+          "Waers Ekko": null,
+          "Supplier Number": null,
+          "Bedat Ekko": null,
+          "Case Key": "300AC3357000280392025001",
+          "Celonis Change Date": "2025-05-21 07:22:50.243000"
+        },
+        {
+          "Mandt": "300",
+          "Belnr": "5700028040",
+          "Gjahr": "2025",
+          "Buzei": "1",
+          "Lfbnr": null,
+          "Lfgja": null,
+          "Lfpos": null,
+          "Shkzg": null,
+          "Spgrm": null,
+          "Wrbtr": null,
+          "Menge": null,
+          "Ebeln Ekpo": "V411655984",
+          "Ebelp Ekpo": "1",
+          "Bukrs Ekpo": "AC33",
+          "Netpr Ekpo": null,
+          "Netwr Ekpo": null,
+          "Matnr Ekpo": null,
+          "Werks Ekpo": null,
+          "Zterm Ekko": null,
+          "Waers Ekko": null,
+          "Supplier Number": null,
+          "Bedat Ekko": null,
+          "Case Key": "300AC3357000280402025001",
+          "Celonis Change Date": "2025-05-21 07:22:50.243000"
+        },
+        {
+          "Mandt": "300",
+          "Belnr": "5700028041",
+          "Gjahr": "2025",
+          "Buzei": "1",
+          "Lfbnr": null,
+          "Lfgja": null,
+          "Lfpos": null,
+          "Shkzg": null,
+          "Spgrm": null,
+          "Wrbtr": null,
+          "Menge": null,
+          "Ebeln Ekpo": "V411655984",
+          "Ebelp Ekpo": "1",
+          "Bukrs Ekpo": "AC33",
+          "Netpr Ekpo": null,
+          "Netwr Ekpo": null,
+          "Matnr Ekpo": null,
+          "Werks Ekpo": null,
+          "Zterm Ekko": null,
+          "Waers Ekko": null,
+          "Supplier Number": null,
+          "Bedat Ekko": null,
+          "Case Key": "300AC3357000280412025001",
+          "Celonis Change Date": "2025-05-21 07:22:50.243000"
+        }
+      ]
+    },
+    {
+      "table_name": "AR_AGEING",
+      "source_file": "/Users/radeshchakravarthy/Desktop/AR_Ageing_Sheet1 (1).xlsx",
+      "row_count": 5,
+      "column_count": 4,
+      "columns": [
+        {
+          "name": "Ageing",
+          "normalized_name": "ageing",
+          "dtype": "object",
+          "non_null_count": 5,
+          "unique_count": 5,
+          "null_count": 0,
+          "key_candidate": true,
+          "sample_values": [
+            "1-7 DAYS",
+            "15-30 DAYS",
+            "30-75 DAYS",
+            "75 DAYS +",
+            "8-15 DAYS"
+          ]
+        },
+        {
+          "name": "Invoices",
+          "normalized_name": "invoices",
+          "dtype": "int64",
+          "non_null_count": 5,
+          "unique_count": 5,
+          "null_count": 0,
+          "key_candidate": true,
+          "sample_values": [
+            "489",
+            "357",
+            "421",
+            "84",
+            "636"
+          ]
+        },
+        {
+          "name": "Invoice Value",
+          "normalized_name": "invoicevalue",
+          "dtype": "int64",
+          "non_null_count": 5,
+          "unique_count": 5,
+          "null_count": 0,
+          "key_candidate": true,
+          "sample_values": [
+            "677000",
+            "578000",
+            "733000",
+            "49000",
+            "378000"
+          ]
+        },
+        {
+          "name": "Celonis Change Date",
+          "normalized_name": "celonischangedate",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 5,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2025-05-15 17:55:17.973000"
+          ]
+        }
+      ],
+      "sample_rows": [
+        {
+          "Ageing": "1-7 Days",
+          "Invoices": "489",
+          "Invoice Value": "677000",
+          "Celonis Change Date": "2025-05-15 17:55:17.973000"
+        },
+        {
+          "Ageing": "15-30 Days",
+          "Invoices": "357",
+          "Invoice Value": "578000",
+          "Celonis Change Date": "2025-05-15 17:55:17.973000"
+        },
+        {
+          "Ageing": "30-75 Days",
+          "Invoices": "421",
+          "Invoice Value": "733000",
+          "Celonis Change Date": "2025-05-15 17:55:17.973000"
+        },
+        {
+          "Ageing": "75 Days +",
+          "Invoices": "84",
+          "Invoice Value": "49000",
+          "Celonis Change Date": "2025-05-15 17:55:17.973000"
+        }
+      ]
+    },
+    {
+      "table_name": "EBAN",
+      "source_file": "/Users/radeshchakravarthy/Desktop/EBAN.xlsx",
+      "row_count": 75,
+      "column_count": 15,
+      "columns": [
+        {
+          "name": "Mandt",
+          "normalized_name": "mandt",
+          "dtype": "int64",
+          "non_null_count": 75,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "300"
+          ]
+        },
+        {
+          "name": "Banfn",
+          "normalized_name": "banfn",
+          "dtype": "int64",
+          "non_null_count": 75,
+          "unique_count": 43,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2100181589",
+            "2100200819",
+            "2100205095",
+            "2100294825",
+            "2100323684",
+            "2100350053"
+          ]
+        },
+        {
+          "name": "Bnfpo",
+          "normalized_name": "bnfpo",
+          "dtype": "int64",
+          "non_null_count": 75,
+          "unique_count": 21,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "30",
+            "10",
+            "20"
+          ]
+        },
+        {
+          "name": "Bsart",
+          "normalized_name": "bsart",
+          "dtype": "object",
+          "non_null_count": 75,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "ABCA",
+            "ABCI"
+          ]
+        },
+        {
+          "name": "Bstyp",
+          "normalized_name": "bstyp",
+          "dtype": "object",
+          "non_null_count": 75,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "B"
+          ]
+        },
+        {
+          "name": "Frgzu",
+          "normalized_name": "frgzu",
+          "dtype": "object",
+          "non_null_count": 1,
+          "unique_count": 1,
+          "null_count": 74,
+          "key_candidate": false,
+          "sample_values": [
+            "X"
+          ]
+        },
+        {
+          "name": "Ernam",
+          "normalized_name": "ernam",
+          "dtype": "object",
+          "non_null_count": 75,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "H_BATCH",
+            "50662587"
+          ]
+        },
+        {
+          "name": "Erdat",
+          "normalized_name": "erdat",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 75,
+          "unique_count": 35,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2023-01-04 00:00:00",
+            "2023-01-17 00:00:00",
+            "2023-01-26 00:00:00",
+            "2023-03-06 00:00:00",
+            "2023-03-16 00:00:00",
+            "2023-03-23 00:00:00"
+          ]
+        },
+        {
+          "name": "Ekgrp",
+          "normalized_name": "ekgrp",
+          "dtype": "object",
+          "non_null_count": 75,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "SPD",
+            "225"
+          ]
+        },
+        {
+          "name": "Werks",
+          "normalized_name": "werks",
+          "dtype": "object",
+          "non_null_count": 75,
+          "unique_count": 12,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "A049",
+            "A016",
+            "A003",
+            "A130",
+            "A057",
+            "A273"
+          ]
+        },
+        {
+          "name": "Ebeln",
+          "normalized_name": "ebeln",
+          "dtype": "object",
+          "non_null_count": 75,
+          "unique_count": 43,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "V411306348",
+            "V411327955",
+            "V411345464",
+            "V411423636",
+            "V411445219",
+            "4800033282"
+          ]
+        },
+        {
+          "name": "Ebelp",
+          "normalized_name": "ebelp",
+          "dtype": "int64",
+          "non_null_count": 75,
+          "unique_count": 21,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "3",
+            "1",
+            "10",
+            "2"
+          ]
+        },
+        {
+          "name": "Badat",
+          "normalized_name": "badat",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 75,
+          "unique_count": 35,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2023-01-04 00:00:00",
+            "2023-01-13 00:00:00",
+            "2023-01-16 00:00:00",
+            "2023-02-23 00:00:00",
+            "2023-03-09 00:00:00",
+            "2023-03-23 00:00:00"
+          ]
+        },
+        {
+          "name": "Frgdt",
+          "normalized_name": "frgdt",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 75,
+          "unique_count": 34,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2023-01-04 00:00:00",
+            "2023-01-17 00:00:00",
+            "2023-01-26 00:00:00",
+            "2023-03-06 00:00:00",
+            "2023-11-25 00:00:00",
+            "2023-03-23 00:00:00"
+          ]
+        },
+        {
+          "name": "Celonis Change Date",
+          "normalized_name": "celonischangedate",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 75,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2024-03-26 10:15:44.290000"
+          ]
+        }
+      ],
+      "sample_rows": [
+        {
+          "Mandt": "300",
+          "Banfn": "2100181589",
+          "Bnfpo": "30",
+          "Bsart": "ABCA",
+          "Bstyp": "B",
+          "Frgzu": null,
+          "Ernam": "H_BATCH",
+          "Erdat": "2023-01-04 00:00:00",
+          "Ekgrp": "SPD",
+          "Werks": "A049",
+          "Ebeln": "V411306348",
+          "Ebelp": "3",
+          "Badat": "2023-01-04 00:00:00",
+          "Frgdt": "2023-01-04 00:00:00",
+          "Celonis Change Date": "2024-03-26 10:15:44.290000"
+        },
+        {
+          "Mandt": "300",
+          "Banfn": "2100200819",
+          "Bnfpo": "10",
+          "Bsart": "ABCA",
+          "Bstyp": "B",
+          "Frgzu": null,
+          "Ernam": "H_BATCH",
+          "Erdat": "2023-01-17 00:00:00",
+          "Ekgrp": "SPD",
+          "Werks": "A016",
+          "Ebeln": "V411327955",
+          "Ebelp": "1",
+          "Badat": "2023-01-13 00:00:00",
+          "Frgdt": "2023-01-17 00:00:00",
+          "Celonis Change Date": "2024-03-26 10:15:44.290000"
+        },
+        {
+          "Mandt": "300",
+          "Banfn": "2100205095",
+          "Bnfpo": "10",
+          "Bsart": "ABCA",
+          "Bstyp": "B",
+          "Frgzu": null,
+          "Ernam": "H_BATCH",
+          "Erdat": "2023-01-26 00:00:00",
+          "Ekgrp": "SPD",
+          "Werks": "A049",
+          "Ebeln": "V411345464",
+          "Ebelp": "1",
+          "Badat": "2023-01-16 00:00:00",
+          "Frgdt": "2023-01-26 00:00:00",
+          "Celonis Change Date": "2024-03-26 10:15:44.290000"
+        },
+        {
+          "Mandt": "300",
+          "Banfn": "2100294825",
+          "Bnfpo": "10",
+          "Bsart": "ABCA",
+          "Bstyp": "B",
+          "Frgzu": null,
+          "Ernam": "H_BATCH",
+          "Erdat": "2023-03-06 00:00:00",
+          "Ekgrp": "SPD",
+          "Werks": "A016",
+          "Ebeln": "V411423636",
+          "Ebelp": "1",
+          "Badat": "2023-02-23 00:00:00",
+          "Frgdt": "2023-03-06 00:00:00",
+          "Celonis Change Date": "2024-03-26 10:15:44.290000"
+        }
+      ]
+    },
+    {
+      "table_name": "EKBE",
+      "source_file": "/Users/radeshchakravarthy/Desktop/EKBE (2).xlsx",
+      "row_count": 1227,
+      "column_count": 10,
+      "columns": [
+        {
+          "name": "Mandt",
+          "normalized_name": "mandt",
+          "dtype": "int64",
+          "non_null_count": 1227,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "300"
+          ]
+        },
+        {
+          "name": "Ebeln",
+          "normalized_name": "ebeln",
+          "dtype": "object",
+          "non_null_count": 1227,
+          "unique_count": 43,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "V411840672",
+            "V411871692"
+          ]
+        },
+        {
+          "name": "Ebelp",
+          "normalized_name": "ebelp",
+          "dtype": "int64",
+          "non_null_count": 1227,
+          "unique_count": 21,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2",
+            "1"
+          ]
+        },
+        {
+          "name": "Vgabe",
+          "normalized_name": "vgabe",
+          "dtype": "int64",
+          "non_null_count": 1227,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2"
+          ]
+        },
+        {
+          "name": "Zekkn",
+          "normalized_name": "zekkn",
+          "dtype": "int64",
+          "non_null_count": 1227,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "1"
+          ]
+        },
+        {
+          "name": "Shkzg",
+          "normalized_name": "shkzg",
+          "dtype": "object",
+          "non_null_count": 1227,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "S"
+          ]
+        },
+        {
+          "name": "Cpudt",
+          "normalized_name": "cpudt",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 1227,
+          "unique_count": 150,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2023-12-01 00:00:00",
+            "2023-11-06 00:00:00",
+            "2023-11-16 00:00:00",
+            "2023-11-30 00:00:00"
+          ]
+        },
+        {
+          "name": "Cputm",
+          "normalized_name": "cputm",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 1227,
+          "unique_count": 1104,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "1970-01-01 16:32:40",
+            "1970-01-01 19:02:15",
+            "1970-01-01 19:04:19",
+            "1970-01-01 19:10:16",
+            "1970-01-01 19:13:03",
+            "1970-01-01 19:14:57"
+          ]
+        },
+        {
+          "name": "Ernam",
+          "normalized_name": "ernam",
+          "dtype": "object",
+          "non_null_count": 1227,
+          "unique_count": 9,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "11392395",
+            "11265174"
+          ]
+        },
+        {
+          "name": "Menge",
+          "normalized_name": "menge",
+          "dtype": "float64",
+          "non_null_count": 1227,
+          "unique_count": 44,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        }
+      ],
+      "sample_rows": [
+        {
+          "Mandt": "300",
+          "Ebeln": "V411840672",
+          "Ebelp": "2",
+          "Vgabe": "2",
+          "Zekkn": "1",
+          "Shkzg": "S",
+          "Cpudt": "2023-12-01 00:00:00",
+          "Cputm": "1970-01-01 16:32:40",
+          "Ernam": "11392395",
+          "Menge": "0.0"
+        },
+        {
+          "Mandt": "300",
+          "Ebeln": "V411871692",
+          "Ebelp": "1",
+          "Vgabe": "2",
+          "Zekkn": "1",
+          "Shkzg": "S",
+          "Cpudt": "2023-11-06 00:00:00",
+          "Cputm": "1970-01-01 19:02:15",
+          "Ernam": "11392395",
+          "Menge": "0.0"
+        },
+        {
+          "Mandt": "300",
+          "Ebeln": "V411871692",
+          "Ebelp": "1",
+          "Vgabe": "2",
+          "Zekkn": "1",
+          "Shkzg": "S",
+          "Cpudt": "2023-11-06 00:00:00",
+          "Cputm": "1970-01-01 19:04:19",
+          "Ernam": "11392395",
+          "Menge": "0.0"
+        },
+        {
+          "Mandt": "300",
+          "Ebeln": "V411871692",
+          "Ebelp": "1",
+          "Vgabe": "2",
+          "Zekkn": "1",
+          "Shkzg": "S",
+          "Cpudt": "2023-11-06 00:00:00",
+          "Cputm": "1970-01-01 19:10:16",
+          "Ernam": "11392395",
+          "Menge": "0.0"
+        }
+      ]
+    },
+    {
+      "table_name": "EKKO",
+      "source_file": "/Users/radeshchakravarthy/Desktop/EKKO.xlsx",
+      "row_count": 43,
+      "column_count": 26,
+      "columns": [
+        {
+          "name": "Mandt",
+          "normalized_name": "mandt",
+          "dtype": "int64",
+          "non_null_count": 43,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "300"
+          ]
+        },
+        {
+          "name": "Ebeln",
+          "normalized_name": "ebeln",
+          "dtype": "object",
+          "non_null_count": 43,
+          "unique_count": 43,
+          "null_count": 0,
+          "key_candidate": true,
+          "sample_values": [
+            "4800033282",
+            "V411306348",
+            "V411327955",
+            "V411345464",
+            "V411423636",
+            "V411445219"
+          ]
+        },
+        {
+          "name": "Bukrs",
+          "normalized_name": "bukrs",
+          "dtype": "object",
+          "non_null_count": 43,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "AC33"
+          ]
+        },
+        {
+          "name": "Submitdate",
+          "normalized_name": "submitdate",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 26,
+          "unique_count": 26,
+          "null_count": 17,
+          "key_candidate": false,
+          "sample_values": [
+            "2023-01-06 13:01:49",
+            "2023-01-17 17:41:28",
+            "2023-01-18 14:52:23",
+            "2023-03-02 20:37:50",
+            "2023-03-10 16:02:01",
+            "2023-03-31 19:19:49"
+          ]
+        },
+        {
+          "name": "Ordereddate",
+          "normalized_name": "ordereddate",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 26,
+          "unique_count": 26,
+          "null_count": 17,
+          "key_candidate": false,
+          "sample_values": [
+            "2023-01-06 13:02:06",
+            "2023-01-17 18:21:13",
+            "2023-01-26 10:07:32",
+            "2023-03-06 15:41:47",
+            "2023-03-16 15:19:51",
+            "2023-04-14 23:14:40"
+          ]
+        },
+        {
+          "name": "Createdate",
+          "normalized_name": "createdate",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 26,
+          "unique_count": 26,
+          "null_count": 17,
+          "key_candidate": false,
+          "sample_values": [
+            "2023-01-06 13:01:35",
+            "2023-01-12 22:18:40",
+            "2023-01-16 18:14:32",
+            "2023-02-23 16:11:37",
+            "2023-02-06 19:34:12",
+            "2023-03-30 17:17:40"
+          ]
+        },
+        {
+          "name": "Bstyp",
+          "normalized_name": "bstyp",
+          "dtype": "object",
+          "non_null_count": 43,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "F"
+          ]
+        },
+        {
+          "name": "Bsart",
+          "normalized_name": "bsart",
+          "dtype": "object",
+          "non_null_count": 43,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "ABC7",
+            "ABC4"
+          ]
+        },
+        {
+          "name": "Aedat",
+          "normalized_name": "aedat",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 43,
+          "unique_count": 35,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2023-03-23 00:00:00",
+            "2023-01-06 00:00:00",
+            "2023-01-17 00:00:00",
+            "2023-01-26 00:00:00",
+            "2023-03-06 00:00:00",
+            "2023-03-16 00:00:00"
+          ]
+        },
+        {
+          "name": "Ernam",
+          "normalized_name": "ernam",
+          "dtype": "object",
+          "non_null_count": 43,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "FTCPFP01",
+            "H_BATCH"
+          ]
+        },
+        {
+          "name": "Ekorg",
+          "normalized_name": "ekorg",
+          "dtype": "int64",
+          "non_null_count": 43,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "3220"
+          ]
+        },
+        {
+          "name": "Ekorg Text",
+          "normalized_name": "ekorgtext",
+          "dtype": "object",
+          "non_null_count": 43,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "AC33 INDIRECTS"
+          ]
+        },
+        {
+          "name": "Waers",
+          "normalized_name": "waers",
+          "dtype": "object",
+          "non_null_count": 43,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "CAD",
+            "USD"
+          ]
+        },
+        {
+          "name": "Lifnr",
+          "normalized_name": "lifnr",
+          "dtype": "int64",
+          "non_null_count": 43,
+          "unique_count": 26,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "7003204990",
+            "7003198928",
+            "7000026156",
+            "7000020757",
+            "7003204531",
+            "7003299240"
+          ]
+        },
+        {
+          "name": "Wkurs",
+          "normalized_name": "wkurs",
+          "dtype": "float64",
+          "non_null_count": 43,
+          "unique_count": 5,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "1",
+            "1.34329",
+            "1.36269"
+          ]
+        },
+        {
+          "name": "Zterm",
+          "normalized_name": "zterm",
+          "dtype": "object",
+          "non_null_count": 43,
+          "unique_count": 10,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "NT60",
+            "NT30",
+            "NT90",
+            "NT75",
+            "NT43",
+            "N120"
+          ]
+        },
+        {
+          "name": "Zbd1t",
+          "normalized_name": "zbd1t",
+          "dtype": "int64",
+          "non_null_count": 43,
+          "unique_count": 10,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "60",
+            "30",
+            "90",
+            "75",
+            "43",
+            "120"
+          ]
+        },
+        {
+          "name": "Zbd2t",
+          "normalized_name": "zbd2t",
+          "dtype": "int64",
+          "non_null_count": 43,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Zbd3t",
+          "normalized_name": "zbd3t",
+          "dtype": "int64",
+          "non_null_count": 43,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Ekgrp",
+          "normalized_name": "ekgrp",
+          "dtype": "object",
+          "non_null_count": 43,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "225",
+            "SPD"
+          ]
+        },
+        {
+          "name": "Bedat",
+          "normalized_name": "bedat",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 43,
+          "unique_count": 35,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2023-03-23 00:00:00",
+            "2023-01-06 00:00:00",
+            "2023-01-17 00:00:00",
+            "2023-01-26 00:00:00",
+            "2023-03-06 00:00:00",
+            "2023-03-16 00:00:00"
+          ]
+        },
+        {
+          "name": "Procstat",
+          "normalized_name": "procstat",
+          "dtype": "int64",
+          "non_null_count": 43,
+          "unique_count": 3,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "5"
+          ]
+        },
+        {
+          "name": "Frgzu",
+          "normalized_name": "frgzu",
+          "dtype": "object",
+          "non_null_count": 43,
+          "unique_count": 6,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "XXXXXX",
+            "XXXXX"
+          ]
+        },
+        {
+          "name": "Frgke",
+          "normalized_name": "frgke",
+          "dtype": "int64",
+          "non_null_count": 43,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2"
+          ]
+        },
+        {
+          "name": "Frggr",
+          "normalized_name": "frggr",
+          "dtype": "int64",
+          "non_null_count": 43,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "61"
+          ]
+        },
+        {
+          "name": "Celonis Change Date",
+          "normalized_name": "celonischangedate",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 43,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2024-03-20 07:10:02.527000"
+          ]
+        }
+      ],
+      "sample_rows": [
+        {
+          "Mandt": "300",
+          "Ebeln": "4800033282",
+          "Bukrs": "AC33",
+          "Submitdate": null,
+          "Ordereddate": null,
+          "Createdate": null,
+          "Bstyp": "F",
+          "Bsart": "ABC7",
+          "Aedat": "2023-03-23 00:00:00",
+          "Ernam": "FTCPFP01",
+          "Ekorg": "3220",
+          "Ekorg Text": "AC33 Indirects",
+          "Waers": "CAD",
+          "Lifnr": "7003204990",
+          "Wkurs": "1.0",
+          "Zterm": "NT60",
+          "Zbd1t": "60",
+          "Zbd2t": "0",
+          "Zbd3t": "0",
+          "Ekgrp": "225",
+          "Bedat": "2023-03-23 00:00:00",
+          "Procstat": "5",
+          "Frgzu": "XXXXXX",
+          "Frgke": "2",
+          "Frggr": "61",
+          "Celonis Change Date": "2024-03-20 07:10:02.527000"
+        },
+        {
+          "Mandt": "300",
+          "Ebeln": "V411306348",
+          "Bukrs": "AC33",
+          "Submitdate": "2023-01-06 13:01:49",
+          "Ordereddate": "2023-01-06 13:02:06",
+          "Createdate": "2023-01-06 13:01:35",
+          "Bstyp": "F",
+          "Bsart": "ABC4",
+          "Aedat": "2023-01-06 00:00:00",
+          "Ernam": "H_BATCH",
+          "Ekorg": "3220",
+          "Ekorg Text": "AC33 Indirects",
+          "Waers": "CAD",
+          "Lifnr": "7003198928",
+          "Wkurs": "1.0",
+          "Zterm": "NT30",
+          "Zbd1t": "30",
+          "Zbd2t": "0",
+          "Zbd3t": "0",
+          "Ekgrp": "SPD",
+          "Bedat": "2023-01-06 00:00:00",
+          "Procstat": "5",
+          "Frgzu": "XXXXXX",
+          "Frgke": "2",
+          "Frggr": "61",
+          "Celonis Change Date": "2024-03-20 07:10:02.527000"
+        },
+        {
+          "Mandt": "300",
+          "Ebeln": "V411327955",
+          "Bukrs": "AC33",
+          "Submitdate": "2023-01-17 17:41:28",
+          "Ordereddate": "2023-01-17 18:21:13",
+          "Createdate": "2023-01-12 22:18:40",
+          "Bstyp": "F",
+          "Bsart": "ABC4",
+          "Aedat": "2023-01-17 00:00:00",
+          "Ernam": "H_BATCH",
+          "Ekorg": "3220",
+          "Ekorg Text": "AC33 Indirects",
+          "Waers": "USD",
+          "Lifnr": "7000026156",
+          "Wkurs": "1.34329",
+          "Zterm": "NT90",
+          "Zbd1t": "90",
+          "Zbd2t": "0",
+          "Zbd3t": "0",
+          "Ekgrp": "SPD",
+          "Bedat": "2023-01-17 00:00:00",
+          "Procstat": "5",
+          "Frgzu": "XXXXXX",
+          "Frgke": "2",
+          "Frggr": "61",
+          "Celonis Change Date": "2024-03-20 07:10:02.527000"
+        },
+        {
+          "Mandt": "300",
+          "Ebeln": "V411345464",
+          "Bukrs": "AC33",
+          "Submitdate": "2023-01-18 14:52:23",
+          "Ordereddate": "2023-01-26 10:07:32",
+          "Createdate": "2023-01-16 18:14:32",
+          "Bstyp": "F",
+          "Bsart": "ABC4",
+          "Aedat": "2023-01-26 00:00:00",
+          "Ernam": "H_BATCH",
+          "Ekorg": "3220",
+          "Ekorg Text": "AC33 Indirects",
+          "Waers": "CAD",
+          "Lifnr": "7000020757",
+          "Wkurs": "1.0",
+          "Zterm": "NT75",
+          "Zbd1t": "75",
+          "Zbd2t": "0",
+          "Zbd3t": "0",
+          "Ekgrp": "SPD",
+          "Bedat": "2023-01-26 00:00:00",
+          "Procstat": "5",
+          "Frgzu": "XXXXXX",
+          "Frgke": "2",
+          "Frggr": "61",
+          "Celonis Change Date": "2024-03-20 07:10:02.527000"
+        }
+      ]
+    },
+    {
+      "table_name": "EKPO",
+      "source_file": "/Users/radeshchakravarthy/Desktop/EKPO.xlsx",
+      "row_count": 75,
+      "column_count": 23,
+      "columns": [
+        {
+          "name": "Ebeln",
+          "normalized_name": "ebeln",
+          "dtype": "object",
+          "non_null_count": 75,
+          "unique_count": 43,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "4800033282",
+            "V411306348",
+            "V411327955",
+            "V411345464",
+            "V411423636",
+            "V411445219"
+          ]
+        },
+        {
+          "name": "Ebelp",
+          "normalized_name": "ebelp",
+          "dtype": "int64",
+          "non_null_count": 75,
+          "unique_count": 21,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "10",
+            "3",
+            "1",
+            "2"
+          ]
+        },
+        {
+          "name": "Mandt",
+          "normalized_name": "mandt",
+          "dtype": "int64",
+          "non_null_count": 75,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "300"
+          ]
+        },
+        {
+          "name": "Aedat",
+          "normalized_name": "aedat",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 75,
+          "unique_count": 35,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2023-03-23 00:00:00",
+            "2023-09-14 00:00:00",
+            "2023-01-17 00:00:00",
+            "2023-01-26 00:00:00",
+            "2023-03-06 00:00:00",
+            "2023-03-16 00:00:00"
+          ]
+        },
+        {
+          "name": "Bukrs",
+          "normalized_name": "bukrs",
+          "dtype": "object",
+          "non_null_count": 75,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "AC33"
+          ]
+        },
+        {
+          "name": "Werks",
+          "normalized_name": "werks",
+          "dtype": "object",
+          "non_null_count": 75,
+          "unique_count": 12,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "A130",
+            "A049",
+            "A016",
+            "A003",
+            "A273"
+          ]
+        },
+        {
+          "name": "Ktpnr",
+          "normalized_name": "ktpnr",
+          "dtype": "int64",
+          "non_null_count": 75,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "0"
+          ]
+        },
+        {
+          "name": "Banfn",
+          "normalized_name": "banfn",
+          "dtype": "int64",
+          "non_null_count": 75,
+          "unique_count": 43,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2100350053",
+            "2100181589",
+            "2100200819",
+            "2100205095",
+            "2100294825",
+            "2100323684"
+          ]
+        },
+        {
+          "name": "Bnfpo",
+          "normalized_name": "bnfpo",
+          "dtype": "int64",
+          "non_null_count": 75,
+          "unique_count": 21,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "10",
+            "30",
+            "20"
+          ]
+        },
+        {
+          "name": "Netwr",
+          "normalized_name": "netwr",
+          "dtype": "float64",
+          "non_null_count": 75,
+          "unique_count": 69,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "50000",
+            "19600",
+            "226876",
+            "7800",
+            "25000",
+            "155780"
+          ]
+        },
+        {
+          "name": "Netwr Converted",
+          "normalized_name": "netwrconverted",
+          "dtype": "float64",
+          "non_null_count": 75,
+          "unique_count": 73,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "33590.5",
+            "13695.5",
+            "209876.18132",
+            "5344.404",
+            "17278",
+            "106805.8836"
+          ]
+        },
+        {
+          "name": "Netpr",
+          "normalized_name": "netpr",
+          "dtype": "float64",
+          "non_null_count": 75,
+          "unique_count": 39,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "1",
+            "325.25",
+            "10.65",
+            "9.95",
+            "26.26"
+          ]
+        },
+        {
+          "name": "Netpr Converted",
+          "normalized_name": "netprconverted",
+          "dtype": "float64",
+          "non_null_count": 75,
+          "unique_count": 65,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "0.67181",
+            "0.69875",
+            "0.92507",
+            "0.68518",
+            "0.69112",
+            "0.68562"
+          ]
+        },
+        {
+          "name": "Loekz",
+          "normalized_name": "loekz",
+          "dtype": "float64",
+          "non_null_count": 0,
+          "unique_count": 0,
+          "null_count": 75,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Matkl",
+          "normalized_name": "matkl",
+          "dtype": "object",
+          "non_null_count": 75,
+          "unique_count": 30,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "E778014",
+            "B683001",
+            "B678017",
+            "D753005",
+            "C703001",
+            "B678022"
+          ]
+        },
+        {
+          "name": "Matnr",
+          "normalized_name": "matnr",
+          "dtype": "int64",
+          "non_null_count": 75,
+          "unique_count": 72,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "320006016",
+            "320006030",
+            "310005002",
+            "320006120",
+            "310005213",
+            "330007141"
+          ]
+        },
+        {
+          "name": "Menge",
+          "normalized_name": "menge",
+          "dtype": "float64",
+          "non_null_count": 75,
+          "unique_count": 42,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "50000",
+            "19600",
+            "226876",
+            "7800",
+            "25000",
+            "155780"
+          ]
+        },
+        {
+          "name": "Meins",
+          "normalized_name": "meins",
+          "dtype": "object",
+          "non_null_count": 75,
+          "unique_count": 8,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "EA",
+            "ROL"
+          ]
+        },
+        {
+          "name": "Bpumz",
+          "normalized_name": "bpumz",
+          "dtype": "int64",
+          "non_null_count": 75,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "1"
+          ]
+        },
+        {
+          "name": "Bpumn",
+          "normalized_name": "bpumn",
+          "dtype": "int64",
+          "non_null_count": 75,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "1"
+          ]
+        },
+        {
+          "name": "Mtart",
+          "normalized_name": "mtart",
+          "dtype": "float64",
+          "non_null_count": 0,
+          "unique_count": 0,
+          "null_count": 75,
+          "key_candidate": false,
+          "sample_values": []
+        },
+        {
+          "name": "Celonis Change Date",
+          "normalized_name": "celonischangedate",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 75,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2024-03-20 06:58:00.124000"
+          ]
+        },
+        {
+          "name": "Case Key",
+          "normalized_name": "casekey",
+          "dtype": "object",
+          "non_null_count": 75,
+          "unique_count": 75,
+          "null_count": 0,
+          "key_candidate": true,
+          "sample_values": [
+            "300480003328200010",
+            "300V41130634800003",
+            "300V41132795500001",
+            "300V41134546400001",
+            "300V41142363600001",
+            "300V41144521900001"
+          ]
+        }
+      ],
+      "sample_rows": [
+        {
+          "Ebeln": "4800033282",
+          "Ebelp": "10",
+          "Mandt": "300",
+          "Aedat": "2023-03-23 00:00:00",
+          "Bukrs": "AC33",
+          "Werks": "A130",
+          "Ktpnr": "0",
+          "Banfn": "2100350053",
+          "Bnfpo": "10",
+          "Netwr": "50000.0",
+          "Netwr Converted": "33590.5",
+          "Netpr": "1.0",
+          "Netpr Converted": "0.67181",
+          "Loekz": null,
+          "Matkl": "E778014",
+          "Matnr": "320006016",
+          "Menge": "50000.0",
+          "Meins": "EA",
+          "Bpumz": "1",
+          "Bpumn": "1",
+          "Mtart": null,
+          "Celonis Change Date": "2024-03-20 06:58:00.124000",
+          "Case Key": "300480003328200010"
+        },
+        {
+          "Ebeln": "V411306348",
+          "Ebelp": "3",
+          "Mandt": "300",
+          "Aedat": "2023-09-14 00:00:00",
+          "Bukrs": "AC33",
+          "Werks": "A049",
+          "Ktpnr": "0",
+          "Banfn": "2100181589",
+          "Bnfpo": "30",
+          "Netwr": "19600.0",
+          "Netwr Converted": "13695.5",
+          "Netpr": "1.0",
+          "Netpr Converted": "0.69875",
+          "Loekz": null,
+          "Matkl": "B683001",
+          "Matnr": "320006030",
+          "Menge": "19600.0",
+          "Meins": "EA",
+          "Bpumz": "1",
+          "Bpumn": "1",
+          "Mtart": null,
+          "Celonis Change Date": "2024-03-20 06:58:00.124000",
+          "Case Key": "300V41130634800003"
+        },
+        {
+          "Ebeln": "V411327955",
+          "Ebelp": "1",
+          "Mandt": "300",
+          "Aedat": "2023-01-17 00:00:00",
+          "Bukrs": "AC33",
+          "Werks": "A016",
+          "Ktpnr": "0",
+          "Banfn": "2100200819",
+          "Bnfpo": "10",
+          "Netwr": "226876.0",
+          "Netwr Converted": "209876.18132",
+          "Netpr": "1.0",
+          "Netpr Converted": "0.92507",
+          "Loekz": null,
+          "Matkl": "B678017",
+          "Matnr": "310005002",
+          "Menge": "226876.0",
+          "Meins": "EA",
+          "Bpumz": "1",
+          "Bpumn": "1",
+          "Mtart": null,
+          "Celonis Change Date": "2024-03-20 06:58:00.124000",
+          "Case Key": "300V41132795500001"
+        },
+        {
+          "Ebeln": "V411345464",
+          "Ebelp": "1",
+          "Mandt": "300",
+          "Aedat": "2023-01-26 00:00:00",
+          "Bukrs": "AC33",
+          "Werks": "A049",
+          "Ktpnr": "0",
+          "Banfn": "2100205095",
+          "Bnfpo": "10",
+          "Netwr": "7800.0",
+          "Netwr Converted": "5344.404",
+          "Netpr": "1.0",
+          "Netpr Converted": "0.68518",
+          "Loekz": null,
+          "Matkl": "D753005",
+          "Matnr": "320006120",
+          "Menge": "7800.0",
+          "Meins": "EA",
+          "Bpumz": "1",
+          "Bpumn": "1",
+          "Mtart": null,
+          "Celonis Change Date": "2024-03-20 06:58:00.124000",
+          "Case Key": "300V41134546400001"
+        }
+      ]
+    },
+    {
+      "table_name": "LFA1",
+      "source_file": "/Users/radeshchakravarthy/Desktop/LFA1.xlsx",
+      "row_count": 27,
+      "column_count": 7,
+      "columns": [
+        {
+          "name": "Mandt",
+          "normalized_name": "mandt",
+          "dtype": "int64",
+          "non_null_count": 27,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "300"
+          ]
+        },
+        {
+          "name": "Lifnr",
+          "normalized_name": "lifnr",
+          "dtype": "int64",
+          "non_null_count": 27,
+          "unique_count": 27,
+          "null_count": 0,
+          "key_candidate": true,
+          "sample_values": [
+            "7000013213",
+            "7000015271",
+            "7000016966",
+            "7000020757",
+            "7000022209",
+            "7000026156"
+          ]
+        },
+        {
+          "name": "Land1",
+          "normalized_name": "land1",
+          "dtype": "object",
+          "non_null_count": 27,
+          "unique_count": 2,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "CA",
+            "US"
+          ]
+        },
+        {
+          "name": "Name1",
+          "normalized_name": "name1",
+          "dtype": "object",
+          "non_null_count": 27,
+          "unique_count": 27,
+          "null_count": 0,
+          "key_candidate": true,
+          "sample_values": [
+            "Z26",
+            "O15",
+            "M13",
+            "J10",
+            "N14",
+            "K11"
+          ]
+        },
+        {
+          "name": "Erdat",
+          "normalized_name": "erdat",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 27,
+          "unique_count": 6,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2021-11-03 00:00:00",
+            "2022-03-21 00:00:00",
+            "2022-11-11 00:00:00"
+          ]
+        },
+        {
+          "name": "Ernam",
+          "normalized_name": "ernam",
+          "dtype": "object",
+          "non_null_count": 27,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "NAME_A"
+          ]
+        },
+        {
+          "name": "Celonis Change Date",
+          "normalized_name": "celonischangedate",
+          "dtype": "datetime64[ns]",
+          "non_null_count": 27,
+          "unique_count": 1,
+          "null_count": 0,
+          "key_candidate": false,
+          "sample_values": [
+            "2024-03-05 07:21:30.662000"
+          ]
+        }
+      ],
+      "sample_rows": [
+        {
+          "Mandt": "300",
+          "Lifnr": "7000013213",
+          "Land1": "CA",
+          "Name1": "Z26",
+          "Erdat": "2021-11-03 00:00:00",
+          "Ernam": "NAME_A",
+          "Celonis Change Date": "2024-03-05 07:21:30.662000"
+        },
+        {
+          "Mandt": "300",
+          "Lifnr": "7000015271",
+          "Land1": "CA",
+          "Name1": "O15",
+          "Erdat": "2021-11-03 00:00:00",
+          "Ernam": "NAME_A",
+          "Celonis Change Date": "2024-03-05 07:21:30.662000"
+        },
+        {
+          "Mandt": "300",
+          "Lifnr": "7000016966",
+          "Land1": "CA",
+          "Name1": "M13",
+          "Erdat": "2021-11-03 00:00:00",
+          "Ernam": "NAME_A",
+          "Celonis Change Date": "2024-03-05 07:21:30.662000"
+        },
+        {
+          "Mandt": "300",
+          "Lifnr": "7000020757",
+          "Land1": "CA",
+          "Name1": "J10",
+          "Erdat": "2021-11-03 00:00:00",
+          "Ernam": "NAME_A",
+          "Celonis Change Date": "2024-03-05 07:21:30.662000"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "left_table": "EKKO",
+      "left_column": "Ebeln",
+      "right_table": "EKPO",
+      "right_column": "Ebeln",
+      "cardinality": "1-to-many",
+      "note": "PO header to PO items",
+      "left_distinct": 43,
+      "right_distinct": 43,
+      "matching_distinct_values": 43,
+      "overlap_ratio": 1.0,
+      "confidence": "high",
+      "status": "verified"
+    },
+    {
+      "left_table": "EKPO",
+      "left_column": "Ebeln",
+      "right_table": "EKBE",
+      "right_column": "Ebeln",
+      "cardinality": "1-to-many",
+      "note": "PO item to PO history",
+      "left_distinct": 43,
+      "right_distinct": 43,
+      "matching_distinct_values": 43,
+      "overlap_ratio": 1.0,
+      "confidence": "high",
+      "status": "verified"
+    },
+    {
+      "left_table": "EKPO",
+      "left_column": "Ebelp",
+      "right_table": "EKBE",
+      "right_column": "Ebelp",
+      "cardinality": "1-to-many",
+      "note": "PO item line to PO history line",
+      "left_distinct": 21,
+      "right_distinct": 21,
+      "matching_distinct_values": 21,
+      "overlap_ratio": 1.0,
+      "confidence": "high",
+      "status": "verified"
+    },
+    {
+      "left_table": "EBAN",
+      "left_column": "Ebeln",
+      "right_table": "EKPO",
+      "right_column": "Ebeln",
+      "cardinality": "1-to-many",
+      "note": "PR to PO conversion",
+      "left_distinct": 43,
+      "right_distinct": 43,
+      "matching_distinct_values": 43,
+      "overlap_ratio": 1.0,
+      "confidence": "high",
+      "status": "verified"
+    },
+    {
+      "left_table": "EBAN",
+      "left_column": "Banfn",
+      "right_table": "EKPO",
+      "right_column": "Banfn",
+      "cardinality": "1-to-many",
+      "note": "Purchase requisition number",
+      "left_distinct": 43,
+      "right_distinct": 43,
+      "matching_distinct_values": 43,
+      "overlap_ratio": 1.0,
+      "confidence": "high",
+      "status": "verified"
+    },
+    {
+      "left_table": "EBAN",
+      "left_column": "Bnfpo",
+      "right_table": "EKPO",
+      "right_column": "Bnfpo",
+      "cardinality": "1-to-many",
+      "note": "Purchase requisition item",
+      "left_distinct": 21,
+      "right_distinct": 21,
+      "matching_distinct_values": 21,
+      "overlap_ratio": 1.0,
+      "confidence": "high",
+      "status": "verified"
+    },
+    {
+      "left_table": "EKKO",
+      "left_column": "Lifnr",
+      "right_table": "LFA1",
+      "right_column": "Lifnr",
+      "cardinality": "many-to-1",
+      "note": "PO vendor master",
+      "left_distinct": 26,
+      "right_distinct": 27,
+      "matching_distinct_values": 26,
+      "overlap_ratio": 1.0,
+      "confidence": "high",
+      "status": "verified"
+    },
+    {
+      "left_table": "AP_BKPF",
+      "left_column": "Belnr",
+      "right_table": "AP_BSEG",
+      "right_column": "Invoice Number",
+      "cardinality": "1-to-many",
+      "note": "FI document header to lines",
+      "left_distinct": 117,
+      "right_distinct": 117,
+      "matching_distinct_values": 117,
+      "overlap_ratio": 1.0,
+      "confidence": "high",
+      "status": "verified"
+    },
+    {
+      "left_table": "AP_BKPF",
+      "left_column": "Bukrs",
+      "right_table": "AP_BSEG",
+      "right_column": "Bukrs",
+      "cardinality": "1-to-many",
+      "note": "Company code alignment",
+      "left_distinct": 1,
+      "right_distinct": 1,
+      "matching_distinct_values": 1,
+      "overlap_ratio": 1.0,
+      "confidence": "high",
+      "status": "verified"
+    },
+    {
+      "left_table": "AP_BKPF",
+      "left_column": "Gjahr",
+      "right_table": "AP_BSEG",
+      "right_column": "Gjahr",
+      "cardinality": "1-to-many",
+      "note": "Fiscal year alignment",
+      "left_distinct": 3,
+      "right_distinct": 3,
+      "matching_distinct_values": 3,
+      "overlap_ratio": 1.0,
+      "confidence": "high",
+      "status": "verified"
+    },
+    {
+      "left_table": "AP_RSEG",
+      "left_column": "Ebeln Ekpo",
+      "right_table": "EKPO",
+      "right_column": "Ebeln",
+      "cardinality": "many-to-1",
+      "note": "Invoice receipt to PO item",
+      "left_distinct": 43,
+      "right_distinct": 43,
+      "matching_distinct_values": 43,
+      "overlap_ratio": 1.0,
+      "confidence": "high",
+      "status": "verified"
+    },
+    {
+      "left_table": "AP_RSEG",
+      "left_column": "Ebelp Ekpo",
+      "right_table": "EKPO",
+      "right_column": "Ebelp",
+      "cardinality": "many-to-1",
+      "note": "Invoice receipt line to PO line",
+      "left_distinct": 21,
+      "right_distinct": 21,
+      "matching_distinct_values": 21,
+      "overlap_ratio": 1.0,
+      "confidence": "high",
+      "status": "verified"
+    },
+    {
+      "left_table": "AP_RSEG",
+      "left_column": "Zterm Ekko",
+      "right_table": "EKKO",
+      "right_column": "Zterm",
+      "cardinality": "many-to-1",
+      "note": "Payment term mapping",
+      "left_distinct": 10,
+      "right_distinct": 10,
+      "matching_distinct_values": 10,
+      "overlap_ratio": 1.0,
+      "confidence": "high",
+      "status": "verified"
+    },
+    {
+      "left_table": "AP_RSEG",
+      "left_column": "Waers Ekko",
+      "right_table": "EKKO",
+      "right_column": "Waers",
+      "cardinality": "many-to-1",
+      "note": "Currency mapping",
+      "left_distinct": 2,
+      "right_distinct": 2,
+      "matching_distinct_values": 2,
+      "overlap_ratio": 1.0,
+      "confidence": "high",
+      "status": "verified"
+    },
+    {
+      "left_table": "TCURR",
+      "left_column": "Fcurr",
+      "right_table": "TCURX",
+      "right_column": "Currkey",
+      "cardinality": "many-to-1",
+      "note": "Exchange rate source currency",
+      "left_distinct": 2,
+      "right_distinct": 2,
+      "matching_distinct_values": 2,
+      "overlap_ratio": 1.0,
+      "confidence": "high",
+      "status": "verified"
+    },
+    {
+      "left_table": "TCURR",
+      "left_column": "Tcurr",
+      "right_table": "TCURX",
+      "right_column": "Currkey",
+      "cardinality": "many-to-1",
+      "note": "Exchange rate target currency",
+      "left_distinct": 2,
+      "right_distinct": 2,
+      "matching_distinct_values": 2,
+      "overlap_ratio": 1.0,
+      "confidence": "high",
+      "status": "verified"
+    },
+    {
+      "left_table": "TCURF",
+      "left_column": "Fcurr",
+      "right_table": "TCURX",
+      "right_column": "Currkey",
+      "cardinality": "many-to-1",
+      "note": "Conversion factor source currency",
+      "left_distinct": 2,
+      "right_distinct": 2,
+      "matching_distinct_values": 2,
+      "overlap_ratio": 1.0,
+      "confidence": "high",
+      "status": "verified"
+    },
+    {
+      "left_table": "TCURF",
+      "left_column": "Tcurr",
+      "right_table": "TCURX",
+      "right_column": "Currkey",
+      "cardinality": "many-to-1",
+      "note": "Conversion factor target currency",
+      "left_distinct": 2,
+      "right_distinct": 2,
+      "matching_distinct_values": 2,
+      "overlap_ratio": 1.0,
+      "confidence": "high",
+      "status": "verified"
+    },
+    {
+      "left_table": "AP_BKPF",
+      "left_column": "Waers",
+      "right_table": "TCURX",
+      "right_column": "Currkey",
+      "cardinality": "many-to-1",
+      "note": "FI currency metadata",
+      "left_distinct": 2,
+      "right_distinct": 2,
+      "matching_distinct_values": 1,
+      "overlap_ratio": 0.5,
+      "confidence": "medium",
+      "status": "verified"
+    },
+    {
+      "left_table": "EKKO",
+      "left_column": "Waers",
+      "right_table": "TCURX",
+      "right_column": "Currkey",
+      "cardinality": "many-to-1",
+      "note": "PO currency metadata",
+      "left_distinct": 2,
+      "right_distinct": 2,
+      "matching_distinct_values": 1,
+      "overlap_ratio": 0.5,
+      "confidence": "medium",
+      "status": "verified"
+    }
+  ],
+  "query_guidelines": [
+    "Prefer EKKO -> EKPO -> EKBE for purchasing document lineage.",
+    "Join EKKO.Lifnr to LFA1.Lifnr for vendor master attributes.",
+    "Join AP_BKPF to AP_BSEG on Belnr/Invoice Number plus Bukrs and Gjahr.",
+    "Use TCURR/TCURF/TCURX for currency conversion metadata.",
+    "Use AP_RSEG to bridge invoice receipt details with EKPO/EKKO purchasing context."
+  ]
+}

@@ -6,6 +6,7 @@ const NAV_ITEMS = [
   { label: "Exception Triage", path: "/exceptions-workbench" },
   { label: "Cross-Agent Flow", path: "/interaction" },
   { label: "PI Chat", path: "/chat", highlight: true },
+  { label: "SQL Chatbot", path: "/sql-chat", highlight: true },
 ];
 
 export default function Navbar() {

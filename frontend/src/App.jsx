@@ -10,6 +10,7 @@ import ExceptionIntelligence from "./pages/ExceptionIntelligence";
 import CrossAgentInteraction from "./pages/CrossAgentInteraction";
 import VendorAnalysis from "./pages/VendorAnalysis";
 import PIChat from "./pages/PIChat";          // ← new
+import SQLChat from "./pages/SQLChat";
 import "./App.css";
 
 const theme = createTheme({
@@ -151,6 +152,7 @@ export default function App() {
               <Route path="/vendor-analysis" element={<VendorAnalysis />} />
               <Route path="/interaction" element={<CrossAgentInteraction />} />
               <Route path="/chat" element={<PIChat />} />   {/* ← new */}
+              <Route path="/sql-chat" element={<SQLChat />} />
               <Route path="/process-agents" element={<Navigate to="/chat" replace />} />
               <Route path="/deep-dive" element={<Navigate to="/chat" replace />} />
             </Routes>

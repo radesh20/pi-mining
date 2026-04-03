@@ -39,3 +39,12 @@ class ChatRequest(BaseModel):
     case_id: Optional[str] = None
     vendor_id: Optional[str] = None
     conversation_history: List[ChatMessage] = []
+
+
+class SQLChatRequest(BaseModel):
+    message: str
+    table_name: Optional[str] = None
+    dialect: str = "PostgreSQL"
+    case_id: Optional[str] = None
+    vendor_id: Optional[str] = None
+    conversation_history: List[ChatMessage] = []
