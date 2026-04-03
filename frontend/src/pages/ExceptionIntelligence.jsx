@@ -14,6 +14,7 @@ import {
 
 const S = "'Instrument Serif', Georgia, serif";
 const G = "'Geist', system-ui, sans-serif";
+const EXCEPTION_AGENT_STEP_NUMBER = 4;
 
 const pickData = (r) => { if (!r) return null; if (r.data !== undefined) return r.data; return r; };
 const money = (v) => {
@@ -217,8 +218,36 @@ export default function ExceptionIntelligence() {
   const guardrailTrigger = useMemo(() => {
     const triggered = guardrailChecks.find((c) => c.status === "fail" || c.status === "warn") || null;
     if (!triggered) return null;
-    return `Guardrail trigger: ${triggered.ruleId} fired on ${triggered.agentName} — ${triggered.detail}`;
+    return triggered;
   }, [guardrailChecks]);
+  const flattenedAgentGuardrails = useMemo(() => (
+    agentGuardrailSteps.flatMap((step, idx) => {
+      const stepNumber = Number(step?.step_number ?? idx + 1);
+      const agentName = step?.agent_name || `Agent ${stepNumber}`;
+      const checks = Array.isArray(step?.guardrail_results) ? step.guardrail_results : [];
+      return checks.map((check) => ({
+        ruleId: check?.rule_id || "N/A",
+        label: check?.label || "Guardrail check",
+        status: String(check?.status || "").toLowerCase(),
+        detail: normalizeConfidenceText(check?.detail || ""),
+        enforcement: check?.enforcement || "code",
+        agentName,
+        stepNumber,
+      }));
+    })
+  ), [agentGuardrailSteps]);
+  const triggerFromAgentTrace = useMemo(
+    () => flattenedAgentGuardrails.find((c) => c.status === "fail" || c.status === "warn") || null,
+    [flattenedAgentGuardrails]
+  );
+  const lastTriggerFromAgentTrace = useMemo(() => {
+    const fired = flattenedAgentGuardrails.filter((c) => c.status === "fail" || c.status === "warn");
+    return fired.length ? fired[fired.length - 1] : null;
+  }, [flattenedAgentGuardrails]);
+  const finalPreActionSummaryStyle = useMemo(
+    () => toGuardrailSummaryStyle(flattenedAgentGuardrails),
+    [flattenedAgentGuardrails]
+  );
   const routingFinalStatus = Boolean(analysis?.send_to_human_review) ? "ESCALATED_TO_HUMAN" : analysis?.automation_decision || "MONITOR";
   const routingUrgency = analysis?.turnaround_risk?.risk_level || "MEDIUM";
   const routingEta = analysis?.turnaround_risk?.estimated_processing_days != null ? `${Number(analysis.turnaround_risk.estimated_processing_days).toFixed(2)}d` : "N/A";
@@ -269,7 +298,7 @@ export default function ExceptionIntelligence() {
         steps.forEach((step, idx) => {
           const stepNumber = Number(step?.step_number ?? idx + 1);
           const agentName = String(step?.agent_name || "");
-          const isExceptionAgent = agentName.toLowerCase() === "exceptionagent" || stepNumber === 4;
+          const isExceptionAgent = agentName.toLowerCase() === "exceptionagent" || stepNumber === EXCEPTION_AGENT_STEP_NUMBER;
           defaultOpen[stepNumber] = isExceptionAgent;
         });
         setGuardrailTraceOpenByStep(defaultOpen);
@@ -552,7 +581,7 @@ export default function ExceptionIntelligence() {
                   {alternativeActions.length > 0 ? (
                     <Stack spacing={1}>
                       {alternativeActions.map((item, idx) => (
-                        <Box key={`${item.action || item.why}-${idx}`}>
+                        <Box key={`alternative-${idx}`}>
                           <Typography sx={{ fontSize: "13px", color: "#5C5650", fontFamily: G, lineHeight: 1.45 }}>
                             {idx + 1}. {item.action || item.why}
                           </Typography>
@@ -654,7 +683,7 @@ export default function ExceptionIntelligence() {
                     })) : [];
                     const isOpen = Boolean(guardrailTraceOpenByStep[stepNumber]);
                     return (
-                      <Box key={`${step?.agent_name || "agent"}-${stepNumber}`} sx={{ border: "1px solid #ECEAE4", borderRadius: "10px", overflow: "hidden" }}>
+                      <Box key={`agent-step-${stepNumber}`} sx={{ border: "1px solid #ECEAE4", borderRadius: "10px", overflow: "hidden" }}>
                         <Box
                           onClick={() => setGuardrailTraceOpenByStep((prev) => ({ ...prev, [stepNumber]: !prev[stepNumber] }))}
                           sx={{ px: 1.2, py: 1, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1, cursor: "pointer", background: "#FCFBF9" }}
@@ -679,7 +708,7 @@ export default function ExceptionIntelligence() {
                             {checks.map((check, checkIdx) => {
                               const style = GUARDRAIL_STATUS_STYLE[check.status] || GUARDRAIL_STATUS_STYLE.warn;
                               return (
-                                <Box key={`${check?.rule_id || "rule"}-${checkIdx}`} sx={{ p: "8px 10px", borderRadius: "8px", background: style.bg, display: "flex", gap: 0.9, alignItems: "flex-start" }}>
+                                <Box key={`step-${stepNumber}-check-${checkIdx}`} sx={{ p: "8px 10px", borderRadius: "8px", background: style.bg, display: "flex", gap: 0.9, alignItems: "flex-start" }}>
                                   <Box sx={{ width: 7, height: 7, borderRadius: "50%", background: style.dot, mt: "4px", flexShrink: 0 }} />
                                   <Box>
                                     <Typography sx={{ fontSize: "12px", color: style.title, fontFamily: G, fontWeight: 500 }}>
@@ -705,6 +734,29 @@ export default function ExceptionIntelligence() {
             </Card>
           )}
 
+          {agentGuardrailSteps.length > 0 && (
+            <Card sx={{ border: "1px solid #ECEAE4 !important" }}>
+              <CardContent sx={{ pb: "14px !important" }}>
+                <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1, flexWrap: "wrap", mb: 0.5 }}>
+                  <Typography sx={{ fontFamily: S, fontSize: "1.02rem", color: "#5C5650" }}>
+                    Final pre-action check
+                  </Typography>
+                  <Box sx={{ px: "8px", py: "2px", borderRadius: "20px", ...finalPreActionSummaryStyle }}>
+                    <Typography sx={{ fontSize: "11px", fontFamily: G }}>{toGuardrailSummary(flattenedAgentGuardrails)}</Typography>
+                  </Box>
+                </Box>
+                <Typography sx={{ fontSize: "12px", color: "#6C6660", fontFamily: G }}>
+                  {flattenedAgentGuardrails.length} rules evaluated across {agentGuardrailSteps.length} agents.
+                </Typography>
+                {lastTriggerFromAgentTrace && (
+                  <Typography sx={{ fontSize: "12px", color: "#A05A10", fontFamily: G, mt: 0.4 }}>
+                    Last trigger: {lastTriggerFromAgentTrace.ruleId} on {lastTriggerFromAgentTrace.agentName} — {lastTriggerFromAgentTrace.detail}
+                  </Typography>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
           <Card sx={{ border: "1px solid #ECEAE4 !important" }}>
             <CardContent sx={{ pb: "14px !important" }}>
               <Typography sx={{ fontFamily: S, fontSize: "1.05rem", color: "#A05A10", mb: 0.9 }}>
@@ -719,9 +771,9 @@ export default function ExceptionIntelligence() {
               <Typography sx={{ fontSize: "0.78rem", color: "#7A5010", fontFamily: G, lineHeight: 1.55 }}>
                 Auto route / human decision: {routingDecision} · Teams handoff ready: {Boolean(analysis?.send_to_human_review) ? "Yes" : "No"}
               </Typography>
-              {guardrailTrigger && (
+              {(triggerFromAgentTrace || guardrailTrigger) && (
                 <Typography sx={{ fontSize: "12px", color: "#A05A10", fontFamily: G, mt: 0.5 }}>
-                  {guardrailTrigger}
+                  Guardrail trigger: {(triggerFromAgentTrace || guardrailTrigger).ruleId} fired on {(triggerFromAgentTrace || guardrailTrigger).agentName} — {(triggerFromAgentTrace || guardrailTrigger).detail}
                 </Typography>
               )}
             </CardContent>
