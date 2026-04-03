@@ -201,25 +201,6 @@ export default function ExceptionIntelligence() {
     () => records.findIndex((r) => r.exception_id === selectedRecordId),
     [records, selectedRecordId]
   );
-  // TODO: This is the live backend hook consumption point for guardrail strip rendering in Case Resolution.
-  const guardrailChecks = useMemo(() => {
-    if (!Array.isArray(analysis?.guardrail_results)) return [];
-    return analysis.guardrail_results.map((item, idx) => ({
-      ruleId: item?.rule_id || item?.ruleId || `RULE_${idx + 1}`,
-      label: item?.label || item?.title || "Guardrail",
-      status: String(item?.status || "").toLowerCase(),
-      detail: normalizeConfidenceText(item?.detail || item?.reason || ""),
-      enforcement: item?.enforcement || "code",
-      agentName: item?.agent_name || item?.agentName || "ExceptionAgent",
-    }));
-  }, [analysis]);
-  const guardrailSummary = useMemo(() => toGuardrailSummary(guardrailChecks), [guardrailChecks]);
-  const guardrailSummaryStyle = useMemo(() => toGuardrailSummaryStyle(guardrailChecks), [guardrailChecks]);
-  const guardrailTrigger = useMemo(() => {
-    const triggered = guardrailChecks.find((c) => c.status === "fail" || c.status === "warn") || null;
-    if (!triggered) return null;
-    return triggered;
-  }, [guardrailChecks]);
   const flattenedAgentGuardrails = useMemo(() => (
     agentGuardrailSteps.flatMap((step, idx) => {
       const stepNumber = Number(step?.step_number ?? idx + 1);
@@ -629,45 +610,6 @@ export default function ExceptionIntelligence() {
             </Grid>
           </Grid>
 
-          {guardrailChecks.length > 0 && (
-            <Card sx={{ border: "1px solid #ECEAE4 !important" }}>
-              <CardContent sx={{ pb: "14px !important" }}>
-                <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1 }}>
-                  <Typography sx={{ fontSize: "11px", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.05em", color: "#A09890", fontFamily: G }}>
-                    Guardrail checks — before action
-                  </Typography>
-                  <Box sx={{ px: "8px", py: "2px", borderRadius: "20px", ...guardrailSummaryStyle }}>
-                    <Typography sx={{ fontSize: "11px", fontFamily: G }}>{guardrailSummary}</Typography>
-                  </Box>
-                </Box>
-                <Stack spacing={0.7}>
-                  {guardrailChecks.map((check, idx) => {
-                    const style = GUARDRAIL_STATUS_STYLE[check.status] || GUARDRAIL_STATUS_STYLE.warn;
-                    return (
-                      <Box
-                        key={`${check.ruleId || idx}`}
-                        sx={{ p: "8px 10px", borderRadius: "8px", background: style.bg, display: "flex", gap: 0.9, alignItems: "flex-start" }}
-                      >
-                        <Box sx={{ width: 7, height: 7, borderRadius: "50%", background: style.dot, mt: "4px", flexShrink: 0 }} />
-                        <Box>
-                          <Typography sx={{ fontSize: "12px", color: style.title, fontFamily: G, fontWeight: 500 }}>
-                            {check.label} — {style.label}
-                          </Typography>
-                          <Typography sx={{ fontSize: "12px", color: style.detail, fontFamily: G, lineHeight: 1.45, mt: "1px" }}>
-                            {check.detail}
-                          </Typography>
-                          <Typography sx={{ fontSize: "11px", color: "#9C9690", fontFamily: G, mt: "2px" }}>
-                            Rule: {check.ruleId} · enforcement: {check.enforcement || "code"}
-                          </Typography>
-                        </Box>
-                      </Box>
-                    );
-                  })}
-                </Stack>
-              </CardContent>
-            </Card>
-          )}
-
           {agentGuardrailSteps.length > 0 && (
             <Card sx={{ border: "1px solid #ECEAE4 !important" }}>
               <CardContent sx={{ pb: "14px !important" }}>
@@ -771,9 +713,9 @@ export default function ExceptionIntelligence() {
               <Typography sx={{ fontSize: "0.78rem", color: "#7A5010", fontFamily: G, lineHeight: 1.55 }}>
                 Auto route / human decision: {routingDecision} · Teams handoff ready: {Boolean(analysis?.send_to_human_review) ? "Yes" : "No"}
               </Typography>
-              {(triggerFromAgentTrace || guardrailTrigger) && (
+              {triggerFromAgentTrace && (
                 <Typography sx={{ fontSize: "12px", color: "#A05A10", fontFamily: G, mt: 0.5 }}>
-                  Guardrail trigger: {(triggerFromAgentTrace || guardrailTrigger).ruleId} fired on {(triggerFromAgentTrace || guardrailTrigger).agentName} — {(triggerFromAgentTrace || guardrailTrigger).detail}
+                  Guardrail trigger: {triggerFromAgentTrace.ruleId} fired on {triggerFromAgentTrace.agentName} — {triggerFromAgentTrace.detail}
                 </Typography>
               )}
             </CardContent>
