@@ -25,9 +25,9 @@ const vendorDisplay = (rec) => rec?.vendor_name || rec?.vendor_id || rec?.recurr
 
 const RISK_STYLES = {
   CRITICAL: { bg: "#FAEAEA", color: "#B03030", border: "#E0A0A0", dot: "#C94040" },
-  HIGH:     { bg: "#FEF3DC", color: "#A05A10", border: "#F0C870", dot: "#C47020" },
-  MEDIUM:   { bg: "#EBF2FC", color: "#1E4E8C", border: "#90B8E8", dot: "#2E6EBC" },
-  LOW:      { bg: "#E0F0E8", color: "#1D5C3A", border: "#80C0A0", dot: "#2A7A50" },
+  HIGH: { bg: "#FEF3DC", color: "#A05A10", border: "#F0C870", dot: "#C47020" },
+  MEDIUM: { bg: "#EBF2FC", color: "#1E4E8C", border: "#90B8E8", dot: "#2E6EBC" },
+  LOW: { bg: "#E0F0E8", color: "#1D5C3A", border: "#80C0A0", dot: "#2A7A50" },
 };
 
 function RiskBadge({ risk }) {

@@ -374,6 +374,9 @@ export const sendExceptionToTeams = async (analysis) => {
   return res.data;
 };
 
+// -----------------------------
+// Chat APIs
+// -----------------------------
 
 export const sendChatMessage = async ({ message, caseId, vendorId, conversationHistory = [] }) => {
   const res = await api.post("/chat/", {
@@ -385,6 +388,9 @@ export const sendChatMessage = async ({ message, caseId, vendorId, conversationH
       content: m.content,
     })),
   });
+  // ChatResponse now returns these fields directly at top level:
+  // { success, reply, sql_comparison, pi_advantage, agent_action, process_stage, follow_ups, context_used, error }
   return res.data;
 };
+
 export default api;

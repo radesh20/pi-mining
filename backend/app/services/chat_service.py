@@ -3,40 +3,84 @@ app/services/chat_service.py
 """
 
 import logging
+import re
 from typing import Any, Dict, List, Optional, Tuple
+
+import pandas as pd
 
 from app.services.azure_openai_service import AzureOpenAIService
 from app.services.celonis_service import CelonisService
 from app.services.process_insight_service import ProcessInsightService
-from app.services.agent_recommendation_service import AgentRecommendationService
+from app.services.suggestion_service import SuggestionService
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT_TEMPLATE = """You are an AI Process Intelligence Assistant embedded
-in a Celonis-powered AP invoice management system.
+# ── Agent routing ─────────────────────────────────────────────────────────────
 
-Your role is to help operations teams understand, diagnose, and resolve AP invoice
-process issues using the REAL process mining data injected below.
+def _pick_agent(message: str, vendor_id: Optional[str], case_id: Optional[str]) -> str:
+    q = message.lower()
+    if vendor_id:
+        return "Vendor Intelligence Agent"
+    if case_id:
+        return "Invoice Processing Agent"
+    if any(x in q for x in ["exception", "error", "block", "stuck", "issue"]):
+        return "Exception Detection Agent"
+    if any(x in q for x in ["vendor", "supplier", "lifnr"]):
+        return "Vendor Intelligence Agent"
+    if any(x in q for x in ["conform", "violation", "rule", "breach"]):
+        return "Conformance Checker Agent"
+    if any(x in q for x in ["bottleneck", "delay", "slow", "cycle", "time", "duration"]):
+        return "Process Insight Agent"
+    if any(x in q for x in ["recommend", "next", "action", "what should", "suggest"]):
+        return "Case Resolution Agent"
+    return "Process Intelligence Agent"
 
-STRICT RULES:
-1. Answer ONLY using the PI data provided — never guess or invent numbers.
-2. If data for a specific question is missing, say so clearly.
-3. Use exact activity names, case IDs, day counts, and agent names from the context.
-4. For diagnosis → state current stage, days in stage, relevant agent flags, variant.
-5. For prediction → use historical cycle-time patterns from the data.
-6. For recommendations → lead with the next best action derived from agent evidence.
-7. Keep answers concise and operational. Operations teams are time-poor.
-8. When asked about conformance violations, reference them directly from the data.
-9. When asked about exception types, list ALL of them with their exact frequencies.
-10. When asked about vendors, use the vendor stats provided in the context.
+
+# ── System prompt ─────────────────────────────────────────────────────────────
+
+BASE_SYSTEM_PROMPT = """You are a Process Intelligence Assistant for an AP invoice management system.
+You speak to operations managers — not developers. Write like a sharp analyst, not a chatbot.
+
+OUTPUT RULES:
+1. Answer in the FIRST sentence. No preamble like "Based on the data..." or "According to Celonis..."
+2. Use exact numbers. Write "23.94 days" not "about 24 days". Write "35 cases (100%)" not "all cases".
+3. Bold the single most important fact per answer using **bold**. Max 2 bolds per reply.
+4. Use flat bullet points for lists. Never nest bullets.
+5. Never write section headers like "Overview:" or numbered sections like "1. Exception Details".
+6. End with one crisp action line starting with "→ Recommended action:" when relevant.
+7. Max 5 bullets OR 3 short paragraphs. No essays.
+8. If data is missing: say "Not available in the Celonis event log."
+
+DATA RULES:
+- Answer ONLY from the PI data below. Never invent numbers.
+- When VENDOR SCOPE is active: your entire answer must be about that specific vendor.
+  Compare their stats to the global averages provided. Do NOT give a general process answer.
+- When CASE SCOPE is active: your entire answer must be about that specific invoice case.
+  Reference exact stage, days, and activity path. Do NOT give a general process answer.
+- When no scope: answer from global process data only.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-LIVE PROCESS INTELLIGENCE SNAPSHOT
+LIVE CELONIS EVENT LOG DATA
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
 {pi_context}
-
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ACTIVE SCOPE: {scope_label}
+{scope_instruction}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+
+VENDOR_SCOPE_INSTRUCTION = """
+⚠ VENDOR SCOPE ACTIVE — Vendor {vendor_id}
+Your answer MUST be about this vendor only.
+Use the VENDOR SNAPSHOT section. Compare their exception rate and cycle time to the global averages shown.
+Do not answer about the overall process. The user wants to know about THIS vendor.
+"""
+
+CASE_SCOPE_INSTRUCTION = """
+⚠ CASE SCOPE ACTIVE — Case {case_id}
+Your answer MUST be about this invoice case only.
+Use the CASE DETAIL section. Reference the exact current stage, days in process, and activity path.
+Do not answer about the overall process. The user wants to know about THIS invoice.
 """
 
 
@@ -47,12 +91,15 @@ class ChatService:
         llm: AzureOpenAIService,
         celonis: CelonisService,
         process_insight: ProcessInsightService,
-        agent_recommendation: AgentRecommendationService,
+        suggestion_service: SuggestionService,
+        agent_recommendation=None,
     ):
         self.llm = llm
         self.celonis = celonis
         self.process_insight = process_insight
-        self.agent_recommendation = agent_recommendation
+        self.suggestion_service = suggestion_service
+
+    # ── Public entry point ───────────────────────────────────────────────────
 
     def chat(
         self,
@@ -61,55 +108,123 @@ class ChatService:
         case_id: Optional[str] = None,
         vendor_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        pi_context, context_used = self._build_context(case_id=case_id, vendor_id=vendor_id)
-        system_prompt = SYSTEM_PROMPT_TEMPLATE.format(pi_context=pi_context)
-        user_prompt   = self._build_user_prompt(message, conversation_history)
+
+        pi_context, context_used, data_sources = self._build_context(
+            case_id=case_id, vendor_id=vendor_id
+        )
+
+        if vendor_id and case_id:
+            scope_label = f"Vendor {vendor_id} + Case {case_id}"
+            scope_instruction = (
+                VENDOR_SCOPE_INSTRUCTION.format(vendor_id=vendor_id) +
+                CASE_SCOPE_INSTRUCTION.format(case_id=case_id)
+            )
+        elif vendor_id:
+            scope_label = f"Vendor {vendor_id} only"
+            scope_instruction = VENDOR_SCOPE_INSTRUCTION.format(vendor_id=vendor_id)
+        elif case_id:
+            scope_label = f"Case {case_id} only"
+            scope_instruction = CASE_SCOPE_INSTRUCTION.format(case_id=case_id)
+        else:
+            scope_label = "Global — all cases and vendors"
+            scope_instruction = ""
+
+        agent_used = _pick_agent(message, vendor_id, case_id)
+
+        system_prompt = BASE_SYSTEM_PROMPT.format(
+            pi_context=pi_context,
+            scope_label=scope_label,
+            scope_instruction=scope_instruction,
+        )
+        user_prompt = self._build_user_prompt(message, conversation_history)
 
         try:
             reply = self.llm.chat(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 temperature=0.2,
-                max_tokens=2500,   # FIX 2 — raised from 1500 to avoid truncation
+                max_tokens=2500,
             )
-            return {"success": True, "reply": reply, "context_used": context_used, "error": None}
+
+            suggested_questions = []
+            try:
+                suggested_questions = self.suggestion_service.generate_suggestions(
+                    user_message=message,
+                    ai_reply=reply,
+                    context_used=context_used,
+                    case_id=case_id,
+                    vendor_id=vendor_id,
+                )
+            except Exception as e:
+                logger.warning("Suggestion generation failed: %s", str(e))
+
+            next_steps = self._generate_next_steps(
+                message=message,
+                context_used=context_used,
+                case_id=case_id,
+                vendor_id=vendor_id,
+            )
+
+            return {
+                "success":             True,
+                "reply":               reply,
+                "suggested_questions": suggested_questions,
+                "data_sources":        data_sources,
+                "next_steps":          next_steps,
+                "context_used":        context_used,
+                "scope_label":         scope_label,
+                "agent_used":          agent_used,
+                "error":               None,
+            }
+
         except Exception as exc:
             logger.error("ChatService LLM call failed: %s", str(exc))
             return {
-                "success": False,
-                "reply": "I'm unable to answer right now — the AI service returned an error.",
-                "context_used": context_used,
-                "error": str(exc),
+                "success":             False,
+                "reply":               "I'm unable to answer right now — the AI service returned an error.",
+                "suggested_questions": [],
+                "data_sources":        data_sources,
+                "next_steps":          [],
+                "context_used":        context_used,
+                "scope_label":         scope_label,
+                "agent_used":          agent_used,
+                "error":               str(exc),
             }
+
+    # ── Context builder ──────────────────────────────────────────────────────
 
     def _build_context(
         self,
         case_id: Optional[str],
         vendor_id: Optional[str],
-    ) -> Tuple[str, Dict[str, Any]]:
+    ) -> Tuple[str, Dict[str, Any], List[str]]:
+
         context_used: Dict[str, Any] = {}
         sections: List[str] = []
+        data_sources: List[str] = []
         process_ctx = None
 
-        # ── 1. Global process snapshot ───────────────────────────────────────
+        # ── 1. Global PI snapshot ────────────────────────────────────────────
         try:
-            process_ctx        = self.process_insight.build_process_context()
-            bottleneck         = process_ctx.get("bottleneck", {})
-            variants           = process_ctx.get("variants", [])
-            exception_patterns = process_ctx.get("exception_patterns", [])
-            conformance        = process_ctx.get("conformance_violations", [])
-            decision_rules     = process_ctx.get("decision_rules", [])
+            process_ctx   = self.process_insight.build_process_context()
+            bottleneck    = process_ctx.get("bottleneck", {})
+            variants      = process_ctx.get("variants", [])
+            exc_patterns  = process_ctx.get("exception_patterns", [])
+            conformance   = process_ctx.get("conformance_violations", [])
+            decision_rules = process_ctx.get("decision_rules", [])
+            total_cases   = process_ctx.get("total_cases", 0)
+            total_events  = process_ctx.get("total_events", 0)
 
             global_section = (
-                f"GLOBAL PROCESS STATS\n"
-                f"  Total cases            : {process_ctx.get('total_cases', 'N/A')}\n"
-                f"  Total events           : {process_ctx.get('total_events', 'N/A')}\n"
-                f"  Avg end-to-end (days)  : {process_ctx.get('avg_end_to_end_days', 'N/A')}\n"
-                f"  Exception rate         : {process_ctx.get('exception_rate', 'N/A')}%\n"
-                f"  Main bottleneck        : {bottleneck.get('activity', 'N/A')} "
+                f"GLOBAL PROCESS STATS  [Source: Celonis Event Log — {total_events} events]\n"
+                f"  Total cases              : {total_cases}\n"
+                f"  Total events             : {total_events}\n"
+                f"  Avg end-to-end (days)    : {process_ctx.get('avg_end_to_end_days', 'N/A')}\n"
+                f"  Exception rate           : {process_ctx.get('exception_rate', 'N/A')}%\n"
+                f"  Main bottleneck          : {bottleneck.get('activity', 'N/A')} "
                 f"({bottleneck.get('duration_days', 'N/A')} days avg, "
                 f"{bottleneck.get('case_count', 'N/A')} cases)\n"
-                f"  Golden path            : {process_ctx.get('golden_path', 'N/A')} "
+                f"  Golden path              : {process_ctx.get('golden_path', 'N/A')} "
                 f"({process_ctx.get('golden_path_percentage', 0)}% of cases)\n"
             )
 
@@ -118,178 +233,457 @@ class ChatService:
                 for v in variants[:5]:
                     global_section += f"    • {v['variant']} ({v['frequency']} cases, {v['percentage']}%)\n"
 
-            # All exception patterns with full detail
-            if exception_patterns:
-                global_section += f"  Exception patterns ({len(exception_patterns)} found):\n"
-                for p in exception_patterns:
+            if exc_patterns:
+                global_section += f"  Exception patterns ({len(exc_patterns)} types):\n"
+                for p in exc_patterns:
                     global_section += (
-                        f"    • {p['exception_type']}: "
-                        f"{p['frequency_percentage']}% of cases, "
-                        f"{p['case_count']} cases, "
-                        f"avg resolution {p['avg_resolution_time_days']} days, "
+                        f"    • {p['exception_type']}: {p['frequency_percentage']}% of cases, "
+                        f"{p['case_count']} cases, avg resolution {p['avg_resolution_time_days']} days, "
                         f"trigger: {p['trigger_condition']}, "
                         f"resolved by: {p['typical_resolution']} (role: {p['resolution_role']})\n"
                     )
             else:
-                global_section += "  Exception patterns: None detected in the data\n"
+                global_section += "  Exception patterns: None detected\n"
 
-            # All conformance violations with full detail
             if conformance:
-                global_section += f"  Conformance violations ({len(conformance)} detected):\n"
+                global_section += f"  Conformance violations ({len(conformance)} found):\n"
                 for v in conformance:
                     global_section += (
                         f"    • VIOLATION: {v['rule']}\n"
-                        f"      Rate: {v['violation_rate']}% of cases "
-                        f"({v['affected_cases']} of {v['total_cases']} cases)\n"
+                        f"      Rate: {v['violation_rate']}% ({v['affected_cases']} of {v['total_cases']} cases)\n"
                         f"      Description: {v['violation_description']}\n"
                     )
             else:
-                global_section += "  Conformance violations: None detected in the data\n"
+                global_section += "  Conformance violations: None\n"
 
             if decision_rules:
-                global_section += "  Decision rules mined:\n"
+                global_section += "  Decision rules:\n"
                 for r in decision_rules:
                     global_section += f"    • {r['condition']} → {r['action']} (confidence: {r['confidence']})\n"
 
             sections.append(global_section)
             context_used["global"] = {
-                "total_cases":          process_ctx.get("total_cases"),
+                "total_cases":          total_cases,
+                "total_events":         total_events,
                 "avg_end_to_end_days":  process_ctx.get("avg_end_to_end_days"),
                 "exception_rate":       process_ctx.get("exception_rate"),
                 "bottleneck":           bottleneck,
-                "top_variant":          variants[0] if variants else {},
                 "conformance_count":    len(conformance),
-                "exception_type_count": len(exception_patterns),
+                "exception_type_count": len(exc_patterns),
+                "exception_patterns":   exc_patterns,
+                "variants":             variants[:5],
             }
+
+            data_sources.append(
+                f"Celonis Event Log — {total_cases} cases, {total_events} events"
+            )
+            if variants:
+                data_sources.append(
+                    f"Process Variants — {len(variants)} distinct paths mined"
+                )
+            if exc_patterns:
+                data_sources.append(
+                    f"Exception Patterns — {len(exc_patterns)} types detected from event log"
+                )
+            if conformance:
+                data_sources.append(
+                    f"Conformance Analysis — {len(conformance)} violations detected"
+                )
 
         except Exception as exc:
             logger.warning("Could not load global process context: %s", str(exc))
-            sections.append("GLOBAL PROCESS STATS\n  [Unavailable — Celonis connection issue]\n")
+            sections.append("GLOBAL PROCESS STATS\n  [Unavailable]\n")
 
-        # ── 2. Agent intelligence ────────────────────────────────────────────
-        try:
-            if process_ctx is None:
-                process_ctx = self.process_insight.build_process_context()
-
-            agent_result = self.agent_recommendation.recommend_agents(process_ctx)
-            top_rec      = agent_result.get("top_recommendation", {})
-            agents       = agent_result.get("recommended_agents", [])
-
-            agent_section  = "ACTIVE AGENT RECOMMENDATIONS\n"
-            agent_section += f"  Top agent  : {top_rec.get('agent_name', 'N/A')} (priority: {top_rec.get('priority', 'N/A')})\n"
-            agent_section += f"  Reasoning  : {top_rec.get('reason', 'N/A')}\n"
-            agent_section += f"  Action     : {top_rec.get('timing_decision', 'N/A')}\n"
-            agent_section += f"  Impact     : {top_rec.get('action_impact', 'N/A')}\n"
-
-            if agents:
-                agent_section += "  All active agents:\n"
-                for a in agents[:6]:
-                    agent_section += (
-                        f"    • {a['agent_name']} [{a['priority']}] — {a['purpose']}\n"
-                        f"      Evidence: {a.get('process_mining_evidence', 'N/A')}\n"
-                    )
-
-            sections.append(agent_section)
-            context_used["agents"] = {"top_recommendation": top_rec, "agent_count": len(agents)}
-
-        except Exception as exc:
-            logger.warning("Could not load agent context: %s", str(exc))
-            sections.append("ACTIVE AGENT RECOMMENDATIONS\n  [Unavailable]\n")
-
-        # ── 3. Global vendor summary (always included) ───────────────────────
-        try:
-            vendor_stats = self.celonis.get_vendor_stats_api()
-            if vendor_stats:
-                sorted_vendors = sorted(
-                    vendor_stats,
-                    key=lambda v: float(v.get("exception_rate", 0) or 0),
-                    reverse=True,
-                )
-                vendor_section = f"VENDOR SUMMARY ({len(sorted_vendors)} vendors, ranked by exception rate)\n"
-                for v in sorted_vendors:
-                    vendor_section += (
-                        f"  • Vendor {v['vendor_id']}: "
-                        f"exception rate {v['exception_rate']}%, "
-                        f"avg DPO {v['avg_dpo']} days, "
-                        f"risk {v['risk_score']}, "
-                        f"{v['total_cases']} cases\n"
-                    )
-                sections.append(vendor_section)
-                context_used["vendor_summary"] = {
-                    "total_vendors":            len(vendor_stats),
-                    "highest_exception_vendor": sorted_vendors[0] if sorted_vendors else None,
-                }
-        except Exception as exc:
-            logger.warning("Could not load global vendor summary: %s", str(exc))
-
-        # ── 4. Case-specific context ─────────────────────────────────────────
+        # ── 2. Case-specific context ─────────────────────────────────────────
         if case_id:
             try:
-                event_log   = self.celonis.get_event_log()
-                case_events = event_log[event_log["case_id"].astype(str) == str(case_id)]
+                event_log = self.celonis.get_event_log()
+
+                # ── Normalized lookup with multiple fallback strategies ──
+                lookup_id = str(case_id).strip().upper()
+                norm_col  = event_log["case_id"].astype(str).str.strip().str.upper()
+
+                # Strategy 1: exact match
+                case_events = event_log[norm_col == lookup_id]
+                match_strategy = "exact"
+
+                # Strategy 2: stored ID contains the entered ID anywhere
+                # This handles format: 300V41130634800003 containing V411306348
+                if case_events.empty:
+                    case_events = event_log[norm_col.str.contains(lookup_id, na=False, regex=False)]
+                    if not case_events.empty:
+                        match_strategy = f"contains ({lookup_id})"
+
+                # Strategy 3: extract V+digits core from stored ID and compare
+                if case_events.empty:
+                    def extract_v_core(val: str) -> str:
+                        m = re.search(r'V\d+', str(val))
+                        return m.group(0) if m else str(val)
+                    norm_core = norm_col.apply(extract_v_core)
+                    lookup_core_m = re.search(r'V\d+', lookup_id)
+                    lookup_core = lookup_core_m.group(0) if lookup_core_m else lookup_id
+                    case_events = event_log[norm_core == lookup_core]
+                    if not case_events.empty:
+                        match_strategy = f"core_match ({lookup_core})"
+
+                # Strategy 4: strip leading 'V' from lookup
+                if case_events.empty:
+                    stripped_v = lookup_id.lstrip("V")
+                    case_events = event_log[norm_col == stripped_v]
+                    if not case_events.empty:
+                        match_strategy = f"stripped_V ({stripped_v})"
+
+                # Strategy 5: suffix match on last 8 characters
+                if case_events.empty:
+                    suffix = lookup_id[-8:]
+                    case_events = event_log[norm_col.str.endswith(suffix, na=False)]
+                    if not case_events.empty:
+                        match_strategy = f"suffix_match ({suffix})"
+
+                # Log results
+                sample_ids = norm_col.unique()[:8].tolist()
+                logger.info(
+                    "Case lookup: requested='%s' normalized='%s' strategy='%s' "
+                    "total_cases=%d matched_rows=%d sample_ids=%s",
+                    case_id,
+                    lookup_id,
+                    match_strategy,
+                    event_log["case_id"].nunique(),
+                    len(case_events),
+                    sample_ids,
+                )
 
                 if not case_events.empty:
-                    sorted_events = case_events.sort_values("timestamp")
-                    activities    = sorted_events["activity"].tolist()
-                    current_stage = activities[-1] if activities else "Unknown"
-                    start_time    = sorted_events["timestamp"].min()
-                    last_time     = sorted_events["timestamp"].max()
+                    sorted_events   = case_events.sort_values("timestamp")
+                    activities      = sorted_events["activity"].tolist()
+                    current_stage   = activities[-1] if activities else "Unknown"
+                    start_time      = sorted_events["timestamp"].min()
+                    last_time       = sorted_events["timestamp"].max()
                     days_in_process = (
                         (last_time - start_time).total_seconds() / 86400
-                        if hasattr(start_time, "timestamp") and hasattr(last_time, "timestamp")
-                        else "N/A"
+                        if pd.notnull(start_time) and pd.notnull(last_time) else "N/A"
                     )
+                    case_variant = " → ".join(activities)
+
+                    global_avg = process_ctx.get("avg_end_to_end_days", 0) if process_ctx else 0
+                    comparison = ""
+                    if isinstance(days_in_process, float) and global_avg:
+                        diff = round(days_in_process - float(global_avg), 1)
+                        comparison = f" ({'+' if diff > 0 else ''}{diff}d vs global avg {global_avg}d)"
+
+                    similar_cases = self._find_similar_cases(
+                        event_log=event_log,
+                        case_id=case_id,
+                        case_variant=case_variant,
+                    )
+
                     case_section = (
-                        f"CASE DETAIL: {case_id}\n"
+                        f"CASE DETAIL: {case_id}  [Source: Celonis Event Log]\n"
+                        f"  Match strategy     : {match_strategy}\n"
                         f"  Current stage      : {current_stage}\n"
-                        f"  Days in process    : {round(days_in_process, 2) if isinstance(days_in_process, float) else days_in_process}\n"
+                        f"  Days in process    : {round(days_in_process, 2) if isinstance(days_in_process, float) else days_in_process}{comparison}\n"
                         f"  Total activities   : {len(activities)}\n"
-                        f"  Full process path  : {' → '.join(activities)}\n"
+                        f"  Full process path  : {case_variant}\n"
+                        f"  Similar cases      : {len(similar_cases)} cases follow the same path\n"
                     )
                     sections.append(case_section)
+
                     context_used["case"] = {
-                        "case_id": case_id, "current_stage": current_stage,
-                        "days_in_process": days_in_process, "activity_count": len(activities),
+                        "case_id":         case_id,
+                        "current_stage":   current_stage,
+                        "days_in_process": days_in_process,
+                        "activity_count":  len(activities),
+                        "variant":         case_variant,
+                        "match_strategy":  match_strategy,
                     }
+                    context_used["similar_cases"] = similar_cases
+
+                    data_sources.append(
+                        f"Case {case_id} Event Trace — {len(activities)} activities, current: {current_stage}"
+                    )
+                    if similar_cases:
+                        data_sources.append(
+                            f"Similar Cases — {len(similar_cases)} cases with matching process path"
+                        )
+
                 else:
-                    sections.append(f"CASE DETAIL: {case_id}\n  [Case not found in event log]\n")
+                    # ── Detailed fallback so the LLM gives a useful response ──
+                    logger.warning(
+                        "Case '%s' not found in event log after all strategies. "
+                        "Sample stored IDs: %s",
+                        case_id,
+                        sample_ids,
+                    )
+                    sections.append(
+                        f"CASE DETAIL: {case_id}\n"
+                        f"  ⚠ Case '{case_id}' was NOT found in the Celonis event log.\n"
+                        f"  Total cases in log   : {event_log['case_id'].nunique()}\n"
+                        f"  Sample IDs in log    : {sample_ids}\n"
+                        f"  Strategies tried     : exact, contains, core_match, strip_V, suffix_match\n"
+                        f"  Likely cause         : Case ID format mismatch between UI input and "
+                        f"the value stored in the Celonis CASE_COLUMN.\n"
+                        f"  Suggested action     : Check sample IDs above and match the format "
+                        f"when entering a case ID in the UI.\n"
+                    )
 
             except Exception as exc:
                 logger.warning("Could not load case context for %s: %s", case_id, str(exc))
 
-        # ── 5. Vendor-specific context ───────────────────────────────────────
+        # ── 3. Vendor-specific context ───────────────────────────────────────
         if vendor_id:
             try:
-                vendor_stats = self.celonis.get_vendor_stats_api()
-                vendor = next(
-                    (v for v in vendor_stats if str(v.get("vendor_id", "")).upper() == str(vendor_id).upper()),
-                    None,
-                )
-                if vendor:
+                vendor_snapshot = self._build_vendor_snapshot(vendor_id, process_ctx)
+
+                if vendor_snapshot:
+                    vs = vendor_snapshot
+                    global_exc   = vs.get("overall_exception_rate_pct", 0) or 0
+                    global_days  = vs.get("overall_avg_duration_days", 0) or 0
+
                     vendor_section = (
-                        f"VENDOR DETAIL: {vendor_id}\n"
-                        f"  Total cases        : {vendor.get('total_cases', 'N/A')}\n"
-                        f"  Exception rate     : {vendor.get('exception_rate', 'N/A')}%\n"
-                        f"  Avg DPO (days)     : {vendor.get('avg_dpo', 'N/A')}\n"
-                        f"  Risk score         : {vendor.get('risk_score', 'N/A')}\n"
-                        f"  Total value        : {vendor.get('total_value', 'N/A')}\n"
+                        f"VENDOR SNAPSHOT: {vendor_id}  [Source: Celonis Event Log + Vendor Mapping]\n"
+                        f"  Total cases          : {vs.get('total_cases', 'N/A')}\n"
+                        f"  Exception rate       : {vs.get('exception_rate_pct', 'N/A')}%  "
+                        f"(global avg: {global_exc}%)\n"
+                        f"  Avg cycle time       : {vs.get('avg_duration_days', 'N/A')} days  "
+                        f"(global avg: {global_days} days)\n"
+                        f"  vs. global (days)    : {vs.get('duration_vs_overall_days', 'N/A')}\n"
+                        f"  Exception cases      : {vs.get('exception_case_count', 'N/A')}\n"
+                        f"  Most common variant  : {vs.get('most_common_variant', 'N/A')}\n"
+                        f"  Payment terms        : {vs.get('payment_terms', 'N/A')}\n"
+                        f"  Currency             : {vs.get('currency', 'N/A')}\n"
                     )
+                    top_exc = vs.get("top_exception_types", [])
+                    if top_exc:
+                        vendor_section += "  Exception types:\n"
+                        for e in top_exc:
+                            vendor_section += f"    • {e['exception_type']}: {e['case_count']} cases\n"
+
                     sections.append(vendor_section)
-                    context_used["vendor"] = vendor
+                    context_used["vendor"] = vendor_snapshot
+
+                    data_sources.append(
+                        f"Vendor {vendor_id} — {vs.get('total_cases', 0)} cases, "
+                        f"{vs.get('exception_rate_pct', 0)}% exception rate"
+                    )
                 else:
-                    sections.append(f"VENDOR DETAIL: {vendor_id}\n  [Vendor not found]\n")
+                    sections.append(f"VENDOR SNAPSHOT: {vendor_id}\n  [Not found in event log]\n")
 
             except Exception as exc:
                 logger.warning("Could not load vendor context for %s: %s", vendor_id, str(exc))
 
-        return "\n".join(sections), context_used
+        return "\n".join(sections), context_used, data_sources
+
+    # ── Vendor snapshot builder ──────────────────────────────────────────────
+
+    def _build_vendor_snapshot(
+        self,
+        vendor_id: str,
+        process_ctx: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            vendor_stats_list: List[Dict] = (
+                process_ctx.get("vendor_stats", []) if process_ctx else []
+            )
+
+            vendor_row = next(
+                (v for v in vendor_stats_list
+                 if str(v.get("vendor_id", "")).upper() == vendor_id.upper()),
+                None,
+            )
+
+            if not vendor_row:
+                enriched = self.celonis.get_event_log_with_vendor()
+                if enriched.empty:
+                    return None
+
+                vendor_df = enriched[
+                    enriched["vendor_id"].astype(str).str.upper().str.strip()
+                    == vendor_id.upper().strip()
+                ]
+                if vendor_df.empty:
+                    return None
+
+                total_cases = int(vendor_df["case_id"].nunique())
+                exc_cases   = int(
+                    vendor_df[
+                        vendor_df["activity"].str.contains("exception", case=False, na=False)
+                    ]["case_id"].nunique()
+                )
+                case_dur = (
+                    vendor_df.groupby("case_id")
+                    .agg(start=("timestamp", "min"), end=("timestamp", "max"))
+                    .reset_index()
+                )
+                case_dur["dur"] = (
+                    (case_dur["end"] - case_dur["start"]).dt.total_seconds() / 86400
+                )
+                avg_dur = round(float(case_dur["dur"].mean()), 2) if not case_dur.empty else 0.0
+
+                most_common_variant = ""
+                try:
+                    v_variants = (
+                        vendor_df.sort_values(["case_id", "timestamp"])
+                        .groupby("case_id")["activity"]
+                        .apply(lambda x: " → ".join(x.astype(str).tolist()))
+                        .value_counts()
+                    )
+                    most_common_variant = str(v_variants.index[0]) if not v_variants.empty else ""
+                except Exception:
+                    pass
+
+                payment_terms = ""
+                currency = ""
+                try:
+                    attrs = vendor_df[["payment_terms", "currency"]].dropna(how="all")
+                    if not attrs.empty:
+                        payment_terms = str(attrs["payment_terms"].dropna().iloc[0]) if not attrs["payment_terms"].dropna().empty else ""
+                        currency      = str(attrs["currency"].dropna().iloc[0]) if not attrs["currency"].dropna().empty else ""
+                except Exception:
+                    pass
+
+                vendor_row = {
+                    "vendor_id":            vendor_id,
+                    "total_cases":          total_cases,
+                    "exception_case_count": exc_cases,
+                    "exception_rate_pct":   round(exc_cases / total_cases * 100, 2) if total_cases else 0.0,
+                    "avg_duration_days":    avg_dur,
+                    "most_common_variant":  most_common_variant,
+                    "duration_vs_overall_days": 0.0,
+                    "payment_terms":        payment_terms,
+                    "currency":             currency,
+                }
+
+            if process_ctx:
+                vendor_row["overall_avg_duration_days"]  = process_ctx.get("avg_end_to_end_days", 0.0)
+                vendor_row["overall_exception_rate_pct"] = process_ctx.get("exception_rate", 0.0)
+
+            top_exception_types = []
+            if process_ctx:
+                for p in process_ctx.get("exception_patterns", [])[:3]:
+                    top_exception_types.append({
+                        "exception_type": p["exception_type"],
+                        "case_count":     p["case_count"],
+                    })
+            vendor_row["top_exception_types"] = top_exception_types
+
+            return vendor_row
+
+        except Exception as exc:
+            logger.warning("Vendor snapshot failed for %s: %s", vendor_id, str(exc))
+            return None
+
+    # ── Similar cases ────────────────────────────────────────────────────────
+
+    def _find_similar_cases(
+        self,
+        event_log: pd.DataFrame,
+        case_id: str,
+        case_variant: str,
+        max_results: int = 5,
+    ) -> List[Dict[str, Any]]:
+        try:
+            case_variants = (
+                event_log.sort_values(["case_id", "timestamp"])
+                .groupby("case_id")["activity"]
+                .apply(lambda x: " → ".join(x.astype(str).tolist()))
+                .reset_index(name="variant")
+            )
+            same_variant = case_variants[
+                (case_variants["variant"] == case_variant) &
+                (case_variants["case_id"].astype(str).str.strip().str.upper()
+                 != str(case_id).strip().upper())
+            ]
+            if same_variant.empty:
+                return []
+
+            case_durations = (
+                event_log.groupby("case_id")
+                .agg(start_time=("timestamp", "min"), end_time=("timestamp", "max"))
+                .reset_index()
+            )
+            case_durations["duration_days"] = (
+                (case_durations["end_time"] - case_durations["start_time"])
+                .dt.total_seconds() / 86400
+            ).round(2)
+
+            similar = same_variant.merge(
+                case_durations[["case_id", "duration_days"]], on="case_id", how="left"
+            )
+
+            result = []
+            for _, row in similar.head(max_results).iterrows():
+                case_ev = event_log[
+                    event_log["case_id"].astype(str).str.strip().str.upper()
+                    == str(row["case_id"]).strip().upper()
+                ]
+                last_activity = (
+                    case_ev.sort_values("timestamp").iloc[-1]["activity"]
+                    if not case_ev.empty else "Unknown"
+                )
+                result.append({
+                    "case_id":       str(row["case_id"]),
+                    "duration_days": round(float(row["duration_days"]), 2) if pd.notnull(row["duration_days"]) else None,
+                    "current_stage": last_activity,
+                    "variant_match": True,
+                })
+            return result
+
+        except Exception as exc:
+            logger.warning("Similar cases lookup failed: %s", str(exc))
+            return []
+
+    # ── Next steps ───────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _generate_next_steps(
+        message: str,
+        context_used: Dict[str, Any],
+        case_id: Optional[str],
+        vendor_id: Optional[str],
+    ) -> List[str]:
+        steps = []
+        q = message.lower()
+
+        if any(x in q for x in ["bottleneck", "delay", "slow", "time", "cycle"]):
+            steps.append("Drill into the bottleneck transition in Celonis Process Explorer")
+            steps.append("Compare cycle times across variants to isolate the slow path")
+        elif any(x in q for x in ["exception", "error", "problem", "block"]):
+            steps.append("Filter the Celonis event log by exception activity to see all affected cases")
+            steps.append("Check conformance violations for cases in the exception path")
+        elif any(x in q for x in ["variant", "path", "route", "flow"]):
+            steps.append("Compare variant frequencies in Celonis to identify rework loops")
+        elif any(x in q for x in ["vendor", "supplier"]):
+            steps.append("Cross-reference vendor exception rate with their payment terms in the case table")
+        elif any(x in q for x in ["conform", "violation"]):
+            steps.append("Open the Celonis Conformance Checker for the affected cases")
+
+        if case_id:
+            steps.append(f"Pull the full event trace for Case {case_id} in the Celonis event log")
+            case_ctx = context_used.get("case", {})
+            if isinstance(case_ctx.get("days_in_process"), float) and case_ctx["days_in_process"] > 10:
+                steps.append("Case appears overdue — escalate to the stage owner from resource mapping")
+
+        if vendor_id:
+            vendor_ctx = context_used.get("vendor", {})
+            exc_rate = vendor_ctx.get("exception_rate_pct", 0)
+            if isinstance(exc_rate, (int, float)) and exc_rate > 30:
+                steps.append(f"Vendor {vendor_id} exception rate is high — review their invoice submission process")
+
+        if not steps:
+            steps = [
+                "Filter the Celonis event log by this activity to see similar instances",
+                "Compare throughput time for this transition against the global average",
+            ]
+
+        return steps[:4]
+
+    # ── Prompt helpers ───────────────────────────────────────────────────────
 
     @staticmethod
     def _build_user_prompt(message: str, history: List[Dict[str, str]]) -> str:
         if not history:
             return message
         history_text = "\n".join(
-            f"[{turn['role'].upper()}]: {turn['content']}"
-            for turn in history[-6:]
+            f"[{turn['role'].upper()}]: {turn['content']}" for turn in history[-6:]
         )
         return f"CONVERSATION HISTORY:\n{history_text}\n\n[USER]: {message}"
