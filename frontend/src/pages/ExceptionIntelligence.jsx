@@ -212,6 +212,19 @@ export default function ExceptionIntelligence() {
   const routingUrgency = analysis?.turnaround_risk?.risk_level || "MEDIUM";
   const routingEta = analysis?.turnaround_risk?.estimated_processing_days != null ? `${Number(analysis.turnaround_risk.estimated_processing_days).toFixed(2)}d` : "N/A";
   const routingDecision = analysis?.classifier_agent?.decision || analysis?.automation_decision || "MONITOR";
+  const alternativeActions = useMemo(() => {
+    const raw = analysis?.alternatives ?? analysis?.alternative_actions ?? analysis?.next_best_actions ?? [];
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map((item) => {
+        if (typeof item === "string") return { action: item, why: "" };
+        return {
+          action: item?.action || item?.title || item?.name || "",
+          why: item?.why || item?.reason || item?.rationale || item?.expected_impact || "",
+        };
+      })
+      .filter((item) => item.action || item.why);
+  }, [analysis]);
 
   // ── Run analysis whenever selected record changes ──
   useEffect(() => {
@@ -513,6 +526,29 @@ export default function ExceptionIntelligence() {
                 <LabelValue label="Recommended Action" value={analysis?.next_best_action?.action} />
                 <LabelValue label="Why" value={analysis?.next_best_action?.why} />
                 <LabelValue label="ETA" value={analysis?.turnaround_risk?.estimated_processing_days != null ? `${analysis.turnaround_risk.estimated_processing_days} days` : null} />
+                <Box sx={{ mt: 1.2, pt: 1.2, borderTop: "1px solid #EDD090" }}>
+                  <SectionLabel>Alternatives</SectionLabel>
+                  {alternativeActions.length > 0 ? (
+                    <Stack spacing={1}>
+                      {alternativeActions.map((item, idx) => (
+                        <Box key={`${item.action || item.why}-${idx}`}>
+                          <Typography sx={{ fontSize: "13px", color: "#5C5650", fontFamily: G, lineHeight: 1.45 }}>
+                            {idx + 1}. {item.action || item.why}
+                          </Typography>
+                          {item.why ? (
+                            <Typography sx={{ fontSize: "12px", color: "#9C9690", fontFamily: G, lineHeight: 1.45 }}>
+                              {item.why}
+                            </Typography>
+                          ) : null}
+                        </Box>
+                      ))}
+                    </Stack>
+                  ) : (
+                    <Typography sx={{ fontSize: "12px", color: "#9C9690", fontFamily: G }}>
+                      No alternative actions identified.
+                    </Typography>
+                  )}
+                </Box>
 
                 {/* Classifier */}
                 <Box sx={{ mt: 1.2, pt: 1.2, borderTop: "1px solid #EDD090" }}>
