@@ -100,15 +100,34 @@ async def get_exception_workbench_data():
             }
 
         timeout_seconds = 10.0
-        warning = None
 
         try:
             await asyncio.wait_for(asyncio.to_thread(cache.ensure_loaded), timeout=timeout_seconds)
         except asyncio.TimeoutError:
-            warning = "Cache warmup exceeded 10 seconds; returning available partial data."
+            snapshot = cache.get_exception_workbench_snapshot()
             _trigger_background_refresh_if_needed(cache)
+            return {
+                "success": True,
+                "data": {
+                    "categories": snapshot.get("categories", []),
+                    "records": snapshot.get("records", []),
+                    "warning": "Cache warmup exceeded 10 seconds; returning available partial data.",
+                    "served_from_cache": True,
+                    "refresh_in_background": True,
+                },
+            }
         except Exception:
-            warning = "Cache warmup failed; returning available partial data."
+            snapshot = cache.get_exception_workbench_snapshot()
+            return {
+                "success": True,
+                "data": {
+                    "categories": snapshot.get("categories", []),
+                    "records": snapshot.get("records", []),
+                    "warning": "Cache warmup failed; returning available partial data.",
+                    "served_from_cache": True,
+                    "refresh_in_background": False,
+                },
+            }
 
         categories, records = await asyncio.gather(
             asyncio.to_thread(cache.get_exception_categories),
@@ -120,9 +139,9 @@ async def get_exception_workbench_data():
             "data": {
                 "categories": categories or [],
                 "records": records or [],
-                "warning": warning,
+                "warning": None,
                 "served_from_cache": False,
-                "refresh_in_background": warning is not None,
+                "refresh_in_background": False,
             },
         }
     except CelonisConnectionError as e:

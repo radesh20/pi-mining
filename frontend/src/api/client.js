@@ -249,6 +249,13 @@ export const fetchAllExceptionRecords = async () => {
   });
 };
 
+export const fetchExceptionWorkbenchData = async () => {
+  return dedupeRequest("GET:/exceptions/workbench-data", async () => {
+    const res = await api.get("/exceptions/workbench-data");
+    return res.data;
+  });
+};
+
 export const analyzeExceptionRecord = async (payload) => {
   return dedupeRequest(
     `POST:/exceptions/analyze:${stableStringify(payload || {})}`,

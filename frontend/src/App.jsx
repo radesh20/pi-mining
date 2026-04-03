@@ -143,15 +143,16 @@ export default function App() {
         <main style={{ paddingTop: "56px" }}>
           <div style={{ padding: "0 24px" }}>
             <Routes>
-              <Route path="/" element={<Dashboard />} />
+              <Route path="/" element={<Navigate to="/chat" replace />} />
+              <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/setup" element={<CelonisSetup />} />
               <Route path="/exceptions-workbench" element={<ExceptionsWorkbench />} />
               <Route path="/exception-intelligence" element={<ExceptionIntelligence />} />
               <Route path="/vendor-analysis" element={<VendorAnalysis />} />
               <Route path="/interaction" element={<CrossAgentInteraction />} />
               <Route path="/chat" element={<PIChat />} />   {/* ← new */}
-              <Route path="/process-agents" element={<Navigate to="/" replace />} />
-              <Route path="/deep-dive" element={<Navigate to="/" replace />} />
+              <Route path="/process-agents" element={<Navigate to="/chat" replace />} />
+              <Route path="/deep-dive" element={<Navigate to="/chat" replace />} />
             </Routes>
           </div>
         </main>
