@@ -9,7 +9,12 @@ let cacheStatusInFlight = null;
 let cacheStatusSnapshot = null;
 let cacheStatusSnapshotAt = 0;
 let waitForCacheReadyPromise = null;
-const CACHE_STATUS_TTL_MS = 2000;
+let waitForCacheReadyController = null;
+let waitForCacheReadyConsumers = 0;
+const CACHE_STATUS_TTL_MS = 5000;
+const CACHE_STATUS_MIN_POLL_MS = 5000;
+const CACHE_STATUS_MAX_POLL_ATTEMPTS = 20;
+const CACHE_LOADING_SLOW_MESSAGE = "Cache loading taking longer than expected";
 const inFlightRequests = new Map();
 
 const stableStringify = (value) => {
@@ -144,28 +149,121 @@ export const fetchCacheStatus = async ({ force = false } = {}) => {
   return cacheStatusInFlight;
 };
 
-export const waitForCacheReady = async ({ timeoutMs = 120000, pollMs = 2000 } = {}) => {
-  if (waitForCacheReadyPromise) {
-    return waitForCacheReadyPromise;
+const createAbortError = () => {
+  const error = new Error("Cache status polling aborted.");
+  error.name = "AbortError";
+  return error;
+};
+
+const pollUntilCacheReady = ({ timeoutMs = 120000, pollMs = CACHE_STATUS_MIN_POLL_MS, signal } = {}) => {
+  const effectivePollMs = Math.max(Number(pollMs || 0), CACHE_STATUS_MIN_POLL_MS);
+  const startedAt = Date.now();
+  let attempts = 0;
+  let intervalId = null;
+  let inTick = false;
+  let finished = false;
+  let abortHandler = null;
+
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      if (intervalId) clearInterval(intervalId);
+      intervalId = null;
+      if (signal && abortHandler) {
+        signal.removeEventListener("abort", abortHandler);
+      }
+      abortHandler = null;
+    };
+
+    const complete = (fn, value) => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      fn(value);
+    };
+
+    const onError = (error) => complete(reject, error);
+    const onResolve = (value) => complete(resolve, value);
+
+    if (signal?.aborted) {
+      onError(createAbortError());
+      return;
+    }
+
+    const tick = async () => {
+      if (inTick || finished) return;
+      inTick = true;
+      try {
+        attempts += 1;
+        const status = unwrapApiData(await fetchCacheStatus({ force: true })) || {};
+        if (status.is_loaded && !status.refresh_in_progress) {
+          onResolve(status);
+          return;
+        }
+        if (attempts >= CACHE_STATUS_MAX_POLL_ATTEMPTS) {
+          onError(new Error(CACHE_LOADING_SLOW_MESSAGE));
+          return;
+        }
+        if (Date.now() - startedAt >= timeoutMs) {
+          onError(new Error("Timed out waiting for analytics cache to finish loading."));
+        }
+      } catch (error) {
+        onError(error);
+      } finally {
+        inTick = false;
+      }
+    };
+
+    abortHandler = () => onError(createAbortError());
+    if (signal) {
+      signal.addEventListener("abort", abortHandler, { once: true });
+      if (signal.aborted) {
+        onError(createAbortError());
+        return;
+      }
+    }
+
+    intervalId = setInterval(tick, effectivePollMs);
+    tick();
+  });
+};
+
+export const waitForCacheReady = async ({ timeoutMs = 120000, pollMs = CACHE_STATUS_MIN_POLL_MS, signal } = {}) => {
+  if (!waitForCacheReadyPromise) {
+    waitForCacheReadyController = new AbortController();
+    waitForCacheReadyPromise = pollUntilCacheReady({
+      timeoutMs,
+      pollMs,
+      signal: waitForCacheReadyController.signal,
+    }).finally(() => {
+      waitForCacheReadyPromise = null;
+      waitForCacheReadyController = null;
+      waitForCacheReadyConsumers = 0;
+    });
   }
 
-  waitForCacheReadyPromise = (async () => {
-    const startedAt = Date.now();
-    const effectivePollMs = Math.max(Number(pollMs || 0), 4000);
+  waitForCacheReadyConsumers += 1;
 
-    while (Date.now() - startedAt < timeoutMs) {
-      const status = unwrapApiData(await fetchCacheStatus()) || {};
-      if (status.is_loaded && !status.refresh_in_progress) {
-        return status;
-      }
-      await new Promise((resolve) => setTimeout(resolve, effectivePollMs));
+  try {
+    if (!signal) {
+      return await waitForCacheReadyPromise;
     }
-    throw new Error("Timed out waiting for analytics cache to finish loading.");
-  })().finally(() => {
-    waitForCacheReadyPromise = null;
-  });
-
-  return waitForCacheReadyPromise;
+    if (signal.aborted) {
+      throw createAbortError();
+    }
+    const signalAbortPromise = new Promise((_, reject) => {
+      const onAbort = () => {
+        reject(createAbortError());
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      waitForCacheReadyPromise.finally(() => signal.removeEventListener("abort", onAbort));
+    });
+    return await Promise.race([waitForCacheReadyPromise, signalAbortPromise]);
+  } finally {
+    waitForCacheReadyConsumers = Math.max(0, waitForCacheReadyConsumers - 1);
+    if (waitForCacheReadyConsumers === 0 && waitForCacheReadyController) {
+      waitForCacheReadyController.abort();
+    }
+  }
 };
 
 // -----------------------------

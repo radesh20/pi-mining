@@ -39,6 +39,7 @@ export default function Dashboard() {
   const [refreshMessage, setRefreshMessage] = useState("");
   const [validationMessage, setValidationMessage] = useState("");
   const [error, setError] = useState(null);
+  const [cacheSlowMessage, setCacheSlowMessage] = useState("");
 
   const hasUsableAnalytics = (insights, coverageData, layer) => {
     const totalCases = Number(insights?.data?.total_cases ?? 0);
@@ -47,13 +48,17 @@ export default function Dashboard() {
     return totalCases > 0 || coverageCases > 0 || contextReady;
   };
 
-  const loadAll = async (retryIfCacheCold = true) => {
+  const loadAll = async (retryIfCacheCold = true, signal) => {
     const [insightsRes, coverageRes, layerRes] = await Promise.all([fetchProcessInsights(), fetchContextCoverage(), fetchCelonisContextLayer()]);
     if (retryIfCacheCold && !hasUsableAnalytics(insightsRes, coverageRes, layerRes)) {
       try {
-        await waitForCacheReady();
-        return await loadAll(false);
-      } catch (_) {
+        await waitForCacheReady({ signal });
+        return await loadAll(false, signal);
+      } catch (e) {
+        if (e?.name === "AbortError") throw e;
+        if (String(e?.message || "") === "Cache loading taking longer than expected") {
+          setCacheSlowMessage("Cache loading taking longer than expected");
+        }
         // Fall through and render the best available snapshot.
       }
     }
@@ -63,7 +68,20 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
-    loadAll().catch((e) => setError(e.response?.data?.detail || e.message)).finally(() => setLoading(false));
+    let active = true;
+    const abortController = new AbortController();
+    loadAll(true, abortController.signal)
+      .catch((e) => {
+        if (!active || e?.name === "AbortError") return;
+        setError(e.response?.data?.detail || e.message);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+      abortController.abort();
+    };
   }, []);
 
   const handleRefresh = async () => {
@@ -124,6 +142,7 @@ export default function Dashboard() {
         </Box>
         {refreshMessage && <Alert severity="success" sx={{ mt: 2 }}>{refreshMessage}</Alert>}
         {validationMessage && <Alert severity={validationMessage.includes("issues") ? "warning" : "success"} sx={{ mt: 2 }}>{validationMessage}</Alert>}
+        {cacheSlowMessage && <Alert severity="warning" sx={{ mt: 2 }}>{cacheSlowMessage}</Alert>}
       </Box>
 
       <ProcessMetrics context={context} />

@@ -983,6 +983,7 @@ export default function CrossAgentInteraction() {
 
   useEffect(() => {
     let active = true;
+    const abortController = new AbortController();
 
     const load = async (retryIfCacheCold = true) => {
       try {
@@ -990,7 +991,7 @@ export default function CrossAgentInteraction() {
         const categoryRows = (categoriesRes.data || categoriesRes || []).filter((row) => Number(row.case_count || 0) > 0);
 
         if (retryIfCacheCold && categoryRows.length === 0) {
-          await waitForCacheReady();
+          await waitForCacheReady({ signal: abortController.signal });
           return await load(false);
         }
 
@@ -1043,6 +1044,7 @@ export default function CrossAgentInteraction() {
     load();
     return () => {
       active = false;
+      abortController.abort();
     };
   }, []);
 

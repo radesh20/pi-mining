@@ -134,6 +134,7 @@ export default function ExceptionIntelligence() {
   // ── Load all records across all categories (flat) ──
   useEffect(() => {
     let active = true;
+    const abortController = new AbortController();
     (async () => {
       setLoading(true);
       setError("");
@@ -143,7 +144,7 @@ export default function ExceptionIntelligence() {
           .filter((row) => Number(row.case_count || 0) > 0)
           .sort((a, b) => Number(b.case_count || 0) - Number(a.case_count || 0));
         if (categories.length === 0) {
-          await waitForCacheReady();
+          await waitForCacheReady({ signal: abortController.signal });
           categoriesRes = await fetchExceptionCategories();
           categories = (Array.isArray(pickData(categoriesRes)) ? pickData(categoriesRes) : [])
             .filter((row) => Number(row.case_count || 0) > 0)
@@ -177,7 +178,7 @@ export default function ExceptionIntelligence() {
         if (active) setLoading(false);
       }
     })();
-    return () => { active = false; };
+    return () => { active = false; abortController.abort(); };
   }, []);
 
   const selectedRecord = useMemo(
