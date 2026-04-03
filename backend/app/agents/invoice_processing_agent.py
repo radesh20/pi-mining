@@ -3,6 +3,11 @@ from typing import Dict
 from app.agents.base_agent import BaseAgent
 from app.services.azure_openai_service import AzureOpenAIService
 
+try:
+    from backend.app.prompts.prompt_loader import load_prompt
+except ModuleNotFoundError:
+    from app.prompts.prompt_loader import load_prompt
+
 
 class InvoiceProcessingAgent(BaseAgent):
     def __init__(self, llm: AzureOpenAIService, process_context: Dict):
@@ -17,76 +22,20 @@ class InvoiceProcessingAgent(BaseAgent):
                 "Detect all four exception families: terms mismatch, invoice exception, short terms, early payment.",
             ],
         )
+        self.prompt_config = load_prompt("invoice_processing_agent")
 
     def process(self, input_data: Dict) -> Dict:
         import json
 
-        system_prompt = """
-You are the Invoice Processing Agent for AI-driven P2P automation.
-You validate invoice payloads and detect exception risks using Celonis process context.
-
-You must detect and reason about ALL four exception families:
-1) payment_terms_mismatch
-2) invoice_exception (tax/price/quantity/missing GR signals)
-3) short_payment_terms (especially 0-day terms)
-4) early_payment optimization opportunity
-
-Turnaround awareness is mandatory:
-- compare days_until_due vs estimated_processing_days
-- if estimated_processing_days > days_until_due, urgency must be CRITICAL
-
-Return strict JSON:
-{
-  "validation_result": "PASS|EXCEPTION",
-  "detected_process_step": "...",
-  "exceptions_found": [
-    {
-      "type": "payment_terms_mismatch|invoice_exception|short_payment_terms|early_payment",
-      "description": "...",
-      "severity": "LOW|MEDIUM|HIGH|CRITICAL",
-      "value_at_risk": 0.0,
-      "celonis_evidence": "..."
-    }
-  ],
-  "turnaround_assessment": {
-    "days_until_due": 0.0,
-    "estimated_processing_days": 0.0,
-    "historical_processing_days": 0.0,
-    "urgency": "LOW|MEDIUM|HIGH|CRITICAL",
-    "urgency_basis": "...",
-    "recommendation": "...",
-    "celonis_evidence": "..."
-  },
-  "action": "POST_INVOICE|HANDOFF_TO_EXCEPTION_AGENT|EXPEDITE|HOLD_FOR_OPTIMIZATION",
-  "handoff_payload": {
-    "invoice_data": {},
-    "exception_candidates": [],
-    "turnaround_context": {},
-    "detected_process_step": "...",
-    "payload_field_justification_from_pi": "..."
-  },
-  "celonis_evidence": "...",
-  "ai_reasoning": "..."
-}
-
-Hard constraints:
-- AI-driven decisions only, no deterministic rule scripts.
-- Include Celonis evidence in each exception and overall output.
-"""
-
-        user_prompt = f"""
-Invoice processing input:
-{json.dumps(input_data, indent=2, default=str)}
-
-Celonis process context:
-{json.dumps(self.process_context, indent=2, default=str)}
-
-Known portfolio-level signals to consider:
-{json.dumps(self._known_metrics(), indent=2, default=str)}
-"""
+        prompt_config = load_prompt(
+            "invoice_processing_agent",
+            input_data_json=json.dumps(input_data, indent=2, default=str),
+            process_context_json=json.dumps(self.process_context, indent=2, default=str),
+            known_metrics_json=json.dumps(self._known_metrics(), indent=2, default=str),
+        )
         result = self.reason_json(
-            system_prompt,
-            user_prompt,
+            prompt_config["system_prompt"],
+            prompt_config["user_prompt"],
             prompt_purpose="Validate invoice and detect exception candidates before agent handoff",
             message_bus_input=input_data,
         )

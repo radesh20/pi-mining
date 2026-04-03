@@ -3,6 +3,11 @@ from typing import Dict
 from app.agents.base_agent import BaseAgent
 from app.services.azure_openai_service import AzureOpenAIService
 
+try:
+    from backend.app.prompts.prompt_loader import load_prompt
+except ModuleNotFoundError:
+    from app.prompts.prompt_loader import load_prompt
+
 
 class PromptWriterAgent(BaseAgent):
     def __init__(self, llm: AzureOpenAIService, process_context: Dict):
@@ -17,6 +22,7 @@ class PromptWriterAgent(BaseAgent):
                 "All four exception families must be covered: terms mismatch, invoice exception, short terms, early payment.",
             ],
         )
+        self.prompt_config = load_prompt("prompt_writer_agent")
 
     def process(self, input_data: Dict) -> Dict:
         import json
@@ -28,96 +34,17 @@ class PromptWriterAgent(BaseAgent):
         )
 
         known_facts = self._known_celonis_facts()
-        system_prompt = f"""
-You are Prompt Writer Agent for AI-driven P2P automation.
-You are writing prompts for downstream AI agents, not deciding outcomes directly.
-You MUST use Celonis evidence from the provided process context and known metrics.
-
-Return strict JSON with this exact shape:
-{{
-  "target_agent": "{target_agent}",
-  "generated_prompts": {{
-    "system_prompt": "...",
-    "exception_specific_prompts": {{
-      "payment_terms_mismatch": {{
-        "detection_prompt": "...",
-        "resolution_prompt": "...",
-        "celonis_evidence": "..."
-      }},
-      "invoice_exception": {{
-        "detection_prompt": "...",
-        "resolution_prompt": "...",
-        "celonis_evidence": "..."
-      }},
-      "short_payment_terms": {{
-        "detection_prompt": "...",
-        "resolution_prompt": "...",
-        "celonis_evidence": "..."
-      }},
-      "early_payment_optimization": {{
-        "detection_prompt": "...",
-        "resolution_prompt": "...",
-        "celonis_evidence": "..."
-      }}
-    }},
-    "workflow_instructions": [
-      {{
-        "step": 1,
-        "instruction": "...",
-        "celonis_evidence": "...",
-        "ai_reasoning": "..."
-      }}
-    ],
-    "decision_logic": [
-      {{
-        "scenario": "...",
-        "ai_recommendation": "...",
-        "confidence": 0.0,
-        "celonis_evidence": "...",
-        "ai_reasoning": "..."
-      }}
-    ],
-    "guardrails": [
-      {{
-        "constraint": "...",
-        "celonis_evidence": "...",
-        "enforcement": "BLOCK|ESCALATE|WARN",
-        "ai_reasoning": "..."
-      }}
-    ]
-  }},
-  "celonis_evidence": "...",
-  "ai_reasoning": "..."
-}}
-
-Strict requirements:
-1. Must include explicit prompt instructions for all four exception families.
-2. Must include turnaround-time awareness in prompts.
-3. Must reflect AI-driven reasoning and avoid hardcoded if/else language.
-4. Each section must cite Celonis evidence, including numeric values where available.
-"""
-
-        user_prompt = f"""
-Target agent: {target_agent}
-Scenario: {scenario}
-Input payload:
-{json.dumps(input_data, indent=2, default=str)}
-
-Known Celonis metrics:
-{json.dumps(known_facts, indent=2, default=str)}
-
-Full process_context:
-{json.dumps(self.process_context, indent=2, default=str)}
-
-Create high-quality prompts that explicitly cover:
-- Payment terms mismatch (invoice vs PO vs vendor master, 37 invoices, 22.5M, avg DPO 36.52)
-- Invoices with exception (19 invoices, 2.48M, DPO 80.83 critical)
-- Short payment terms 0-day (25 invoices, 15.3M, DPO 1.21)
-- Early payment optimization (23 invoices, 19M, DPO 3.08 vs potential 63)
-"""
+        prompt_config = load_prompt(
+            "prompt_writer_agent",
+            target_agent=target_agent,
+            scenario=scenario,
+            input_data_json=json.dumps(input_data, indent=2, default=str),
+            known_facts_json=json.dumps(known_facts, indent=2, default=str),
+            process_context_json=json.dumps(self.process_context, indent=2, default=str),
+        )
         result = self.reason_json(
-            system_prompt,
-            user_prompt,
+            prompt_config["system_prompt"],
+            prompt_config["user_prompt"],
             prompt_purpose=f"Generate downstream prompts for {target_agent}",
             message_bus_input=input_data,
         )

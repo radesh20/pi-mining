@@ -3,6 +3,13 @@ from typing import Dict
 from app.agents.base_agent import BaseAgent
 from app.services.azure_openai_service import AzureOpenAIService
 
+try:
+    from backend.app.prompts.prompt_loader import load_prompt
+    from backend.app.guardrails.exceptions import GuardrailViolation, GuardrailResult
+except ModuleNotFoundError:
+    from app.prompts.prompt_loader import load_prompt
+    from app.guardrails.exceptions import GuardrailViolation, GuardrailResult
+
 
 class ExceptionAgent(BaseAgent):
     def __init__(self, llm: AzureOpenAIService, process_context: Dict):
@@ -17,78 +24,59 @@ class ExceptionAgent(BaseAgent):
                 "Escalate ambiguous, novel, or high-financial-impact cases for human review.",
             ],
         )
+        self.prompt_config = load_prompt("exception_agent")
+
+    def validate_output(self, output: dict) -> GuardrailResult:
+        """
+        Runs after LLM responds, before result is returned to orchestrator.
+        Enforces: confidence gate, evidence gate, schema gate.
+        """
+        required_keys = {"resolution_strategy", "confidence", "celonis_evidence", "recommended_action"}
+        missing = required_keys - output.keys()
+        if missing:
+            raise GuardrailViolation("SCHEMA_INVALID", f"Missing fields: {missing}")
+
+        valid_strategies = {"AUTO_CORRECT", "MANUAL_REVIEW", "HUMAN_REQUIRED"}
+        if output["resolution_strategy"] not in valid_strategies:
+            raise GuardrailViolation("SCHEMA_INVALID", f"Unknown resolution_strategy: {output['resolution_strategy']}")
+
+        if not output.get("celonis_evidence"):
+            raise GuardrailViolation("EVIDENCE_REQUIRED", "celonis_evidence is empty or missing")
+
+        if output["resolution_strategy"] == "AUTO_CORRECT" and output.get("confidence", 0) < 0.80:
+            output["resolution_strategy"] = "HUMAN_REQUIRED"
+            return GuardrailResult(
+                passed=False,
+                rule_id="AUTO_CORRECT_CONFIDENCE",
+                reason=f"Confidence {output['confidence']} below 0.80 threshold",
+                action_taken="OVERRIDDEN_TO_HUMAN_REQUIRED"
+            )
+
+        return GuardrailResult(passed=True, rule_id="ALL", reason="All checks passed", action_taken="ALLOWED")
 
     def process(self, input_data: Dict) -> Dict:
         import json
 
-        system_prompt = """
-You are the Exception Agent for P2P invoice processing.
-Resolve all four exception families using AI reasoning over Celonis context:
-1) Payment Terms Mismatch
-2) Invoices with Exception (tax/price/quantity/missing GR)
-3) Short Payment Terms (0-day)
-4) Early Payment Optimization
-
-Return strict JSON:
-{
-  "resolved": true,
-  "exception_type": "...",
-  "detected_process_step": "...",
-  "exception_classification": "...",
-  "resolution_strategy": "AUTO_CORRECT|ESCALATE|EXPEDITE|OPTIMIZE|HUMAN_REQUIRED",
-  "corrections": ["..."],
-  "resolved_by": "...",
-  "escalation_reason": "...",
-  "estimated_resolution_days": 0.0,
-  "urgency_trigger": "...",
-  "payload_field_justification_from_pi": "...",
-  "celonis_evidence": "...",
-  "financial_impact": {
-    "value_at_risk": 0.0,
-    "potential_savings": 0.0,
-    "dpo_impact_days": 0.0
-  },
-  "next_best_actions": [
-    {
-      "action": "...",
-      "why": "...",
-      "derived_from_process_steps": ["..."],
-      "expected_impact": "..."
-    }
-  ],
-  "prompt_for_next_agents": {
-    "target_agents": ["..."],
-    "handoff_intent": "...",
-    "execution_prompt": "...",
-    "required_payload_fields": ["..."],
-    "pi_rationale": "..."
-  },
-  "ai_reasoning": "..."
-}
-
-Reasoning requirements:
-- Must evaluate invoice_terms vs po_terms vs vendor_master_terms when available.
-- Must assess vendor history and recurrence signals if present.
-- Must include urgency for long queue cases (e.g., high DPO exception backlog).
-- Must remain AI-driven and avoid deterministic rule execution language.
-"""
-        user_prompt = f"""
-Exception handling input:
-{json.dumps(input_data, indent=2, default=str)}
-
-Celonis process context:
-{json.dumps(self.process_context, indent=2, default=str)}
-
-Known exception portfolio context:
-{json.dumps(self._known_exception_facts(), indent=2, default=str)}
-"""
+        prompt_config = load_prompt(
+            "exception_agent",
+            input_data_json=json.dumps(input_data, indent=2, default=str),
+            process_context_json=json.dumps(self.process_context, indent=2, default=str),
+            known_exception_facts_json=json.dumps(self._known_exception_facts(), indent=2, default=str),
+        )
         result = self.reason_json(
-            system_prompt,
-            user_prompt,
+            prompt_config["system_prompt"],
+            prompt_config["user_prompt"],
             prompt_purpose="Resolve exception and decide whether to auto-correct or escalate",
             message_bus_input=input_data,
         )
         normalized = self._normalize_result(result)
+        guardrail_result = self.validate_output(normalized)
+        normalized["guardrail_result"] = {
+            "passed": guardrail_result.passed,
+            "rule_id": guardrail_result.rule_id,
+            "reason": guardrail_result.reason,
+            "action_taken": guardrail_result.action_taken,
+        }
         handoff = normalized.get("prompt_for_next_agents", {}) if isinstance(normalized.get("prompt_for_next_agents"), dict) else {}
         return self.attach_prompt_trace(normalized, handoff=handoff)
 
@@ -97,7 +85,15 @@ Known exception portfolio context:
         result["resolved"] = bool(result.get("resolved", False))
         result["exception_type"] = result.get("exception_type", result.get("exception_classification", "UNKNOWN"))
         result["exception_classification"] = result.get("exception_classification", result.get("exception_type", "UNKNOWN"))
-        result["resolution_strategy"] = result.get("resolution_strategy", "ESCALATE")
+        strategy = str(result.get("resolution_strategy", "MANUAL_REVIEW")).upper()
+        strategy_map = {
+            "ESCALATE": "HUMAN_REQUIRED",
+            "EXPEDITE": "MANUAL_REVIEW",
+            "OPTIMIZE": "AUTO_CORRECT",
+        }
+        result["resolution_strategy"] = strategy_map.get(strategy, strategy)
+        result["confidence"] = float(result.get("confidence", 0.0) or 0.0)
+        result["recommended_action"] = result.get("recommended_action", "Escalate for specialist review")
         result["corrections"] = result.get("corrections", [])
         result["resolved_by"] = result.get("resolved_by", "")
         result["escalation_reason"] = result.get("escalation_reason", "")

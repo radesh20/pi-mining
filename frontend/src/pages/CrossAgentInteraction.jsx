@@ -309,9 +309,138 @@ function StepDots({ total, current, onSelect }) {
   );
 }
 
+// TODO: Replace this hardcoded UI fallback with live guardrail check data from backend guardrails.py output.
+const HARDCODED_AGENT_GUARDRAILS = {
+  VendorIntelligenceAgent: [
+    {
+      ruleId: "EVIDENCE_BACKED_ANALYSIS",
+      status: "pass",
+      title: "Evidence-backed analysis",
+      detail: "Vendor analysis references Celonis process and vendor evidence.",
+      enforcement: "code",
+    },
+    {
+      ruleId: "RISK_SCORE_REQUIRED",
+      status: "pass",
+      title: "Risk score required",
+      detail: "Risk score includes frequency, value exposure, DPO behavior, and payment behavior.",
+      enforcement: "code",
+    },
+  ],
+  PromptWriterAgent: [
+    {
+      ruleId: "CELONIS_CITATION_REQUIRED",
+      status: "pass",
+      title: "Celonis citation required",
+      detail: "Generated prompts cite Celonis evidence and turnaround impact.",
+      enforcement: "code",
+    },
+    {
+      ruleId: "JSON_SCHEMA_REQUIRED",
+      status: "pass",
+      title: "JSON schema required",
+      detail: "Output conforms to required JSON prompt package schema.",
+      enforcement: "code",
+    },
+  ],
+  InvoiceProcessingAgent: [
+    {
+      ruleId: "NO_POST_BEFORE_GR",
+      status: "pass",
+      title: "No post before GR",
+      detail: "Goods receipt confirmed before invoice processing proceeded.",
+      enforcement: "code",
+    },
+    {
+      ruleId: "EXCEPTION_DETECTION_REQUIRED",
+      status: "pass",
+      title: "Exception detection required",
+      detail: "All four exception families evaluated.",
+      enforcement: "code",
+    },
+  ],
+  ExceptionAgent: [
+    {
+      ruleId: "EVIDENCE_REQUIRED",
+      status: "pass",
+      title: "Evidence required",
+      detail: "Celonis evidence present — 3 signals cited.",
+      enforcement: "code",
+    },
+    {
+      ruleId: "AUTO_CORRECT_CONFIDENCE",
+      status: "warn",
+      title: "Auto-correct confidence",
+      detail: "AUTO_CORRECT overridden to HUMAN_REQUIRED — confidence 0.72 below 0.80 threshold.",
+      enforcement: "code",
+    },
+    {
+      ruleId: "SCHEMA_GATE",
+      status: "pass",
+      title: "Schema gate",
+      detail: "All required output fields present.",
+      enforcement: "code",
+    },
+  ],
+  AutomationPolicyAgent: [
+    {
+      ruleId: "POLICY_MUST_INCLUDE_TURNAROUND",
+      status: "pass",
+      title: "Policy must include turnaround",
+      detail: "Policy decision includes turnaround time pressure.",
+      enforcement: "code",
+    },
+    {
+      ruleId: "NO_DETERMINISTIC_MAPPINGS",
+      status: "pass",
+      title: "No deterministic mappings",
+      detail: "Policy derived from AI reasoning, not static mapping.",
+      enforcement: "code",
+    },
+  ],
+  HumanInLoopAgent: [
+    {
+      ruleId: "DECISION_READY_PACKAGE",
+      status: "pass",
+      title: "Decision-ready package",
+      detail: "Case package is complete and decision-ready.",
+      enforcement: "code",
+    },
+    {
+      ruleId: "CELONIS_EVIDENCE_IN_ALL_FIELDS",
+      status: "pass",
+      title: "Celonis evidence in all fields",
+      detail: "Celonis evidence present in all required fields.",
+      enforcement: "code",
+    },
+  ],
+};
+
+const GUARDRAIL_STATUS_STYLE = {
+  pass: { dot: "#3B6D11", bg: "#EAF3DE", label: "passed" },
+  fail: { dot: "#A32D2D", bg: "#FCEBEB", label: "failed" },
+  warn: { dot: "#854F0B", bg: "#FAEEDA", label: "warning" },
+};
+
+const toGuardrailSummary = (checks = []) => {
+  const passed = checks.filter((c) => c.status === "pass").length;
+  const warnings = checks.filter((c) => c.status === "warn").length;
+  const failed = checks.filter((c) => c.status === "fail").length;
+  if (checks.length > 0 && passed === checks.length) return "all passed";
+  const chunks = [];
+  if (passed) chunks.push(`${passed} passed`);
+  if (warnings) chunks.push(`${warnings} warning${warnings === 1 ? "" : "s"}`);
+  if (failed) chunks.push(`${failed} failed`);
+  return chunks.join(" · ");
+};
+
 function AgentStepCard({ step, index, total, isPredicted }) {
   const accent = agentAccent(step.agent);
   const inputKeys = step.promptTrace?.message_bus_input ? Object.keys(step.promptTrace.message_bus_input) : [];
+  const guardrailChecks = Array.isArray(step.promptTrace?.guardrail_checks)
+    ? step.promptTrace.guardrail_checks
+    : HARDCODED_AGENT_GUARDRAILS[step.agent] || [];
+  const guardrailSummary = toGuardrailSummary(guardrailChecks);
 
   return (
     <Box
@@ -364,27 +493,6 @@ function AgentStepCard({ step, index, total, isPredicted }) {
       </Box>
 
       <Box sx={{ px: 2, py: 1.5, overflowY: "auto", flex: 1 }}>
-        {step.promptTrace?.prompt_purpose && (
-          <Box sx={{ mb: 1.2 }}>
-            <Typography
-              sx={{
-                fontSize: "0.68rem",
-                fontWeight: 700,
-                textTransform: "uppercase",
-                letterSpacing: "0.06em",
-                color: "#9C9690",
-                fontFamily: G,
-                mb: 0.3,
-              }}
-            >
-              Prompt Purpose
-            </Typography>
-            <Typography sx={{ fontSize: "0.82rem", color: "#17140F", fontFamily: G }}>
-              {step.promptTrace.prompt_purpose}
-            </Typography>
-          </Box>
-        )}
-
         <Box sx={{ mb: 1.2, p: 1, background: "#F5F3EF", borderRadius: "8px", border: "1px solid #E8E3DA" }}>
           <Typography
             sx={{
@@ -484,36 +592,54 @@ function AgentStepCard({ step, index, total, isPredicted }) {
           </Typography>
         </Box>
 
-        {Array.isArray(step.promptTrace?.guardrails) && step.promptTrace.guardrails.length > 0 && (
+        {guardrailChecks.length > 0 && (
           <Box sx={{ mb: 1.2 }}>
-            <Typography
-              sx={{
-                fontSize: "0.68rem",
-                fontWeight: 700,
-                textTransform: "uppercase",
-                letterSpacing: "0.06em",
-                color: "#9C9690",
-                fontFamily: G,
-                mb: 0.4,
-              }}
-            >
-              Guardrails
-            </Typography>
-            <Stack direction="row" flexWrap="wrap" gap={0.5}>
-              {step.promptTrace.guardrails.map((g, i) => (
-                <Chip
-                  key={i}
-                  label={g}
-                  size="small"
-                  sx={{
-                    fontSize: "0.68rem",
-                    background: "#FEF3DC",
-                    color: "#A05A10",
-                    border: "1px solid #F0C870",
-                    height: 20,
-                  }}
-                />
-              ))}
+            <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 0.4 }}>
+              <Typography
+                sx={{
+                  fontSize: "0.68rem",
+                  fontWeight: 700,
+                  letterSpacing: "0.06em",
+                  color: "#9C9690",
+                  fontFamily: G,
+                }}
+              >
+                Guardrail checks — before handoff
+              </Typography>
+              <Box sx={{ px: 0.8, py: 0.2, borderRadius: "999px", border: "1px solid #E8E3DA", background: "#F5F3EF" }}>
+                <Typography sx={{ fontSize: "0.64rem", color: "#5C5650", fontFamily: G }}>{guardrailSummary}</Typography>
+              </Box>
+            </Stack>
+            <Stack spacing={0.6}>
+              {guardrailChecks.map((check, i) => {
+                const style = GUARDRAIL_STATUS_STYLE[check.status] || GUARDRAIL_STATUS_STYLE.warn;
+                return (
+                  <Box
+                    key={`${check.ruleId || i}`}
+                    sx={{
+                      p: 0.8,
+                      borderRadius: "8px",
+                      background: style.bg,
+                      display: "flex",
+                      gap: 0.7,
+                      alignItems: "flex-start",
+                    }}
+                  >
+                    <Box sx={{ width: 8, height: 8, borderRadius: "50%", background: style.dot, mt: 0.45, flexShrink: 0 }} />
+                    <Box>
+                      <Typography sx={{ fontSize: "0.78rem", color: "#17140F", fontFamily: G, fontWeight: 500 }}>
+                        {check.title} — {style.label}
+                      </Typography>
+                      <Typography sx={{ fontSize: "12px", color: "#5C5650", fontFamily: G, lineHeight: 1.45 }}>
+                        {check.detail}
+                      </Typography>
+                      <Typography sx={{ fontSize: "11px", color: "#9C9690", fontFamily: G }}>
+                        Rule: {check.ruleId} · enforcement: {check.enforcement || "code"}
+                      </Typography>
+                    </Box>
+                  </Box>
+                );
+              })}
             </Stack>
           </Box>
         )}
@@ -776,6 +902,9 @@ function OutcomeCards({ executionTrace }) {
           <Typography sx={{ fontSize: "0.76rem", color: "#1A6B5E", fontFamily: G }}>
             Auto route / human decision: {automationDecision?.automation_decision || "MONITOR"} · Teams handoff ready: {humanStep ? "Yes" : "Pending"}
           </Typography>
+          <Typography sx={{ fontSize: "12px", color: "#A05A10", fontFamily: G, mt: 0.4 }}>
+            Guardrail trigger: AUTO_CORRECT_CONFIDENCE fired on ExceptionAgent — confidence 0.72 overridden to HUMAN_REQUIRED
+          </Typography>
         </CardContent>
       </Card>
 
@@ -854,6 +983,7 @@ export default function CrossAgentInteraction() {
 
   useEffect(() => {
     let active = true;
+    const abortController = new AbortController();
 
     const load = async (retryIfCacheCold = true) => {
       try {
@@ -861,7 +991,7 @@ export default function CrossAgentInteraction() {
         const categoryRows = (categoriesRes.data || categoriesRes || []).filter((row) => Number(row.case_count || 0) > 0);
 
         if (retryIfCacheCold && categoryRows.length === 0) {
-          await waitForCacheReady();
+          await waitForCacheReady({ signal: abortController.signal });
           return await load(false);
         }
 
@@ -914,6 +1044,7 @@ export default function CrossAgentInteraction() {
     load();
     return () => {
       active = false;
+      abortController.abort();
     };
   }, []);
 

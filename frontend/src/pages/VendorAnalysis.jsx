@@ -130,6 +130,7 @@ export default function VendorAnalysis() {
 
   useEffect(() => {
     let active = true;
+    const abortController = new AbortController();
     const load = async (retryIfCacheCold = true) => {
       setLoading(true); setError("");
       try {
@@ -137,7 +138,7 @@ export default function VendorAnalysis() {
         const data = pickData(res);
         const rows = Array.isArray(data) ? data : data?.vendors || [];
         if (retryIfCacheCold && rows.length === 0) {
-          await waitForCacheReady();
+          await waitForCacheReady({ signal: abortController.signal });
           return await load(false);
         }
         const normalized = rows.map(r => ({ vendor_id: r.vendor_id || r.vendor || "UNKNOWN", vendor_lifnr: r.vendor_lifnr || r.lifnr || "", total_cases: Number(r.total_cases ?? r.case_count ?? 0), total_value: Number(r.total_value ?? r.value_usd ?? 0), exception_rate: Number(r.exception_rate ?? r.exception_rate_pct ?? 0), avg_dpo: Number(r.avg_dpo ?? r.avg_duration_days ?? 0), payment_behavior: r.payment_behavior || null, risk_score: r.risk_score || withFallbackRisk(r), exception_breakdown: r.exception_breakdown || {} }));
@@ -151,7 +152,7 @@ export default function VendorAnalysis() {
       } finally { if (active) setLoading(false); }
     };
     load();
-    return () => { active = false; };
+    return () => { active = false; abortController.abort(); };
   }, []);
 
   useEffect(() => {

@@ -49,6 +49,7 @@ export default function AgentDeepDive() {
 
   useEffect(() => {
     let active = true;
+    const abortController = new AbortController();
     const loadAgents = async (retryIfCacheCold = true) => {
       try {
         const res = await fetchProcessAgents();
@@ -56,7 +57,7 @@ export default function AgentDeepDive() {
         const processContext = res.process_context || {};
         const recommendedAgents = payload.recommended_agents || [];
         if (retryIfCacheCold && recommendedAgents.length === 0 && Number(processContext.total_cases || 0) === 0) {
-          await waitForCacheReady();
+          await waitForCacheReady({ signal: abortController.signal });
           return await loadAgents(false);
         }
         if (!active) return;
@@ -69,7 +70,7 @@ export default function AgentDeepDive() {
       }
     };
     loadAgents().finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
+    return () => { active = false; abortController.abort(); };
   }, []);
 
   useEffect(() => {

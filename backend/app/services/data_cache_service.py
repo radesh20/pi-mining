@@ -3,7 +3,7 @@ import threading
 import time
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import pandas as pd
 
@@ -525,7 +525,7 @@ class DataCacheService:
             logger.warning("Serving flattened exception records due to refresh/load error: %s", str(e))
         with self._lock:
             rows: List[Dict[str, Any]] = []
-            seen: set[str] = set()
+            seen: Set[str] = set()
             for record_list in self.exception_records_map.values():
                 for row in record_list or []:
                     record_id = str(row.get("exception_id") or row.get("case_id") or "")
@@ -535,6 +535,28 @@ class DataCacheService:
                         seen.add(record_id)
                     rows.append(self._to_jsonable(dict(row)))
             return rows
+
+    def get_exception_workbench_snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            categories = [self._to_jsonable(dict(row)) for row in (self.exception_categories or [])]
+            rows: List[Dict[str, Any]] = []
+            seen: set[str] = set()
+            for record_list in self.exception_records_map.values():
+                for row in record_list or []:
+                    record_id = str(row.get("exception_id") or row.get("case_id") or "")
+                    if record_id and record_id in seen:
+                        continue
+                    if record_id:
+                        seen.add(record_id)
+                    rows.append(self._to_jsonable(dict(row)))
+            return {
+                "categories": categories,
+                "records": rows,
+                "is_loaded": self._is_loaded,
+                "is_stale": self._is_stale_locked(),
+                "refresh_in_progress": self._refresh_in_progress,
+                "last_error": self.last_error,
+            }
 
     def get_representative_exception_case(self) -> Dict[str, Any]:
         try:

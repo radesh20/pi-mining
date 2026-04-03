@@ -39,6 +39,7 @@ export default function ProcessAgentsView() {
 
   useEffect(() => {
     let active = true;
+    const abortController = new AbortController();
     const load = async (retryIfCacheCold = true) => {
       try {
         const res = await fetchProcessAgents();
@@ -51,7 +52,7 @@ export default function ProcessAgentsView() {
           recommendedAgents.length === 0 &&
           Number(processContext.total_cases || 0) === 0
         ) {
-          await waitForCacheReady();
+          await waitForCacheReady({ signal: abortController.signal });
           return await load(false);
         }
 
@@ -71,7 +72,7 @@ export default function ProcessAgentsView() {
     };
 
     load();
-    return () => { active = false; };
+    return () => { active = false; abortController.abort(); };
   }, []);
 
   if (loading) return <LoadingSpinner message="Analyzing Celonis data and recommending agents via Azure OpenAI..." />;

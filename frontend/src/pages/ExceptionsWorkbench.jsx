@@ -4,11 +4,10 @@ import {
   Alert, Box, Button, Card, CardContent, Chip, CircularProgress,
   Grid, Snackbar, Stack, Table, TableBody, TableCell,
   TableContainer, TableHead, TableRow, Typography,
-  TextField, MenuItem, Select, FormControl, InputLabel,
+  TextField, MenuItem, Select, FormControl, InputLabel, Skeleton,
 } from "@mui/material";
 import {
-  analyzeExceptionRecord, fetchExceptionCategories,
-  fetchAllExceptionRecords, waitForCacheReady
+  analyzeExceptionRecord, fetchExceptionWorkbenchData
 } from "../api/client";
 
 const S = "'Instrument Serif', Georgia, serif";
@@ -54,9 +53,10 @@ export default function ExceptionsWorkbench() {
   // ── Data state ──
   const [categories, setCategories] = useState([]);
   const [allRecords, setAllRecords] = useState([]);     // flat list across all categories
-  const [loadingCategories, setLoadingCategories] = useState(true);
+  const [loadingCategories, setLoadingCategories] = useState(false);
   const [loadingRecords, setLoadingRecords] = useState(false);
   const [error, setError] = useState("");
+  const [warning, setWarning] = useState("");
   const [toast, setToast] = useState({ open: false, message: "", severity: "success" });
 
   // ── Filter state ──
@@ -72,28 +72,25 @@ export default function ExceptionsWorkbench() {
 
   const recordsRequestRef = useRef(0);
 
-  // ── Load all categories then all records flat ──
+  // ── Load categories + records asynchronously; render shell immediately ──
   useEffect(() => {
     let active = true;
-    const load = async (retry = true) => {
+    const load = async () => {
       try {
-        const res = await fetchExceptionCategories();
-        const cats = (Array.isArray(pickData(res)) ? pickData(res) : []).filter(
+        setLoadingCategories(true);
+        setLoadingRecords(true);
+        const res = await fetchExceptionWorkbenchData();
+        const payload = pickData(res) || {};
+        const cats = (Array.isArray(payload.categories) ? payload.categories : []).filter(
           (row) => Number(row.case_count || 0) > 0
         );
-        if (retry && cats.length === 0) {
-          await waitForCacheReady();
-          return load(false);
-        }
         if (!active) return;
         setCategories(cats);
+        setWarning(payload.warning || "");
 
-        // load records once, then enrich them locally with category labels
-        setLoadingRecords(true);
         const requestId = ++recordsRequestRef.current;
         const categoryMap = new Map(cats.map((cat) => [cat.category_id, cat]));
-        const recordsRes = await fetchAllExceptionRecords();
-        const rows = Array.isArray(pickData(recordsRes)) ? pickData(recordsRes) : [];
+        const rows = Array.isArray(payload.records) ? payload.records : [];
         if (!active || recordsRequestRef.current !== requestId) return;
         const flat = rows
           .map((row) => {
@@ -335,9 +332,19 @@ export default function ExceptionsWorkbench() {
               </Box>
 
               {isLoading ? (
-                <Box sx={{ display: "flex", gap: 1.5, alignItems: "center", py: 3 }}>
-                  <CircularProgress size={16} sx={{ color: "#B5742A" }} />
-                  <Typography sx={{ fontSize: "0.8rem", color: "#9C9690", fontFamily: G }}>Loading exceptions…</Typography>
+                <Box sx={{ py: 0.5 }}>
+                  <Stack spacing={1.1}>
+                    {Array.from({ length: 8 }).map((_, idx) => (
+                      <Box key={idx} sx={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr 0.8fr 0.5fr 0.7fr", gap: 1 }}>
+                        <Skeleton variant="rounded" height={24} />
+                        <Skeleton variant="rounded" height={24} />
+                        <Skeleton variant="rounded" height={24} />
+                        <Skeleton variant="rounded" height={24} />
+                        <Skeleton variant="rounded" height={24} />
+                        <Skeleton variant="rounded" height={24} />
+                      </Box>
+                    ))}
+                  </Stack>
                 </Box>
               ) : (
                 <TableContainer sx={{ maxHeight: 560 }}>
@@ -404,6 +411,11 @@ export default function ExceptionsWorkbench() {
                     </TableBody>
                   </Table>
                 </TableContainer>
+              )}
+              {warning && (
+                <Alert severity="info" sx={{ mt: 1.5, fontFamily: G }}>
+                  {warning}
+                </Alert>
               )}
             </CardContent>
           </Card>

@@ -14,6 +14,7 @@ import {
 
 const S = "'Instrument Serif', Georgia, serif";
 const G = "'Geist', system-ui, sans-serif";
+const EXCEPTION_AGENT_STEP_NUMBER = 4;
 
 const pickData = (r) => { if (!r) return null; if (r.data !== undefined) return r.data; return r; };
 const money = (v) => {
@@ -24,6 +25,23 @@ const money = (v) => {
   return `${n.toFixed(0)} $`;
 };
 const pct = (v) => `${Number(v || 0).toFixed(1)}%`;
+const confidencePct = (v) => {
+  const n = Number(v ?? 0);
+  if (!Number.isFinite(n)) return "0%";
+  return `${Math.round(n <= 1 ? n * 100 : n)}%`;
+};
+const confidencePercentNumber = (v) => {
+  const n = Number(v ?? 0);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, Math.round(n <= 1 ? n * 100 : n)));
+};
+const normalizeConfidenceText = (text) => {
+  if (!text) return "";
+  const convert = (raw) => confidencePct(raw);
+  return String(text)
+    .replace(/confidence\s+(-?\d+(?:\.\d+)?)/gi, (_m, num) => `confidence ${convert(num)}`)
+    .replace(/(-?\d+(?:\.\d+)?)(?=\s*threshold)/gi, (_m, num) => convert(num));
+};
 const vendorDisplay = (rec) => rec?.vendor_name || rec?.vendor_id || rec?.recurring_vendor_hint || "—";
 
 const RISK_STYLES = {
@@ -31,6 +49,41 @@ const RISK_STYLES = {
   HIGH:     { bg: "#FEF3DC", border: "#F0C870", color: "#A05A10", dot: "#C47020" },
   MEDIUM:   { bg: "#EBF2FC", border: "#90B8E8", color: "#1E4E8C", dot: "#2E6EBC" },
   LOW:      { bg: "#E0F0E8", border: "#80C0A0", color: "#1D5C3A", dot: "#2A7A50" },
+};
+
+const GUARDRAIL_STATUS_STYLE = {
+  pass: { dot: "#3B6D11", bg: "#EAF3DE", title: "#27500A", detail: "#3B6D11", label: "passed" },
+  warn: { dot: "#854F0B", bg: "#FAEEDA", title: "#633806", detail: "#854F0B", label: "warning" },
+  fail: { dot: "#A32D2D", bg: "#FCEBEB", title: "#791F1F", detail: "#A32D2D", label: "failed" },
+};
+
+const toGuardrailSummary = (checks = []) => {
+  const passed = checks.filter((c) => c.status === "pass").length;
+  const warnings = checks.filter((c) => c.status === "warn").length;
+  const failed = checks.filter((c) => c.status === "fail").length;
+  if (checks.length > 0 && passed === checks.length) return "all passed";
+  const chunks = [];
+  if (passed) chunks.push(`${passed} passed`);
+  if (warnings) chunks.push(`${warnings} warning${warnings === 1 ? "" : "s"}`);
+  if (failed) chunks.push(`${failed} failed`);
+  return chunks.join(" · ");
+};
+const toGuardrailSummaryStyle = (checks = []) => {
+  const failed = checks.some((c) => c.status === "fail");
+  const warned = checks.some((c) => c.status === "warn");
+  if (failed) return { background: "#FCEBEB", color: "#791F1F", border: "1px solid #F09595" };
+  if (warned) return { background: "#FAEEDA", color: "#633806", border: "1px solid #FAC775" };
+  return { background: "#EAF3DE", color: "#27500A", border: "1px solid #97C459" };
+};
+const toAgentStepSummary = (checks = []) => {
+  const passed = checks.filter((c) => c.status === "pass").length;
+  const warnings = checks.filter((c) => c.status === "warn").length;
+  const failed = checks.filter((c) => c.status === "fail").length;
+  const chunks = [];
+  if (passed) chunks.push(`${passed} passed`);
+  if (warnings) chunks.push(`${warnings} warning${warnings === 1 ? "" : "s"}`);
+  if (failed) chunks.push(`${failed} failed`);
+  return chunks.join(" · ") || "No checks";
 };
 
 function RiskBadge({ risk }) {
@@ -83,6 +136,8 @@ export default function ExceptionIntelligence() {
   const [records, setRecords] = useState([]);
   const [selectedRecordId, setSelectedRecordId] = useState("");
   const [analysis, setAnalysis] = useState(null);
+  const [agentGuardrailSteps, setAgentGuardrailSteps] = useState([]);
+  const [guardrailTraceOpenByStep, setGuardrailTraceOpenByStep] = useState({});
   const [agentContextOpen, setAgentContextOpen] = useState(false);
   const [toast, setToast] = useState({ open: false, message: "", severity: "success" });
   const analysisRequestRef = useRef(0);
@@ -90,6 +145,7 @@ export default function ExceptionIntelligence() {
   // ── Load all records across all categories (flat) ──
   useEffect(() => {
     let active = true;
+    const abortController = new AbortController();
     (async () => {
       setLoading(true);
       setError("");
@@ -99,7 +155,7 @@ export default function ExceptionIntelligence() {
           .filter((row) => Number(row.case_count || 0) > 0)
           .sort((a, b) => Number(b.case_count || 0) - Number(a.case_count || 0));
         if (categories.length === 0) {
-          await waitForCacheReady();
+          await waitForCacheReady({ signal: abortController.signal });
           categoriesRes = await fetchExceptionCategories();
           categories = (Array.isArray(pickData(categoriesRes)) ? pickData(categoriesRes) : [])
             .filter((row) => Number(row.case_count || 0) > 0)
@@ -133,7 +189,7 @@ export default function ExceptionIntelligence() {
         if (active) setLoading(false);
       }
     })();
-    return () => { active = false; };
+    return () => { active = false; abortController.abort(); };
   }, []);
 
   const selectedRecord = useMemo(
@@ -145,6 +201,51 @@ export default function ExceptionIntelligence() {
     () => records.findIndex((r) => r.exception_id === selectedRecordId),
     [records, selectedRecordId]
   );
+  const flattenedAgentGuardrails = useMemo(() => (
+    agentGuardrailSteps.flatMap((step, idx) => {
+      const stepNumber = Number(step?.step_number ?? idx + 1);
+      const agentName = step?.agent_name || `Agent ${stepNumber}`;
+      const checks = Array.isArray(step?.guardrail_results) ? step.guardrail_results : [];
+      return checks.map((check) => ({
+        ruleId: check?.rule_id || "N/A",
+        label: check?.label || "Guardrail check",
+        status: String(check?.status || "").toLowerCase(),
+        detail: normalizeConfidenceText(check?.detail || ""),
+        enforcement: check?.enforcement || "code",
+        agentName,
+        stepNumber,
+      }));
+    })
+  ), [agentGuardrailSteps]);
+  const triggerFromAgentTrace = useMemo(
+    () => flattenedAgentGuardrails.find((c) => c.status === "fail" || c.status === "warn") || null,
+    [flattenedAgentGuardrails]
+  );
+  const lastTriggerFromAgentTrace = useMemo(() => {
+    const fired = flattenedAgentGuardrails.filter((c) => c.status === "fail" || c.status === "warn");
+    return fired.length ? fired[fired.length - 1] : null;
+  }, [flattenedAgentGuardrails]);
+  const finalPreActionSummaryStyle = useMemo(
+    () => toGuardrailSummaryStyle(flattenedAgentGuardrails),
+    [flattenedAgentGuardrails]
+  );
+  const routingFinalStatus = Boolean(analysis?.send_to_human_review) ? "ESCALATED_TO_HUMAN" : analysis?.automation_decision || "MONITOR";
+  const routingUrgency = analysis?.turnaround_risk?.risk_level || "MEDIUM";
+  const routingEta = analysis?.turnaround_risk?.estimated_processing_days != null ? `${Number(analysis.turnaround_risk.estimated_processing_days).toFixed(2)}d` : "N/A";
+  const routingDecision = analysis?.classifier_agent?.decision || analysis?.automation_decision || "MONITOR";
+  const alternativeActions = useMemo(() => {
+    const raw = analysis?.alternatives ?? analysis?.alternative_actions ?? analysis?.next_best_actions ?? [];
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map((item) => {
+        if (typeof item === "string") return { action: item, why: "" };
+        return {
+          action: item?.action || item?.title || item?.name || "",
+          why: item?.why || item?.reason || item?.rationale || item?.expected_impact || "",
+        };
+      })
+      .filter((item) => item.action || item.why);
+  }, [analysis]);
 
   // ── Run analysis whenever selected record changes ──
   useEffect(() => {
@@ -154,6 +255,8 @@ export default function ExceptionIntelligence() {
       const requestId = ++analysisRequestRef.current;
       setAnalysisLoading(true);
       setAnalysis(null);
+      setAgentGuardrailSteps([]);
+      setGuardrailTraceOpenByStep({});
       setAgentContextOpen(false);
       try {
         const payload = {
@@ -170,6 +273,16 @@ export default function ExceptionIntelligence() {
         const data = pickData(await analyzeExceptionRecord(payload));
         if (!active || analysisRequestRef.current !== requestId) return;
         setAnalysis(data);
+        const steps = Array.isArray(data?.agent_guardrail_steps) ? data.agent_guardrail_steps : [];
+        setAgentGuardrailSteps(steps);
+        const defaultOpen = {};
+        steps.forEach((step, idx) => {
+          const stepNumber = Number(step?.step_number ?? idx + 1);
+          const agentName = String(step?.agent_name || "");
+          const isExceptionAgent = agentName.toLowerCase() === "exceptionagent" || stepNumber === EXCEPTION_AGENT_STEP_NUMBER;
+          defaultOpen[stepNumber] = isExceptionAgent;
+        });
+        setGuardrailTraceOpenByStep(defaultOpen);
       } catch (e) {
         if (!active || analysisRequestRef.current !== requestId) return;
         setError(e?.response?.data?.detail || e.message || "Failed to analyze exception.");
@@ -443,40 +556,170 @@ export default function ExceptionIntelligence() {
                 {/* Next Best Action */}
                 <LabelValue label="Recommended Action" value={analysis?.next_best_action?.action} />
                 <LabelValue label="Why" value={analysis?.next_best_action?.why} />
-                <LabelValue label="Confidence" value={analysis?.next_best_action?.confidence != null ? Number(analysis.next_best_action.confidence).toFixed(2) : null} />
                 <LabelValue label="ETA" value={analysis?.turnaround_risk?.estimated_processing_days != null ? `${analysis.turnaround_risk.estimated_processing_days} days` : null} />
-
-                {/* Process-derived alternatives */}
-                {Array.isArray(analysis?.next_best_actions) && analysis.next_best_actions.length > 0 && (
-                  <Box sx={{ mt: 1.2, pt: 1, borderTop: "1px solid #EDD090" }}>
-                    <SectionLabel>Alternatives</SectionLabel>
-                    <Stack spacing={0.8}>
-                      {analysis.next_best_actions.slice(0, 3).map((item, idx) => (
-                        <Box key={idx} sx={{ display: "flex", gap: 1, alignItems: "flex-start" }}>
-                          <Box sx={{ background: "#F0EDE6", color: "#9C9690", width: 18, height: 18, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "0.6rem", fontWeight: 700, flexShrink: 0, fontFamily: G, mt: 0.1 }}>
-                            {idx + 1}
-                          </Box>
-                          <Typography sx={{ fontSize: "0.75rem", color: "#5C5650", fontFamily: G, lineHeight: 1.55 }}>
-                            {item.action} — {item.why}
+                <Box sx={{ mt: 1.2, pt: 1.2, borderTop: "1px solid #EDD090" }}>
+                  <SectionLabel>Alternatives</SectionLabel>
+                  {alternativeActions.length > 0 ? (
+                    <Stack spacing={1}>
+                      {alternativeActions.map((item, idx) => (
+                        <Box key={`alternative-${idx}`}>
+                          <Typography sx={{ fontSize: "13px", color: "#5C5650", fontFamily: G, lineHeight: 1.45 }}>
+                            {idx + 1}. {item.action || item.why}
                           </Typography>
+                          {item.why ? (
+                            <Typography sx={{ fontSize: "12px", color: "#9C9690", fontFamily: G, lineHeight: 1.45 }}>
+                              {item.why}
+                            </Typography>
+                          ) : null}
                         </Box>
                       ))}
                     </Stack>
-                  </Box>
-                )}
+                  ) : (
+                    <Typography sx={{ fontSize: "12px", color: "#9C9690", fontFamily: G }}>
+                      No alternative actions identified.
+                    </Typography>
+                  )}
+                </Box>
 
                 {/* Classifier */}
                 <Box sx={{ mt: 1.2, pt: 1.2, borderTop: "1px solid #EDD090" }}>
-                  <SectionLabel>Classifier Agent</SectionLabel>
-                  <LabelValue label="Decision" value={analysis?.classifier_agent?.decision || analysis?.automation_decision} />
-                  <LabelValue label="Mode" value={analysis?.classifier_agent?.recommended_mode} />
-                  <LabelValue label="Rationale" value={analysis?.classifier_agent?.rationale} />
-                  <LabelValue label="Owner" value={analysis?.vendor_name || analysis?.vendor_id || vendorDisplay(selectedRecord)} />
-                  <LabelValue label="Confidence" value={analysis?.classifier_agent?.confidence != null ? Number(analysis.classifier_agent.confidence).toFixed(2) : null} />
+                  <SectionLabel>Classifier Decision</SectionLabel>
+                  <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 0.8 }}>
+                    <Box sx={{ px: 1, py: 0.3, borderRadius: "999px", border: "1px solid #E4E0D8", background: "#F5F3EF" }}>
+                      <Typography sx={{ fontSize: "0.72rem", color: "#5C5650", fontFamily: G, fontWeight: 600 }}>
+                        {analysis?.classifier_agent?.decision || analysis?.automation_decision || "MONITOR"}
+                      </Typography>
+                    </Box>
+                    <Typography sx={{ fontSize: "0.78rem", color: "#5C5650", fontFamily: G, fontWeight: 600 }}>
+                      {confidencePct(analysis?.classifier_agent?.confidence)}
+                    </Typography>
+                  </Box>
+                  <Box sx={{ height: 5, background: "#F0EDE6", borderRadius: "99px", overflow: "hidden" }}>
+                    <Box
+                      sx={{
+                        height: "100%",
+                        width: `${confidencePercentNumber(analysis?.classifier_agent?.confidence)}%`,
+                        background: "#B5742A",
+                        borderRadius: "99px",
+                        transition: "width 0.5s ease",
+                      }}
+                    />
+                  </Box>
                 </Box>
               </PanelCard>
             </Grid>
           </Grid>
+
+          {agentGuardrailSteps.length > 0 && (
+            <Card sx={{ border: "1px solid #ECEAE4 !important" }}>
+              <CardContent sx={{ pb: "14px !important" }}>
+                <Typography sx={{ fontFamily: S, fontSize: "1.05rem", color: "#5C5650", mb: 1 }}>
+                  Agent guardrail trace
+                </Typography>
+                <Stack spacing={0.9}>
+                  {agentGuardrailSteps.map((step, idx) => {
+                    const stepNumber = Number(step?.step_number ?? idx + 1);
+                    const checks = Array.isArray(step?.guardrail_results) ? step.guardrail_results.map((check) => ({
+                      ...check,
+                      status: String(check?.status || "").toLowerCase(),
+                    })) : [];
+                    const isOpen = Boolean(guardrailTraceOpenByStep[stepNumber]);
+                    return (
+                      <Box key={`agent-step-${stepNumber}`} sx={{ border: "1px solid #ECEAE4", borderRadius: "10px", overflow: "hidden" }}>
+                        <Box
+                          onClick={() => setGuardrailTraceOpenByStep((prev) => ({ ...prev, [stepNumber]: !prev[stepNumber] }))}
+                          sx={{ px: 1.2, py: 1, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1, cursor: "pointer", background: "#FCFBF9" }}
+                        >
+                          <Stack direction="row" spacing={0.8} alignItems="center">
+                            <Box sx={{ minWidth: 24, px: 0.7, py: 0.1, borderRadius: "999px", background: "#F0EDE6", border: "1px solid #E4E0D8", textAlign: "center" }}>
+                              <Typography sx={{ fontSize: "11px", color: "#6C6660", fontFamily: G, fontWeight: 600 }}>{stepNumber}</Typography>
+                            </Box>
+                            <Typography sx={{ fontSize: "13px", color: "#4C4840", fontFamily: G, fontWeight: 500 }}>
+                              {step?.agent_name || "Agent"}
+                            </Typography>
+                          </Stack>
+                          <Stack direction="row" spacing={0.8} alignItems="center">
+                            <Box sx={{ px: "8px", py: "2px", borderRadius: "20px", ...toGuardrailSummaryStyle(checks) }}>
+                              <Typography sx={{ fontSize: "11px", fontFamily: G }}>{toAgentStepSummary(checks)}</Typography>
+                            </Box>
+                            <Typography sx={{ fontSize: "11px", color: "#A09890", fontFamily: G }}>{isOpen ? "Hide ▲" : "Show ▼"}</Typography>
+                          </Stack>
+                        </Box>
+                        <Collapse in={isOpen}>
+                          <Stack spacing={0.6} sx={{ p: 1 }}>
+                            {checks.map((check, checkIdx) => {
+                              const style = GUARDRAIL_STATUS_STYLE[check.status] || GUARDRAIL_STATUS_STYLE.warn;
+                              return (
+                                <Box key={`step-${stepNumber}-check-${checkIdx}`} sx={{ p: "8px 10px", borderRadius: "8px", background: style.bg, display: "flex", gap: 0.9, alignItems: "flex-start" }}>
+                                  <Box sx={{ width: 7, height: 7, borderRadius: "50%", background: style.dot, mt: "4px", flexShrink: 0 }} />
+                                  <Box>
+                                    <Typography sx={{ fontSize: "12px", color: style.title, fontFamily: G, fontWeight: 500 }}>
+                                      {check?.label || "Guardrail check"}
+                                    </Typography>
+                                    <Typography sx={{ fontSize: "12px", color: style.detail, fontFamily: G, lineHeight: 1.45, mt: "1px" }}>
+                                      {normalizeConfidenceText(check?.detail || "")}
+                                    </Typography>
+                                    <Typography sx={{ fontSize: "11px", color: "#9C9690", fontFamily: G, mt: "2px" }}>
+                                      Rule: {check?.rule_id || "N/A"} · enforcement: {check?.enforcement || "code"}
+                                    </Typography>
+                                  </Box>
+                                </Box>
+                              );
+                            })}
+                          </Stack>
+                        </Collapse>
+                      </Box>
+                    );
+                  })}
+                </Stack>
+              </CardContent>
+            </Card>
+          )}
+
+          {agentGuardrailSteps.length > 0 && (
+            <Card sx={{ border: "1px solid #ECEAE4 !important" }}>
+              <CardContent sx={{ pb: "14px !important" }}>
+                <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1, flexWrap: "wrap", mb: 0.5 }}>
+                  <Typography sx={{ fontFamily: S, fontSize: "1.02rem", color: "#5C5650" }}>
+                    Final pre-action check
+                  </Typography>
+                  <Box sx={{ px: "8px", py: "2px", borderRadius: "20px", ...finalPreActionSummaryStyle }}>
+                    <Typography sx={{ fontSize: "11px", fontFamily: G }}>{toGuardrailSummary(flattenedAgentGuardrails)}</Typography>
+                  </Box>
+                </Box>
+                <Typography sx={{ fontSize: "12px", color: "#6C6660", fontFamily: G }}>
+                  {flattenedAgentGuardrails.length} rules evaluated across {agentGuardrailSteps.length} agents.
+                </Typography>
+                {lastTriggerFromAgentTrace && (
+                  <Typography sx={{ fontSize: "12px", color: "#A05A10", fontFamily: G, mt: 0.4 }}>
+                    Last trigger: {lastTriggerFromAgentTrace.ruleId} on {lastTriggerFromAgentTrace.agentName} — {lastTriggerFromAgentTrace.detail}
+                  </Typography>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          <Card sx={{ border: "1px solid #ECEAE4 !important" }}>
+            <CardContent sx={{ pb: "14px !important" }}>
+              <Typography sx={{ fontFamily: S, fontSize: "1.05rem", color: "#A05A10", mb: 0.9 }}>
+                Routing Outcome
+              </Typography>
+              <Typography sx={{ fontSize: "0.78rem", color: "#6C6660", fontFamily: G, mb: 0.5 }}>
+                Final status: {routingFinalStatus} | Urgency: {routingUrgency} | ETA {routingEta}
+              </Typography>
+              <Typography sx={{ fontSize: "0.78rem", color: "#7A5010", fontFamily: G, lineHeight: 1.55 }}>
+                Automation posture is {routingDecision} based on process risk, root cause, and due-date timing context.
+              </Typography>
+              <Typography sx={{ fontSize: "0.78rem", color: "#7A5010", fontFamily: G, lineHeight: 1.55 }}>
+                Auto route / human decision: {routingDecision} · Teams handoff ready: {Boolean(analysis?.send_to_human_review) ? "Yes" : "No"}
+              </Typography>
+              {triggerFromAgentTrace && (
+                <Typography sx={{ fontSize: "12px", color: "#A05A10", fontFamily: G, mt: 0.5 }}>
+                  Guardrail trigger: {triggerFromAgentTrace.ruleId} fired on {triggerFromAgentTrace.agentName} — {triggerFromAgentTrace.detail}
+                </Typography>
+              )}
+            </CardContent>
+          </Card>
 
           {/* ══ Collapsible Agent Routing Context ══ */}
           {analysis?.prompt_for_next_agents && (

@@ -3,6 +3,11 @@ from typing import Any, Dict, List
 from app.agents.base_agent import BaseAgent
 from app.services.azure_openai_service import AzureOpenAIService
 
+try:
+    from backend.app.prompts.prompt_loader import load_prompt
+except ModuleNotFoundError:
+    from app.prompts.prompt_loader import load_prompt
+
 
 class VendorIntelligenceAgent(BaseAgent):
     def __init__(self, llm: AzureOpenAIService, process_context: Dict):
@@ -17,57 +22,20 @@ class VendorIntelligenceAgent(BaseAgent):
                 "Recommendations must be actionable and role-aware.",
             ],
         )
+        self.prompt_config = load_prompt("vendor_intelligence_agent")
 
     def process(self, input_data: Dict) -> Dict:
         import json
 
-        system_prompt = """
-You are the Vendor Intelligence Agent for P2P process optimization.
-Provide per-vendor analysis across payment terms mismatch, invoice exceptions, short terms, and early payment.
-
-Return strict JSON:
-{
-  "vendor_id": "...",
-  "vendor_analysis": {
-    "happy_path_percentage": 0.0,
-    "exception_breakdown": {
-      "payment_terms_mismatch": {"count": 0, "percentage": 0.0, "value": 0.0},
-      "invoice_exception": {"count": 0, "percentage": 0.0, "avg_dpo": 0.0},
-      "short_payment_terms": {"count": 0, "percentage": 0.0, "value": 0.0},
-      "early_payment": {"count": 0, "percentage": 0.0, "optimization_value": 0.0}
-    },
-    "vendor_risk_score": "LOW|MEDIUM|HIGH|CRITICAL",
-    "payment_behavior": {
-      "on_time_pct": 0.0,
-      "late_pct": 0.0,
-      "early_pct": 0.0
-    }
-  },
-  "ai_recommendations": ["..."],
-  "celonis_evidence": "...",
-  "ai_reasoning": "..."
-}
-
-Requirements:
-1. Use process_context.vendor_stats and any vendor signals available in context.
-2. If requested vendor is absent, infer nearest evidence and state uncertainty.
-3. Include recommendations for vendor_ids supplied in input when present.
-4. Keep analysis AI-driven and evidence-backed, not deterministic rule maps.
-"""
-
-        user_prompt = f"""
-Vendor intelligence request payload:
-{json.dumps(input_data, indent=2, default=str)}
-
-Known vendor anchors:
-{json.dumps(self._known_vendor_data(), indent=2, default=str)}
-
-Full process context:
-{json.dumps(self.process_context, indent=2, default=str)}
-"""
+        prompt_config = load_prompt(
+            "vendor_intelligence_agent",
+            input_data_json=json.dumps(input_data, indent=2, default=str),
+            known_vendor_data_json=json.dumps(self._known_vendor_data(), indent=2, default=str),
+            process_context_json=json.dumps(self.process_context, indent=2, default=str),
+        )
         result = self.reason_json(
-            system_prompt,
-            user_prompt,
+            prompt_config["system_prompt"],
+            prompt_config["user_prompt"],
             prompt_purpose="Assess vendor behavior and risk from Celonis process context",
             message_bus_input=input_data,
         )

@@ -1,18 +1,5 @@
-# backend/app/prompts/shared_base.yaml
-# Shared instructions and patterns used across all agents
-
 shared_instructions: |
-  Return strict JSON only. No markdown. No explanation outside the JSON.
-  Every response must be valid, parseable JSON wrapped in curly braces {}.
-  Do not include any text before or after the JSON object.
-
-common_json_instruction: |
-  Return strict JSON:
-  - No markdown code blocks
-  - No explanatory text
-  - Single JSON object only
-  - All fields present and typed correctly
-
-evidence_requirement: |
-  Every reasoning step must cite concrete Celonis process mining evidence.
-  If evidence is not available, state uncertainty explicitly.
+  Return strict JSON only. No markdown. No preamble. No explanation outside the JSON.
+  Every resolution path must cite Celonis evidence.
+  Auto-correct requires confidence >= 0.80. Below that, escalate.
+  Always include turnaround impact in your reasoning.
