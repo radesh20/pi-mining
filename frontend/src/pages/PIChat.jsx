@@ -415,8 +415,7 @@ export default function PIChat() {
     const [messages, setMessages] = useState([]);
     const [input, setInput] = useState("");
     const [isTyping, setIsTyping] = useState(false);
-    const [caseId, setCaseId] = useState("");
-    const [vendorId, setVendorId] = useState("");
+
     const [contextUsed, setContextUsed] = useState(null);
     const [agentUsed, setAgentUsed] = useState("");
     const [dataSources, setDataSources] = useState([]);
@@ -428,7 +427,7 @@ export default function PIChat() {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages, isTyping]);
 
-    const scopeActive = caseId || vendorId;
+
     const hasReplied = messages.some((m) => m.role === "assistant" && !m.isError);
     const showRight = dataSources.length > 0 || hasReplied;
 
@@ -446,7 +445,7 @@ export default function PIChat() {
 
         try {
             const history = messages.slice(-6).map((m) => ({ role: m.role, content: m.content }));
-            const result = await sendChatMessage({ message: msg, caseId, vendorId, conversationHistory: history });
+            const result = await sendChatMessage({ message: msg, conversationHistory: history });
 
             setMessages((prev) => [...prev, {
                 id: Date.now() + 1,
@@ -478,8 +477,7 @@ export default function PIChat() {
         if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
     }
 
-    const vendorData = contextUsed?.vendor || null;
-    const similarCases = contextUsed?.similar_cases || [];
+
 
     return (
         <div className="page-container">
@@ -507,45 +505,10 @@ export default function PIChat() {
 
             <Grid container spacing={3} sx={{ height: "calc(100vh - 220px)", minHeight: 500 }}>
 
-                {/* Left */}
-                <Grid item xs={12} md={3} sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                    <Card>
-                        <CardContent>
-                            <SectionHeader label="Scope" />
-                            <Stack spacing={1.5}>
-                                <TextField label="Case ID (optional)" size="small" fullWidth placeholder="e.g. 7000026156"
-                                    value={caseId} onChange={(e) => setCaseId(e.target.value)}
-                                    helperText={caseId ? "Scoped to this invoice case" : ""} />
-                                <TextField label="Vendor ID (optional)" size="small" fullWidth placeholder="e.g. V411327955"
-                                    value={vendorId} onChange={(e) => setVendorId(e.target.value)}
-                                    helperText={vendorId ? "Scoped to this vendor" : ""} />
-                                {scopeActive ? (
-                                    <Box>
-                                        <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.8, mb: 1 }}>
-                                            {caseId && <Chip label={`Case: ${caseId}`} size="small" color="info" onDelete={() => setCaseId("")} />}
-                                            {vendorId && <Chip label={`Vendor: ${vendorId}`} size="small" color="warning" onDelete={() => setVendorId("")} />}
-                                        </Box>
-                                        <Box sx={{ background: "#F2FAF6", border: "1px solid #B8DFD0", borderRadius: "8px", px: 1.2, py: 0.8 }}>
-                                            <Typography sx={{ fontSize: "0.72rem", color: "#1A6B5E", fontFamily: G, fontWeight: 500 }}>
-                                                ✓ Event log filtered to this scope
-                                            </Typography>
-                                        </Box>
-                                    </Box>
-                                ) : (
-                                    <Box sx={{ background: "#F7F5F0", border: "1px solid #E8E3DA", borderRadius: "8px", px: 1.2, py: 0.8 }}>
-                                        <Typography sx={{ fontSize: "0.72rem", color: "#9C9690", fontFamily: G }}>
-                                            No scope — full event log context active
-                                        </Typography>
-                                    </Box>
-                                )}
-                            </Stack>
-                        </CardContent>
-                    </Card>
 
-                </Grid>
 
                 {/* Chat */}
-                <Grid item xs={12} md={5} sx={{ display: "flex", flexDirection: "column" }}>
+                <Grid item xs={12} md={7} sx={{ display: "flex", flexDirection: "column" }}>
                     <Card sx={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
                         <Box sx={{ flex: 1, overflow: "auto", px: 2.5, py: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
                             {messages.length === 0 ? (
@@ -609,7 +572,7 @@ export default function PIChat() {
                             <Box sx={{ display: "flex", gap: 1.5, alignItems: "flex-end", background: "#F7F5F0", border: "1px solid #D8D2C8", borderRadius: "12px", px: 2, py: 1.2, transition: "border-color 0.15s", "&:focus-within": { borderColor: "#B5742A" } }}>
                                 <Box component="textarea" value={input} onChange={(e) => setInput(e.target.value)}
                                     onKeyDown={handleKeyDown} disabled={isTyping}
-                                    placeholder={vendorId ? `Ask about Vendor ${vendorId}…` : caseId ? `Ask about Case ${caseId}…` : "Ask about delays, variants, exceptions, conformance…"}
+                                    placeholder="Ask about delays, variants, exceptions, conformance…"
                                     rows={1} sx={{ flex: 1, background: "transparent", border: "none", outline: "none", resize: "none", fontFamily: G, fontSize: "0.875rem", color: "#17140F", lineHeight: 1.55, minHeight: "22px", maxHeight: "120px", overflow: "auto", "::placeholder": { color: "#9C9690" }, "&:disabled": { opacity: 0.5 } }}
                                 />
                                 <Button variant="contained" size="small" onClick={() => handleSend()} disabled={!input.trim() || isTyping}
@@ -621,16 +584,14 @@ export default function PIChat() {
                                 </Button>
                             </Box>
                             <Typography sx={{ fontSize: "0.68rem", color: "#9C9690", fontFamily: G, mt: 0.7, textAlign: "center" }}>
-                                {scopeActive
-                                    ? `Scoped: ${[caseId && `Case ${caseId}`, vendorId && `Vendor ${vendorId}`].filter(Boolean).join(" + ")} · Enter to send`
-                                    : "Full event log context · Enter to send · Shift+Enter for newline"}
+                                Full event log context · Enter to send · Shift+Enter for newline
                             </Typography>
                         </Box>
                     </Card>
                 </Grid>
 
                 {/* Right panel */}
-                <Grid item xs={12} md={4} sx={{ display: "flex", flexDirection: "column" }}>
+                <Grid item xs={12} md={5} sx={{ display: "flex", flexDirection: "column" }}>
                     <Box sx={{ height: "100%", overflow: "auto", display: "flex", flexDirection: "column" }}>
                         {!showRight ? (
                             <Card sx={{ flex: 1 }}>
@@ -648,19 +609,9 @@ export default function PIChat() {
                                 {/* 1 — Agent used */}
                                 <AgentCard agentName={agentUsed} />
 
-                                {/* 2 — Vendor analysis (when vendor scoped) */}
-                                {vendorId && (
-                                    <VendorCard vendorData={vendorData} vendorId={vendorId} />
-                                )}
-
-                                {/* 3 — PI data used */}
+                                {/* 2 — PI data used */}
                                 {dataSources.length > 0 && (
                                     <PIDataUsedCard dataSources={dataSources} />
-                                )}
-
-                                {/* 4 — Similar cases (when case scoped) */}
-                                {caseId && similarCases.length > 0 && (
-                                    <SimilarCasesCard similarCases={similarCases} currentCaseId={caseId} />
                                 )}
                             </>
                         )}
