@@ -50,6 +50,9 @@ OUTPUT RULES:
 6. End with one crisp action line starting with "→ Recommended action:" when relevant.
 7. Max 5 bullets OR 3 short paragraphs. No essays.
 8. If data is missing: say "Not available in the Celonis event log."
+9. For "active", "current", or "today" exception queries: use the INDIVIDUAL EXCEPTION CASES section.
+   An exception is "active" if the case's last recorded activity is still an exception step (not yet resolved).
+   Use the timestamps provided to identify recent exceptions.
 
 DATA RULES:
 - Answer ONLY from the PI data below. Never invent numbers.
@@ -293,6 +296,20 @@ class ChatService:
         except Exception as exc:
             logger.warning("Could not load global process context: %s", str(exc))
             sections.append("GLOBAL PROCESS STATS\n  [Unavailable]\n")
+
+        # ── 1b. Individual exception cases for temporal queries ───────────
+        try:
+            exc_event_log = self.celonis.get_event_log()
+            if not exc_event_log.empty:
+                exc_detail_section, exc_detail_context = self._build_exception_case_details(exc_event_log)
+                if exc_detail_section:
+                    sections.append(exc_detail_section)
+                    context_used["exception_cases"] = exc_detail_context
+                    data_sources.append(
+                        f"Exception Case Details — {len(exc_detail_context)} individual cases with timestamps"
+                    )
+        except Exception as exc:
+            logger.warning("Could not build exception case details: %s", str(exc))
 
         # ── 2. Case-specific context ─────────────────────────────────────────
         if case_id:
@@ -571,6 +588,95 @@ class ChatService:
         except Exception as exc:
             logger.warning("Vendor snapshot failed for %s: %s", vendor_id, str(exc))
             return None
+
+    # ── Individual exception cases ────────────────────────────────────────────
+
+    def _build_exception_case_details(
+        self,
+        event_log: pd.DataFrame,
+        max_cases: int = 20,
+    ) -> Tuple[str, List[Dict[str, Any]]]:
+        """Build individual exception case details for temporal and active-exception queries."""
+        if event_log.empty:
+            return "", []
+
+        exc_keywords = ["exception", "due date passed", "block", "moved out"]
+        pattern = "|".join(exc_keywords)
+        exc_events = event_log[
+            event_log["activity"].str.lower().str.contains(pattern, regex=True, na=False)
+        ]
+
+        if exc_events.empty:
+            return "", []
+
+        exc_case_ids = exc_events["case_id"].unique()
+        details: List[Dict[str, Any]] = []
+
+        for cid in exc_case_ids:
+            case_events = event_log[event_log["case_id"] == cid].sort_values("timestamp")
+            if case_events.empty:
+                continue
+
+            case_exc = exc_events[exc_events["case_id"] == cid].sort_values("timestamp")
+            exc_row = case_exc.iloc[-1]
+            last_row = case_events.iloc[-1]
+
+            last_lower = str(last_row["activity"]).lower()
+            is_active = any(kw in last_lower for kw in exc_keywords)
+
+            details.append({
+                "case_id": str(cid),
+                "exception_type": str(exc_row["activity"]),
+                "exception_time": exc_row["timestamp"],
+                "current_stage": str(last_row["activity"]),
+                "last_activity_time": last_row["timestamp"],
+                "is_active": is_active,
+                "event_count": len(case_events),
+            })
+
+        details.sort(
+            key=lambda x: x["exception_time"] if pd.notnull(x["exception_time"]) else pd.Timestamp.min,
+            reverse=True,
+        )
+
+        active_count = sum(1 for d in details if d["is_active"])
+        resolved_count = len(details) - active_count
+        show = details[:max_cases]
+
+        section = (
+            f"INDIVIDUAL EXCEPTION CASES ({len(details)} total: "
+            f"{active_count} active, {resolved_count} resolved)  "
+            f"[Source: Celonis Event Log]\n"
+        )
+        for d in show:
+            status = "ACTIVE" if d["is_active"] else "Resolved"
+            exc_ts = (
+                d["exception_time"].strftime("%Y-%m-%d %H:%M")
+                if pd.notnull(d["exception_time"]) else "N/A"
+            )
+            last_ts = (
+                d["last_activity_time"].strftime("%Y-%m-%d %H:%M")
+                if pd.notnull(d["last_activity_time"]) else "N/A"
+            )
+            section += (
+                f"  \u2022 Case {d['case_id']}: {d['exception_type']} "
+                f"(occurred: {exc_ts}, current: {d['current_stage']} at {last_ts}, "
+                f"status: {status})\n"
+            )
+
+        context_list = [
+            {
+                "case_id": d["case_id"],
+                "exception_type": d["exception_type"],
+                "exception_time": str(d["exception_time"]) if pd.notnull(d["exception_time"]) else None,
+                "current_stage": d["current_stage"],
+                "last_activity_time": str(d["last_activity_time"]) if pd.notnull(d["last_activity_time"]) else None,
+                "is_active": d["is_active"],
+            }
+            for d in show
+        ]
+
+        return section, context_list
 
     # ── Similar cases ────────────────────────────────────────────────────────
 
