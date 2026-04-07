@@ -19,6 +19,21 @@ class BaseAgent(ABC):
         self.guardrails = guardrails or []
         self.last_prompt_trace: Dict[str, Any] = {}
 
+    def _context_available(self) -> bool:
+        """Return True when process_context carries real Celonis data."""
+        return bool(
+            self.process_context
+            and int(self.process_context.get("total_cases", 0) or 0) > 0
+        )
+
+    def _provenance_tag(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Stamp result with data provenance metadata."""
+        result["_data_provenance"] = {
+            "context_grounded": self._context_available(),
+            "context_source": "celonis" if self._context_available() else "unavailable",
+        }
+        return result
+
     @abstractmethod
     def process(self, input_data: Dict) -> Dict:
         pass

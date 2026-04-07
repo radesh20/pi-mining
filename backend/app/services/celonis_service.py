@@ -1555,10 +1555,11 @@ class CelonisService:
                             "exception_rate": round(exception_rate, 2),
                             "avg_dpo": round(avg_dpo, 2),
                             "payment_behavior": {
-                                "on_time_pct": 29.7,
-                                "early_pct": 29.7,
-                                "late_pct": 29.7,
-                                "open_pct": 10.8,
+                                "on_time_pct": 0.0,
+                                "early_pct": 0.0,
+                                "late_pct": 0.0,
+                                "open_pct": 0.0,
+                                "_source": "requires_case_level_enrichment",
                             },
                             "risk_score": risk,
                         }

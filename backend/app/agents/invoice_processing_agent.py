@@ -40,6 +40,7 @@ class InvoiceProcessingAgent(BaseAgent):
             message_bus_input=input_data,
         )
         normalized = self._normalize_result(result, input_data)
+        self._provenance_tag(normalized)
         handoff = normalized.get("handoff_payload", {}) if isinstance(normalized.get("handoff_payload"), dict) else {}
         return self.attach_prompt_trace(normalized, handoff=handoff)
 
@@ -90,7 +91,9 @@ class InvoiceProcessingAgent(BaseAgent):
             )
         result["celonis_evidence"] = result.get(
             "celonis_evidence",
-            "Inference grounded in Celonis variants, exception rates, DPO behavior, and turnaround profile.",
+            "Celonis context was provided in prompt; LLM did not return specific evidence citation."
+            if self._context_available()
+            else "[Celonis data unavailable for this request]",
         )
         result["payload_field_justification_from_pi"] = result.get(
             "payload_field_justification_from_pi",
@@ -102,11 +105,25 @@ class InvoiceProcessingAgent(BaseAgent):
         )
         return result
 
-    @staticmethod
-    def _known_metrics() -> Dict:
+    def _known_metrics(self) -> Dict:
+        """Extract portfolio metrics from live process_context. No hardcoded values."""
+        ctx = self.process_context or {}
+        exception_patterns = ctx.get("exception_patterns", [])
+
+        invoice_exception_dpo = 0.0
+        short_terms_dpo = 0.0
+        for pat in exception_patterns:
+            exc_type = str(pat.get("exception_type", "")).lower()
+            if "exception" in exc_type and "short" not in exc_type and "late" not in exc_type:
+                invoice_exception_dpo = float(pat.get("avg_resolution_time_days", 0) or 0)
+            if "short" in exc_type or "0-day" in exc_type or "immediate" in exc_type:
+                short_terms_dpo = float(pat.get("avg_resolution_time_days", 0) or 0)
+
+        has_data = self._context_available()
         return {
-            "avg_dpo_days": 36.52,
-            "invoice_exception_avg_dpo_days": 80.83,
-            "short_terms_avg_dpo_days": 1.21,
-            "value_at_risk_usd": 5000000,
+            "avg_dpo_days": float(ctx.get("avg_end_to_end_days", 0) or 0),
+            "invoice_exception_avg_dpo_days": invoice_exception_dpo,
+            "short_terms_avg_dpo_days": short_terms_dpo,
+            "value_at_risk_usd": 0.0,
+            "_data_source": "celonis" if has_data else "unavailable",
         }

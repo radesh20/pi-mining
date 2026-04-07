@@ -49,6 +49,7 @@ class PromptWriterAgent(BaseAgent):
             message_bus_input=input_data,
         )
         normalized = self._normalize_result(result, target_agent)
+        self._provenance_tag(normalized)
         handoff = {
             "target_agent": target_agent,
             "generated_prompt_keys": list((normalized.get("generated_prompts", {}) or {}).keys()),
@@ -62,7 +63,9 @@ class PromptWriterAgent(BaseAgent):
         result["generated_prompts"] = generated
         result["celonis_evidence"] = result.get(
             "celonis_evidence",
-            "Derived from Celonis process context and exception/value metrics included in prompt input.",
+            "Celonis context was provided in prompt; LLM did not return specific evidence citation."
+            if self._context_available()
+            else "[Celonis data unavailable for this request]",
         )
         result["ai_reasoning"] = result.get(
             "ai_reasoning",
@@ -70,41 +73,36 @@ class PromptWriterAgent(BaseAgent):
         )
         return result
 
-    @staticmethod
-    def _known_celonis_facts() -> Dict:
+    def _known_celonis_facts(self) -> Dict:
+        """Extract portfolio and exception facts from live process_context. No hardcoded values."""
+        ctx = self.process_context or {}
+        exception_patterns = ctx.get("exception_patterns", [])
+        has_data = self._context_available()
+
+        total_cases = int(ctx.get("total_cases", 0) or 0)
+        avg_dpo = float(ctx.get("avg_end_to_end_days", 0) or 0)
+
+        exceptions = {}
+        for pat in exception_patterns:
+            exc_type = str(pat.get("exception_type", "")).lower()
+            key = exc_type.replace(" ", "_").replace("(", "").replace(")", "")
+            if not key:
+                continue
+            exceptions[key] = {
+                "affected_invoices": int(pat.get("affected_cases", 0) or 0),
+                "percentage": float(pat.get("frequency_percentage", 0) or 0),
+                "value_usd": 0.0,
+                "avg_dpo_days": float(pat.get("avg_resolution_time_days", 0) or 0),
+                "_data_source": "celonis",
+            }
+
         return {
             "portfolio": {
-                "total_invoices": 37,
-                "total_invoice_value_usd": 22500000,
-                "avg_dpo_days": 36.52,
-                "max_possible_dpo_days": 50,
-                "value_at_risk_usd": 5000000,
+                "total_invoices": total_cases,
+                "total_invoice_value_usd": 0.0,
+                "avg_dpo_days": avg_dpo,
+                "value_at_risk_usd": 0.0,
+                "_data_source": "celonis" if has_data else "unavailable",
             },
-            "exceptions": {
-                "payment_terms_mismatch": {
-                    "affected_invoices": 37,
-                    "percentage": 100.0,
-                    "value_usd": 22500000,
-                    "avg_dpo_days": 36.52,
-                },
-                "invoice_exception": {
-                    "affected_invoices": 19,
-                    "percentage": 51.4,
-                    "value_usd": 2480000,
-                    "avg_dpo_days": 80.83,
-                },
-                "short_payment_terms_0_days": {
-                    "affected_invoices": 25,
-                    "percentage": 67.6,
-                    "value_usd": 15300000,
-                    "avg_dpo_days": 1.21,
-                },
-                "early_payment_dpo_0_7": {
-                    "affected_invoices": 23,
-                    "value_usd": 19000000,
-                    "actual_dpo_days": 3.08,
-                    "potential_dpo_days": 63,
-                    "value_potential_usd": 2000000,
-                },
-            },
+            "exceptions": exceptions if exceptions else {"_empty": {"_data_source": "unavailable"}},
         }

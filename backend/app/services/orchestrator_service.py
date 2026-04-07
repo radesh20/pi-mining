@@ -482,6 +482,8 @@ class OrchestratorService:
 
     def _build_fast_interaction_trace(self, invoice_data: Dict, cache_key: str) -> Dict:
         trace = self._init_trace(invoice_data)
+        trace["_synthetic"] = True
+        trace["_synthetic_label"] = "[SYNTHETIC] Fast-mode trace — no LLM calls were made"
         scenario = self._detect_scenario(invoice_data)
         risk_level = self._infer_risk_level(invoice_data, scenario)
         days_until_due = float(invoice_data.get("days_until_due", 0) or 0)
@@ -1033,6 +1035,7 @@ class OrchestratorService:
             "resolution": exception_output["resolution_strategy"] if resolved else "Escalated for human decision",
             "resolved_by": exception_output["resolved_by"],
             "reasoning": exception_output["ai_reasoning"],
+            "_synthetic": True,
         }
         trace["financial_summary"] = self._build_financial_summary(
             invoice_data=invoice_data,
