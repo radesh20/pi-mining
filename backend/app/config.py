@@ -43,13 +43,13 @@ class Settings:
     # Main event/activity table
     ACTIVITY_TABLE: str = os.getenv(
         "ACTIVITY_TABLE",
-        "t_o_custom_AccountingDocumentHeader,t_o_custom_VimHeader",
+        "t_o_custom_VimHeader",
     ).split(",")[0].strip()
     ACTIVITY_TABLES: list = [
         t.strip()
         for t in os.getenv(
             "ACTIVITY_TABLE",
-            "t_o_custom_AccountingDocumentHeader,t_o_custom_VimHeader",
+            "t_o_custom_VimHeader",
         ).split(",")
     ]
     CASE_COLUMN: str = os.getenv("CASE_COLUMN", "CASEKEY")

@@ -238,7 +238,7 @@ class DataCacheService:
             )
             detailed_olap_df = pd.DataFrame(detailed_olap_payload.get("rows", []))
 
-            enriched = self._build_enriched_event_log(
+            enriched, accounting_join_diagnostics = self._build_enriched_event_log(
                 event_log,
                 case_attrs,
                 accounting_attrs,
@@ -248,6 +248,39 @@ class DataCacheService:
             case_level = self._build_case_level_dataset(enriched, process_context)
             case_level = self._enrich_case_level_with_olap(case_level, detailed_olap_df)
             case_level = self._backfill_invoice_amounts_from_aux_tables(case_level, celonis)
+
+            accounting_fields = [
+                "invoice_number",
+                "invoice_payment_terms",
+                "baseline_date",
+                "due_date",
+                "clearing_document_number",
+            ]
+            enriched_non_null = {
+                field: int(enriched[field].notna().sum())
+                for field in accounting_fields
+                if field in enriched.columns
+            }
+            case_level_non_null = {
+                field: int(case_level[field].notna().sum())
+                for field in accounting_fields
+                if field in case_level.columns
+            }
+            case_level_sample = (
+                case_level[
+                    [c for c in ["case_id", "document_number", "invoice_number", "due_date", "clearing_document_number"] if c in case_level.columns]
+                ]
+                .head(5)
+                .astype(str)
+                .to_dict(orient="records")
+            )
+            logger.info(
+                "Accounting propagation check: extracted_rows=%s enriched_non_null=%s case_level_non_null=%s case_level_sample=%s",
+                len(accounting_attrs),
+                enriched_non_null,
+                case_level_non_null,
+                case_level_sample,
+            )
 
             # ============================================================
             # 🔥 PHASE 2: UPDATE process_context with REAL enriched data
@@ -376,8 +409,11 @@ class DataCacheService:
                 "tables_loaded": [
                     celonis.activity_table,
                     celonis.case_table,
-                    "t_o_custom_AccountingDocumentHeader",
+                    celonis._last_accounting_source_table or "t_o_custom_AccountingDocumentHeader",
                 ],
+                "accounting_join_diagnostics": accounting_join_diagnostics,
+                "accounting_enriched_non_null": enriched_non_null,
+                "accounting_case_level_non_null": case_level_non_null,
                 "total_cases": int(process_context.get("total_cases", 0) or 0),
                 "total_events": int(process_context.get("total_events", 0) or 0),
             }
@@ -499,6 +535,9 @@ class DataCacheService:
                 "exception_categories_count": int(self.cache_meta.get("exception_categories_count", 0)),
                 "wcm_olap_rows": int(self.cache_meta.get("wcm_olap_rows", 0)),
                 "accounting_header_rows": int(self.cache_meta.get("accounting_header_rows", 0)),
+                "accounting_join_diagnostics": self.cache_meta.get("accounting_join_diagnostics", {}),
+                "accounting_enriched_non_null": self.cache_meta.get("accounting_enriched_non_null", {}),
+                "accounting_case_level_non_null": self.cache_meta.get("accounting_case_level_non_null", {}),
                 "wcm_group_count": int(self.cache_meta.get("wcm_group_count", 0)),
                 "available_vendors": self.available_vendors,
                 "last_error": self.last_error,
@@ -797,7 +836,7 @@ class DataCacheService:
                 },
                 "ingestion_scope": {
                     "wcm_context_mode": getattr(settings, "WCM_CONTEXT_MODE", "full"),
-                    "activity_table": self.cache_meta.get("tables_loaded", ["", ""])[0] if self.cache_meta.get("tables_loaded") else None,
+                    "activity_table": self.cache_meta.get("tables_loaded", ["", "", ""])[0] if self.cache_meta.get("tables_loaded") else None,
                     "case_table": self.cache_meta.get("tables_loaded", ["", "", ""])[1] if self.cache_meta.get("tables_loaded") else None,
                     "accounting_table": self.cache_meta.get("tables_loaded", ["", "", ""])[2] if self.cache_meta.get("tables_loaded") else None,
                     "grouped_selected_tables": (self.process_context.get("working_capital_source_summary", {}) or {}).get(
@@ -915,6 +954,23 @@ class DataCacheService:
             "invoice_payment_terms",
         ]
 
+    @staticmethod
+    def _normalized_join_key(series: pd.Series, normalize: bool = False) -> pd.Series:
+        key = series.astype(str).str.strip()
+        key = key.where(series.notna(), pd.NA)
+        key = key.replace({"": pd.NA})
+        if not normalize:
+            return key
+        normalized = key.str.upper().str.replace(r"[^A-Z0-9]", "", regex=True)
+        digit_mask = normalized.str.fullmatch(r"\d+").fillna(False)
+        normalized = normalized.where(~digit_mask, normalized.str.lstrip("0"))
+        normalized = normalized.replace({"": pd.NA})
+        return normalized
+
+    @staticmethod
+    def _sample_values(series: pd.Series, max_items: int = 5) -> List[str]:
+        return [str(v) for v in series.dropna().head(max_items).tolist()]
+
     def _build_enriched_event_log(
         self,
         event_log: pd.DataFrame,
@@ -922,11 +978,17 @@ class DataCacheService:
         accounting_attrs: pd.DataFrame,
         case_table_full: pd.DataFrame,
         celonis: CelonisService,
-    ) -> pd.DataFrame:
+    ) -> tuple[pd.DataFrame, Dict[str, Any]]:
         if event_log.empty:
-            return event_log.copy()
+            return event_log.copy(), {"join_attempted": False, "reason": "event_log_empty"}
 
         enriched = event_log.copy()
+        join_diagnostics: Dict[str, Any] = {
+            "join_attempted": False,
+            "selected_join": None,
+            "candidate_matches": [],
+            "accounting_rows": int(len(accounting_attrs)) if accounting_attrs is not None else 0,
+        }
         if "document_number" in enriched.columns:
             enriched["document_number"] = enriched["document_number"].astype(str).str.strip()
         if "case_id" in enriched.columns:
@@ -944,36 +1006,102 @@ class DataCacheService:
                 accounting["invoice_number"] = accounting["invoice_number"].astype(str).str.strip()
             if "case_id" in accounting.columns:
                 accounting["case_id"] = accounting["case_id"].astype(str).str.strip()
+            logger.info(
+                "Accounting join input: event_rows=%s accounting_rows=%s accounting_cols=%s key_samples=%s",
+                len(enriched),
+                len(accounting),
+                list(accounting.columns),
+                {
+                    "event_document_number": self._sample_values(enriched["document_number"]) if "document_number" in enriched.columns else [],
+                    "event_case_id": self._sample_values(enriched["case_id"]) if "case_id" in enriched.columns else [],
+                    "acc_document_number": self._sample_values(accounting["document_number"]) if "document_number" in accounting.columns else [],
+                    "acc_invoice_number": self._sample_values(accounting["invoice_number"]) if "invoice_number" in accounting.columns else [],
+                    "acc_case_id": self._sample_values(accounting["case_id"]) if "case_id" in accounting.columns else [],
+                },
+            )
 
-            merged = False
-            if "document_number" in accounting.columns and accounting["document_number"].notna().any():
-                doc_map = accounting.dropna(subset=["document_number"]).drop_duplicates(subset=["document_number"])
-                enriched = enriched.merge(
-                    doc_map,
-                    on="document_number",
-                    how="left",
-                    suffixes=("", "_accounting"),
-                )
-                merged = True
-            elif "case_id" in accounting.columns and accounting["case_id"].notna().any():
-                case_map = accounting.dropna(subset=["case_id"]).drop_duplicates(subset=["case_id"])
-                enriched = enriched.merge(
-                    case_map,
-                    on="case_id",
-                    how="left",
-                    suffixes=("", "_accounting"),
-                )
-                merged = True
+            candidates: List[Dict[str, Any]] = []
+            candidate_specs = [
+                ("document_number", "document_number", "document_number=document_number", False),
+                ("case_id", "case_id", "case_id=case_id", False),
+                ("document_number", "invoice_number", "document_number=invoice_number", False),
+                ("document_number", "document_number", "normalized(document_number)=normalized(document_number)", True),
+                ("document_number", "invoice_number", "normalized(document_number)=normalized(invoice_number)", True),
+                ("case_id", "case_id", "normalized(case_id)=normalized(case_id)", True),
+            ]
+            for left_col, right_col, label, normalize in candidate_specs:
+                if left_col not in enriched.columns or right_col not in accounting.columns:
+                    continue
+                left_key = self._normalized_join_key(enriched[left_col], normalize=normalize)
+                right_key = self._normalized_join_key(accounting[right_col], normalize=normalize)
+                left_unique = pd.Index(left_key.dropna().unique())
+                right_unique = pd.Index(right_key.dropna().unique())
+                common = left_unique.intersection(right_unique)
+                common_count = int(len(common))
+                left_count = int(len(left_unique))
+                right_count = int(len(right_unique))
+                coverage = round((common_count / max(left_count, 1)) * 100, 2)
+                candidate = {
+                    "join": label,
+                    "left_col": left_col,
+                    "right_col": right_col,
+                    "normalize": normalize,
+                    "left_unique": left_count,
+                    "right_unique": right_count,
+                    "common_keys": common_count,
+                    "left_coverage_pct": coverage,
+                }
+                candidates.append(candidate)
 
-            if not merged and "invoice_number" in accounting.columns and accounting["invoice_number"].notna().any():
-                invoice_map = accounting.dropna(subset=["invoice_number"]).drop_duplicates(subset=["invoice_number"])
-                enriched = enriched.merge(
-                    invoice_map,
-                    left_on="document_number",
-                    right_on="invoice_number",
+            join_diagnostics["join_attempted"] = True
+            join_diagnostics["candidate_matches"] = candidates
+            best = max(candidates, key=lambda c: (c["common_keys"], c["left_coverage_pct"]), default=None)
+            if not best or int(best.get("common_keys", 0)) == 0:
+                logger.warning(
+                    "Accounting join skipped: no overlapping keys. candidates=%s",
+                    candidates,
+                )
+                join_diagnostics["selected_join"] = None
+                join_diagnostics["null_rate_pct"] = 100.0
+            else:
+                left_key = self._normalized_join_key(enriched[best["left_col"]], normalize=bool(best["normalize"]))
+                right_key = self._normalized_join_key(accounting[best["right_col"]], normalize=bool(best["normalize"]))
+                left_frame = enriched.copy()
+                left_frame["_accounting_join_key"] = left_key
+                right_frame = accounting.copy()
+                right_frame["_accounting_join_key"] = right_key
+                right_frame = right_frame.dropna(subset=["_accounting_join_key"]).drop_duplicates(subset=["_accounting_join_key"])
+                enriched = left_frame.merge(
+                    right_frame,
+                    on="_accounting_join_key",
                     how="left",
                     suffixes=("", "_accounting"),
+                ).drop(columns=["_accounting_join_key"])
+
+                probe_fields = [
+                    field for field in ["due_date", "baseline_date", "clearing_document_number", "invoice_payment_terms"]
+                    if field in enriched.columns
+                ]
+                probe_field = probe_fields[0] if probe_fields else None
+                null_rate = (
+                    float(enriched[probe_field].isna().mean() * 100) if probe_field else 100.0
                 )
+                join_diagnostics["selected_join"] = best["join"]
+                join_diagnostics["null_rate_pct"] = round(null_rate, 2)
+                join_diagnostics["probe_field"] = probe_field
+                if null_rate >= 95:
+                    logger.warning(
+                        "Accounting join appears mostly unmatched: selected_join=%s null_rate=%.2f%%",
+                        best["join"],
+                        null_rate,
+                    )
+                else:
+                    logger.info(
+                        "Accounting join selected=%s coverage=%.2f%% null_rate=%.2f%%",
+                        best["join"],
+                        float(best.get("left_coverage_pct", 0.0)),
+                        null_rate,
+                    )
 
         full = case_table_full.copy()
         if not full.empty:
@@ -1062,7 +1190,7 @@ class DataCacheService:
                 enriched["invoice_amount_case_table"], errors="coerce"
             )
 
-        return enriched
+        return enriched, join_diagnostics
 
     def _build_case_level_dataset(self, enriched_event_log: pd.DataFrame, process_context: Dict[str, Any]) -> pd.DataFrame:
         if enriched_event_log.empty:

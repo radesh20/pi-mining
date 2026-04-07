@@ -66,6 +66,7 @@ class CelonisService:
         self._case_durations_cache = None
         self._vendor_stats_cache = None
         self._table_data_cache: Dict[str, pd.DataFrame] = {}
+        self._last_accounting_source_table: Optional[str] = None
 
         self._connect()
         self._normalize_configured_tables()
@@ -265,8 +266,6 @@ class CelonisService:
         }
 
         preferred = list(self.activity_tables) + [
-            "t_o_custom_AccountingDocumentHeader",
-            "AccountingDocumentHeader",
             "t_o_custom_VimHeader",
             "t_o_custom_VIMHEADER",
             "VimHeader",
@@ -297,7 +296,7 @@ class CelonisService:
             if table_name == self.activity_table and score >= 6:
                 return candidate
 
-            if table_name in set(candidate_names) and score >= 6:
+            if table_name in {"t_o_custom_VimHeader", "t_o_custom_VIMHEADER", "VimHeader"} and score >= 6:
                 return candidate
 
         # Last resort: global scan across all tables.
@@ -665,6 +664,7 @@ class CelonisService:
             df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
             df = df.sort_values(["case_id", "timestamp"], na_position="last").reset_index(drop=True)
             self._event_log_cache = df[expected_cols]
+            logger.info("Event log source selected: %s (rows=%s)", source_table, len(self._event_log_cache))
             return self._event_log_cache.copy()
         except Exception as e:
             raise Exception(f"Event log extraction failed: {str(e)}")
@@ -706,6 +706,7 @@ class CelonisService:
             source = self._discover_accounting_attr_source()
             source_table = source["table"]
             mapping = source["mapping"]
+            self._last_accounting_source_table = source_table
             source_columns = [col for col in mapping.values() if col]
             if not source_columns:
                 return pd.DataFrame()
@@ -718,6 +719,7 @@ class CelonisService:
             rename_map = {src: tgt for tgt, src in mapping.items() if src}
             df = raw_df.rename(columns=rename_map)
             if df.empty:
+                logger.warning("Accounting header extraction returned no rows from source table=%s", source_table)
                 return pd.DataFrame(columns=list(mapping.keys()))
 
             for col in mapping.keys():
@@ -728,7 +730,17 @@ class CelonisService:
                 if dt_col in df.columns:
                     df[dt_col] = pd.to_datetime(df[dt_col], errors="coerce")
 
-            return df.drop_duplicates().reset_index(drop=True)
+            result = df.drop_duplicates().reset_index(drop=True)
+            sample_cols = [c for c in ["case_id", "document_number", "invoice_number", "due_date"] if c in result.columns]
+            sample_rows = result[sample_cols].head(3).astype(str).to_dict(orient="records") if sample_cols else []
+            logger.info(
+                "Accounting header extraction succeeded: table=%s rows=%s cols=%s sample=%s",
+                source_table,
+                len(result),
+                list(result.columns),
+                sample_rows,
+            )
+            return result
         except Exception as e:
             logger.warning("Accounting header extraction unavailable: %s", str(e))
             return pd.DataFrame()
