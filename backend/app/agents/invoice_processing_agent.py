@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Optional
 
 from app.agents.base_agent import BaseAgent
 from app.services.azure_openai_service import AzureOpenAIService
@@ -40,6 +40,11 @@ class InvoiceProcessingAgent(BaseAgent):
             message_bus_input=input_data,
         )
         normalized = self._normalize_result(result, input_data)
+        # Tag fields by data source before _provenance_tag consumes _field_sources
+        self._tag_field(normalized, "turnaround_assessment", "celonis" if self._context_available() else "fallback")
+        self._tag_field(normalized, "exceptions_found", "llm")
+        self._tag_field(normalized, "validation_result", "llm")
+        self._tag_field(normalized, "celonis_evidence", "celonis" if self._context_available() else "unavailable")
         self._provenance_tag(normalized)
         handoff = normalized.get("handoff_payload", {}) if isinstance(normalized.get("handoff_payload"), dict) else {}
         return self.attach_prompt_trace(normalized, handoff=handoff)
@@ -106,12 +111,19 @@ class InvoiceProcessingAgent(BaseAgent):
         return result
 
     def _known_metrics(self) -> Dict:
-        """Extract portfolio metrics from live process_context. No hardcoded values."""
+        """
+        Extract portfolio metrics from live process_context.
+        All values are derived from real Celonis data — no hardcoded fallbacks.
+        Returns explicit null/unknown state when data is unavailable.
+        """
         ctx = self.process_context or {}
         exception_patterns = ctx.get("exception_patterns", [])
+        has_data = self._context_available()
+        source = "celonis" if has_data else "unavailable"
 
-        invoice_exception_dpo = 0.0
-        short_terms_dpo = 0.0
+        invoice_exception_dpo: Optional[float] = None
+        short_terms_dpo: Optional[float] = None
+
         for pat in exception_patterns:
             exc_type = str(pat.get("exception_type", "")).lower()
             if "exception" in exc_type and "short" not in exc_type and "late" not in exc_type:
@@ -119,11 +131,19 @@ class InvoiceProcessingAgent(BaseAgent):
             if "short" in exc_type or "0-day" in exc_type or "immediate" in exc_type:
                 short_terms_dpo = float(pat.get("avg_resolution_time_days", 0) or 0)
 
-        has_data = self._context_available()
+        avg_dpo_raw = ctx.get("avg_end_to_end_days")
+        avg_dpo = float(avg_dpo_raw or 0) if avg_dpo_raw is not None else None
+
         return {
-            "avg_dpo_days": float(ctx.get("avg_end_to_end_days", 0) or 0),
+            # None = field intentionally omitted (no celonis data); agents must not invent values
+            "avg_dpo_days": avg_dpo,
             "invoice_exception_avg_dpo_days": invoice_exception_dpo,
             "short_terms_avg_dpo_days": short_terms_dpo,
-            "value_at_risk_usd": 0.0,
-            "_data_source": "celonis" if has_data else "unavailable",
+            # Value at risk requires OLAP invoice data — not derivable from process_context alone
+            "value_at_risk_usd": None,
+            "_data_source": source,
+            "_null_fields_note": (
+                "null = value not present in Celonis process_context; "
+                "LLM must not substitute fabricated values"
+            ) if not has_data else None,
         }

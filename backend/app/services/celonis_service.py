@@ -688,80 +688,94 @@ class CelonisService:
         except Exception as e:
             raise Exception(f"Event log enrichment with vendor failed: {str(e)}")
 
-    def get_vendor_statistics(self) -> pd.DataFrame:
-        """
-        Per-vendor process statistics from event log + vendor mapping.
-        """
-        if self._vendor_stats_cache is not None:
-            return self._vendor_stats_cache.copy()
+    def get_vendor_stats_api(self) -> List[Dict[str, Any]]:
+     try:
+        stats_df = self.get_vendor_statistics()
+        case_durations = self.get_case_durations()
+        vendor_map = self.get_vendor_mapping()[["case_id", "vendor_id"]].drop_duplicates()
 
-        try:
-            df = self.get_event_log_with_vendor()
-            if df.empty:
-                return pd.DataFrame(
-                    columns=[
-                        "vendor_id",
-                        "case_count",
-                        "event_count",
-                        "avg_events_per_case",
-                        "exception_case_count",
-                        "exception_rate_pct",
-                        "top_activity",
-                        "payment_terms",
-                        "currency",
-                    ]
+        case_table_df = self.get_table_data(self.case_table)
+        total_value_by_vendor: Dict[str, float] = {}
+        vendor_lifnr_by_vendor: Dict[str, str] = {}
+        if not case_table_df.empty:
+            renamed = case_table_df.rename(columns={self.vendor_col: "vendor_id"})
+            if "vendor_id" in renamed.columns:
+                renamed["vendor_id"] = renamed["vendor_id"].astype(str).str.strip()
+                vendor_lifnr_by_vendor = (
+                    renamed.groupby("vendor_id")["vendor_id"]
+                    .first().astype(str).to_dict()
                 )
+                amount_col = self._pick_best_amount_column(renamed)
+                if amount_col:
+                    work = renamed[["vendor_id", amount_col]].copy()
+                    work[amount_col] = pd.to_numeric(work[amount_col], errors="coerce").fillna(0.0)
+                    total_value_by_vendor = (
+                        work.groupby("vendor_id")[amount_col].sum().round(2).to_dict()
+                    )
 
-            per_vendor_case = (
-                df.groupby("vendor_id")["case_id"]
-                .nunique()
-                .reset_index(name="case_count")
+        avg_dpo_by_vendor = {}
+        if not case_durations.empty and not vendor_map.empty:
+            duration_map = case_durations.merge(vendor_map, on="case_id", how="left")
+            avg_dpo_by_vendor = (
+                duration_map.groupby("vendor_id")["duration_days"].mean().round(2).to_dict()
             )
-            per_vendor_event = (
-                df.groupby("vendor_id")
-                .size()
-                .reset_index(name="event_count")
-            )
-            per_vendor = per_vendor_case.merge(per_vendor_event, on="vendor_id", how="left")
-            per_vendor["avg_events_per_case"] = (
-                per_vendor["event_count"] / per_vendor["case_count"].replace(0, pd.NA)
-            ).round(2)
 
-            exc_cases = (
-                df[df["activity"].str.contains("exception", case=False, na=False)]
-                .groupby("vendor_id")["case_id"]
-                .nunique()
-                .reset_index(name="exception_case_count")
+        # ── NEW: derive payment behavior from case-level event log ──────────
+        try:
+            from app.services.data_cache_service import DataCacheService
+            event_log = self.get_event_log_with_vendor()
+            payment_behavior_by_vendor = (
+                DataCacheService._derive_payment_behavior_from_case_level(event_log)
+                if not event_log.empty else {}
             )
-            per_vendor = per_vendor.merge(exc_cases, on="vendor_id", how="left")
-            per_vendor["exception_case_count"] = per_vendor["exception_case_count"].fillna(0).astype(int)
-            per_vendor["exception_rate_pct"] = (
-                per_vendor["exception_case_count"] / per_vendor["case_count"].replace(0, pd.NA) * 100
-            ).fillna(0).round(2)
+        except Exception as pb_err:
+            logger.warning("Payment behavior derivation failed: %s", pb_err)
+            payment_behavior_by_vendor = {}
+        # ────────────────────────────────────────────────────────────────────
 
-            top_activity = (
-                df.groupby(["vendor_id", "activity"])
-                .size()
-                .reset_index(name="activity_count")
-                .sort_values(["vendor_id", "activity_count"], ascending=[True, False])
-                .drop_duplicates(subset=["vendor_id"])
-                .rename(columns={"activity": "top_activity"})
-                [["vendor_id", "top_activity"]]
-            )
-            per_vendor = per_vendor.merge(top_activity, on="vendor_id", how="left")
+        rows: List[Dict[str, Any]] = []
+        if not stats_df.empty:
+            for _, row in stats_df.iterrows():
+                vendor_id = str(row.get("vendor_id", "UNKNOWN"))
+                exception_rate = float(row.get("exception_rate_pct", 0) or 0)
+                avg_dpo = float(avg_dpo_by_vendor.get(vendor_id, 0) or 0)
 
-            vendor_attrs = (
-                df.groupby("vendor_id")[["payment_terms", "currency"]]
-                .agg(lambda s: s.dropna().iloc[0] if not s.dropna().empty else None)
-                .reset_index()
-            )
-            per_vendor = per_vendor.merge(vendor_attrs, on="vendor_id", how="left")
-            per_vendor = per_vendor.sort_values(["case_count", "event_count"], ascending=False).reset_index(drop=True)
+                risk = "LOW"
+                if exception_rate >= 60 or avg_dpo >= 60:
+                    risk = "CRITICAL"
+                elif exception_rate >= 40 or avg_dpo >= 40:
+                    risk = "HIGH"
+                elif exception_rate >= 20 or avg_dpo >= 20:
+                    risk = "MEDIUM"
 
-            self._vendor_stats_cache = per_vendor
-            return self._vendor_stats_cache.copy()
-        except Exception as e:
-            raise Exception(f"Vendor statistics extraction failed: {str(e)}")
+                # Real payment behavior from case-level data, or explicit null fallback
+                pb = payment_behavior_by_vendor.get(vendor_id)
+                if pb:
+                    payment_behavior = {**pb, "_source": "celonis"}
+                else:
+                    payment_behavior = {
+                        "on_time_pct": None,
+                        "early_pct": None,
+                        "late_pct": None,
+                        "open_pct": None,
+                        "_source": "unavailable",
+                    }
+
+                rows.append({
+                    "vendor_id": vendor_id,
+                    "vendor_lifnr": vendor_lifnr_by_vendor.get(vendor_id, vendor_id),
+                    "total_cases": int(row.get("case_count", 0) or 0),
+                    "total_value": float(total_value_by_vendor.get(vendor_id, 0.0)),
+                    "exception_rate": round(exception_rate, 2),
+                    "avg_dpo": round(avg_dpo, 2),
+                    "payment_behavior": payment_behavior,
+                    "risk_score": risk,
+                })
+
+        rows.sort(key=lambda x: (x["total_value"], x["total_cases"]), reverse=True)
+        return rows
+     except Exception as e:
+        raise Exception(f"Vendor stats API payload generation failed: {str(e)}")
 
     def get_table_data(
         self,
