@@ -44,6 +44,7 @@ class DataCacheService:
 
         self.event_log_df = pd.DataFrame()
         self.purchasing_header_df = pd.DataFrame()
+        self.accounting_header_df = pd.DataFrame()
         self.enriched_event_log_df = pd.DataFrame()
         self.case_level_df = pd.DataFrame()
         self.case_table_full_df = pd.DataFrame()
@@ -191,6 +192,7 @@ class DataCacheService:
 
             event_log = celonis.get_event_log().copy()
             case_attrs = celonis.get_case_attributes().copy()
+            accounting_attrs = celonis.get_accounting_document_attributes().copy()
             case_table_full = celonis.get_table_data(celonis.case_table, use_cache=False).copy()
 
             # ============================================================
@@ -236,10 +238,50 @@ class DataCacheService:
             )
             detailed_olap_df = pd.DataFrame(detailed_olap_payload.get("rows", []))
 
-            enriched = self._build_enriched_event_log(event_log, case_attrs, case_table_full, celonis)
+            enriched, accounting_join_diagnostics = self._build_enriched_event_log(
+                event_log,
+                case_attrs,
+                accounting_attrs,
+                case_table_full,
+                celonis,
+            )
             case_level = self._build_case_level_dataset(enriched, process_context)
             case_level = self._enrich_case_level_with_olap(case_level, detailed_olap_df)
             case_level = self._backfill_invoice_amounts_from_aux_tables(case_level, celonis)
+            case_level, olap_scope_alignment = self._align_case_level_to_olap_scope(case_level, detailed_olap_df)
+
+            accounting_fields = [
+                "invoice_number",
+                "invoice_payment_terms",
+                "baseline_date",
+                "due_date",
+                "clearing_document_number",
+            ]
+            enriched_non_null = {
+                field: int(enriched[field].notna().sum())
+                for field in accounting_fields
+                if field in enriched.columns
+            }
+            case_level_non_null = {
+                field: int(case_level[field].notna().sum())
+                for field in accounting_fields
+                if field in case_level.columns
+            }
+            case_level_sample = (
+                case_level[
+                    [c for c in ["case_id", "document_number", "invoice_number", "due_date", "clearing_document_number"] if c in case_level.columns]
+                ]
+                .head(5)
+                .astype(str)
+                .to_dict(orient="records")
+            )
+            logger.info(
+                "Accounting propagation check: extracted_rows=%s enriched_non_null=%s case_level_non_null=%s case_level_sample=%s",
+                len(accounting_attrs),
+                enriched_non_null,
+                case_level_non_null,
+                case_level_sample,
+            )
 
             # ============================================================
             # 🔥 PHASE 2: UPDATE process_context with REAL enriched data
@@ -357,6 +399,7 @@ class DataCacheService:
                 "enriched_event_rows": int(len(enriched)),
                 "case_rows": int(len(case_level)),
                 "case_table_full_rows": int(len(case_table_full)),
+                "accounting_header_rows": int(len(accounting_attrs)),
                 "wcm_olap_rows": int(len(detailed_olap_df)),
                 "wcm_group_count": int(grouped_extract.get("group_count", 0) if grouped_extract else 0),
                 "wcm_olap_source_table": detailed_olap_payload.get("source_table"),
@@ -367,7 +410,12 @@ class DataCacheService:
                 "tables_loaded": [
                     celonis.activity_table,
                     celonis.case_table,
+                    celonis._last_accounting_source_table or "t_o_custom_AccountingDocumentHeader",
                 ],
+                "accounting_join_diagnostics": accounting_join_diagnostics,
+                "accounting_enriched_non_null": enriched_non_null,
+                "accounting_case_level_non_null": case_level_non_null,
+                "olap_scope_alignment": olap_scope_alignment,
                 "total_cases": int(process_context.get("total_cases", 0) or 0),
                 "total_events": int(process_context.get("total_events", 0) or 0),
             }
@@ -380,6 +428,7 @@ class DataCacheService:
         with self._lock:
             self.event_log_df = event_log
             self.purchasing_header_df = case_attrs
+            self.accounting_header_df = accounting_attrs
             self.case_table_full_df = case_table_full
             self.enriched_event_log_df = enriched
             self.case_level_df = case_level
@@ -487,6 +536,11 @@ class DataCacheService:
                 "vendors_count": int(self.cache_meta.get("vendor_count", 0)),
                 "exception_categories_count": int(self.cache_meta.get("exception_categories_count", 0)),
                 "wcm_olap_rows": int(self.cache_meta.get("wcm_olap_rows", 0)),
+                "accounting_header_rows": int(self.cache_meta.get("accounting_header_rows", 0)),
+                "accounting_join_diagnostics": self.cache_meta.get("accounting_join_diagnostics", {}),
+                "accounting_enriched_non_null": self.cache_meta.get("accounting_enriched_non_null", {}),
+                "accounting_case_level_non_null": self.cache_meta.get("accounting_case_level_non_null", {}),
+                "olap_scope_alignment": self.cache_meta.get("olap_scope_alignment", {}),
                 "wcm_group_count": int(self.cache_meta.get("wcm_group_count", 0)),
                 "available_vendors": self.available_vendors,
                 "last_error": self.last_error,
@@ -785,8 +839,9 @@ class DataCacheService:
                 },
                 "ingestion_scope": {
                     "wcm_context_mode": getattr(settings, "WCM_CONTEXT_MODE", "full"),
-                    "activity_table": self.cache_meta.get("tables_loaded", ["", ""])[0] if self.cache_meta.get("tables_loaded") else None,
-                    "case_table": self.cache_meta.get("tables_loaded", ["", ""])[1] if self.cache_meta.get("tables_loaded") else None,
+                    "activity_table": self.cache_meta.get("tables_loaded", ["", "", ""])[0] if self.cache_meta.get("tables_loaded") else None,
+                    "case_table": self.cache_meta.get("tables_loaded", ["", "", ""])[1] if self.cache_meta.get("tables_loaded") else None,
+                    "accounting_table": self.cache_meta.get("tables_loaded", ["", "", ""])[2] if self.cache_meta.get("tables_loaded") else None,
                     "grouped_selected_tables": (self.process_context.get("working_capital_source_summary", {}) or {}).get(
                         "grouped_selected_tables", []
                     ),
@@ -902,20 +957,215 @@ class DataCacheService:
             "invoice_payment_terms",
         ]
 
+    @staticmethod
+    def _normalized_join_key(series: pd.Series, normalize: bool = False) -> pd.Series:
+        key = series.astype(str).str.strip()
+        key = key.where(series.notna(), pd.NA)
+        key = key.replace({"": pd.NA})
+        if not normalize:
+            return key
+        normalized = key.str.upper().str.replace(r"[^A-Z0-9]", "", regex=True)
+        digit_mask = normalized.str.fullmatch(r"\d+").fillna(False)
+        normalized = normalized.where(~digit_mask, normalized.str.lstrip("0"))
+        normalized = normalized.replace({"": pd.NA})
+        return normalized
+
+    @staticmethod
+    def _sample_values(series: pd.Series, max_items: int = 5) -> List[str]:
+        return [str(v) for v in series.dropna().head(max_items).tolist()]
+
+    def _align_case_level_to_olap_scope(
+        self,
+        case_level: pd.DataFrame,
+        olap_df: pd.DataFrame,
+    ) -> tuple[pd.DataFrame, Dict[str, Any]]:
+        summary: Dict[str, Any] = {
+            "enabled": bool(getattr(settings, "WCM_ALIGN_CASE_LEVEL_TO_OLAP_SCOPE", True)),
+            "applied": False,
+            "before_rows": int(len(case_level)) if case_level is not None else 0,
+            "after_rows": int(len(case_level)) if case_level is not None else 0,
+            "olap_rows": int(len(olap_df)) if olap_df is not None else 0,
+            "olap_invoice_keys": 0,
+            "reason": "not_applicable",
+        }
+        if not summary["enabled"]:
+            summary["reason"] = "disabled"
+            return case_level, summary
+        if case_level is None or case_level.empty:
+            summary["reason"] = "case_level_empty"
+            return case_level, summary
+        if olap_df is None or olap_df.empty:
+            summary["reason"] = "olap_empty"
+            return case_level, summary
+        if "invoice_number" not in olap_df.columns:
+            summary["reason"] = "olap_missing_invoice_number"
+            return case_level, summary
+
+        olap_invoice_key = self._normalized_join_key(olap_df["invoice_number"], normalize=True)
+        olap_invoice_key = pd.Index(olap_invoice_key.dropna().unique())
+        summary["olap_invoice_keys"] = int(len(olap_invoice_key))
+        if len(olap_invoice_key) == 0:
+            summary["reason"] = "olap_invoice_keys_empty"
+            return case_level, summary
+
+        aligned = case_level.copy()
+        invoice_id_key = (
+            self._normalized_join_key(aligned["invoice_id"], normalize=True)
+            if "invoice_id" in aligned.columns
+            else pd.Series([pd.NA] * len(aligned), index=aligned.index)
+        )
+        doc_key = (
+            self._normalized_join_key(aligned["document_number"], normalize=True)
+            if "document_number" in aligned.columns
+            else pd.Series([pd.NA] * len(aligned), index=aligned.index)
+        )
+        mask = invoice_id_key.isin(olap_invoice_key) | doc_key.isin(olap_invoice_key)
+        aligned = aligned[mask].copy()
+
+        summary["applied"] = True
+        summary["after_rows"] = int(len(aligned))
+        summary["reason"] = "aligned_to_olap_invoice_scope"
+        summary["sample_olap_invoice_keys"] = [str(k) for k in list(olap_invoice_key[:5])]
+        logger.info(
+            "Case-level OLAP scope alignment applied: before=%s after=%s olap_rows=%s invoice_keys=%s",
+            summary["before_rows"],
+            summary["after_rows"],
+            summary["olap_rows"],
+            summary["olap_invoice_keys"],
+        )
+        return aligned, summary
+
     def _build_enriched_event_log(
         self,
         event_log: pd.DataFrame,
         case_attrs: pd.DataFrame,
+        accounting_attrs: pd.DataFrame,
         case_table_full: pd.DataFrame,
         celonis: CelonisService,
-    ) -> pd.DataFrame:
+    ) -> tuple[pd.DataFrame, Dict[str, Any]]:
         if event_log.empty:
-            return event_log.copy()
+            return event_log.copy(), {"join_attempted": False, "reason": "event_log_empty"}
 
         enriched = event_log.copy()
+        join_diagnostics: Dict[str, Any] = {
+            "join_attempted": False,
+            "selected_join": None,
+            "candidate_matches": [],
+            "accounting_rows": int(len(accounting_attrs)) if accounting_attrs is not None else 0,
+        }
+        if "document_number" in enriched.columns:
+            enriched["document_number"] = enriched["document_number"].astype(str).str.strip()
+        if "case_id" in enriched.columns:
+            enriched["case_id"] = enriched["case_id"].astype(str).str.strip()
         if not case_attrs.empty:
             attrs = case_attrs.drop_duplicates(subset=["document_number"]).copy()
+            attrs["document_number"] = attrs["document_number"].astype(str).str.strip()
             enriched = enriched.merge(attrs, on="document_number", how="left")
+
+        if accounting_attrs is not None and not accounting_attrs.empty:
+            accounting = accounting_attrs.copy()
+            if "document_number" in accounting.columns:
+                accounting["document_number"] = accounting["document_number"].astype(str).str.strip()
+            if "invoice_number" in accounting.columns:
+                accounting["invoice_number"] = accounting["invoice_number"].astype(str).str.strip()
+            if "case_id" in accounting.columns:
+                accounting["case_id"] = accounting["case_id"].astype(str).str.strip()
+            logger.info(
+                "Accounting join input: event_rows=%s accounting_rows=%s accounting_cols=%s key_samples=%s",
+                len(enriched),
+                len(accounting),
+                list(accounting.columns),
+                {
+                    "event_document_number": self._sample_values(enriched["document_number"]) if "document_number" in enriched.columns else [],
+                    "event_case_id": self._sample_values(enriched["case_id"]) if "case_id" in enriched.columns else [],
+                    "acc_document_number": self._sample_values(accounting["document_number"]) if "document_number" in accounting.columns else [],
+                    "acc_invoice_number": self._sample_values(accounting["invoice_number"]) if "invoice_number" in accounting.columns else [],
+                    "acc_case_id": self._sample_values(accounting["case_id"]) if "case_id" in accounting.columns else [],
+                },
+            )
+
+            candidates: List[Dict[str, Any]] = []
+            candidate_specs = [
+                ("document_number", "document_number", "document_number=document_number", False),
+                ("case_id", "case_id", "case_id=case_id", False),
+                ("document_number", "invoice_number", "document_number=invoice_number", False),
+                ("document_number", "document_number", "normalized(document_number)=normalized(document_number)", True),
+                ("document_number", "invoice_number", "normalized(document_number)=normalized(invoice_number)", True),
+                ("case_id", "case_id", "normalized(case_id)=normalized(case_id)", True),
+            ]
+            for left_col, right_col, label, normalize in candidate_specs:
+                if left_col not in enriched.columns or right_col not in accounting.columns:
+                    continue
+                left_key = self._normalized_join_key(enriched[left_col], normalize=normalize)
+                right_key = self._normalized_join_key(accounting[right_col], normalize=normalize)
+                left_unique = pd.Index(left_key.dropna().unique())
+                right_unique = pd.Index(right_key.dropna().unique())
+                common = left_unique.intersection(right_unique)
+                common_count = int(len(common))
+                left_count = int(len(left_unique))
+                right_count = int(len(right_unique))
+                coverage = round((common_count / max(left_count, 1)) * 100, 2)
+                candidate = {
+                    "join": label,
+                    "left_col": left_col,
+                    "right_col": right_col,
+                    "normalize": normalize,
+                    "left_unique": left_count,
+                    "right_unique": right_count,
+                    "common_keys": common_count,
+                    "left_coverage_pct": coverage,
+                }
+                candidates.append(candidate)
+
+            join_diagnostics["join_attempted"] = True
+            join_diagnostics["candidate_matches"] = candidates
+            best = max(candidates, key=lambda c: (c["common_keys"], c["left_coverage_pct"]), default=None)
+            if not best or int(best.get("common_keys", 0)) == 0:
+                logger.warning(
+                    "Accounting join skipped: no overlapping keys. candidates=%s",
+                    candidates,
+                )
+                join_diagnostics["selected_join"] = None
+                join_diagnostics["null_rate_pct"] = 100.0
+            else:
+                left_key = self._normalized_join_key(enriched[best["left_col"]], normalize=bool(best["normalize"]))
+                right_key = self._normalized_join_key(accounting[best["right_col"]], normalize=bool(best["normalize"]))
+                left_frame = enriched.copy()
+                left_frame["_accounting_join_key"] = left_key
+                right_frame = accounting.copy()
+                right_frame["_accounting_join_key"] = right_key
+                right_frame = right_frame.dropna(subset=["_accounting_join_key"]).drop_duplicates(subset=["_accounting_join_key"])
+                enriched = left_frame.merge(
+                    right_frame,
+                    on="_accounting_join_key",
+                    how="left",
+                    suffixes=("", "_accounting"),
+                ).drop(columns=["_accounting_join_key"])
+
+                probe_fields = [
+                    field for field in ["due_date", "baseline_date", "clearing_document_number", "invoice_payment_terms"]
+                    if field in enriched.columns
+                ]
+                probe_field = probe_fields[0] if probe_fields else None
+                null_rate = (
+                    float(enriched[probe_field].isna().mean() * 100) if probe_field else 100.0
+                )
+                join_diagnostics["selected_join"] = best["join"]
+                join_diagnostics["null_rate_pct"] = round(null_rate, 2)
+                join_diagnostics["probe_field"] = probe_field
+                if null_rate >= 95:
+                    logger.warning(
+                        "Accounting join appears mostly unmatched: selected_join=%s null_rate=%.2f%%",
+                        best["join"],
+                        null_rate,
+                    )
+                else:
+                    logger.info(
+                        "Accounting join selected=%s coverage=%.2f%% null_rate=%.2f%%",
+                        best["join"],
+                        float(best.get("left_coverage_pct", 0.0)),
+                        null_rate,
+                    )
 
         full = case_table_full.copy()
         if not full.empty:
@@ -991,6 +1241,8 @@ class DataCacheService:
             enriched["payment_terms"] = None
         if "po_payment_terms" in enriched.columns:
             enriched["payment_terms"] = enriched["payment_terms"].fillna(enriched["po_payment_terms"])
+        if "invoice_payment_terms" in enriched.columns:
+            enriched["payment_terms"] = enriched["payment_terms"].fillna(enriched["invoice_payment_terms"])
 
         if "currency" not in enriched.columns:
             enriched["currency"] = None
@@ -1002,7 +1254,7 @@ class DataCacheService:
                 enriched["invoice_amount_case_table"], errors="coerce"
             )
 
-        return enriched
+        return enriched, join_diagnostics
 
     def _build_case_level_dataset(self, enriched_event_log: pd.DataFrame, process_context: Dict[str, Any]) -> pd.DataFrame:
         if enriched_event_log.empty:
@@ -1031,10 +1283,16 @@ class DataCacheService:
             row = {
                 "case_id": case_id,
                 "document_number": g["document_number"].dropna().astype(str).iloc[0] if g["document_number"].notna().any() else str(case_id),
+                "invoice_number": g["invoice_number"].dropna().astype(str).iloc[0] if "invoice_number" in g and g["invoice_number"].notna().any() else None,
                 "vendor_id": g["vendor_id"].dropna().astype(str).iloc[0] if g["vendor_id"].notna().any() else "UNKNOWN",
                 "vendor_id_full": g["vendor_id_full"].dropna().astype(str).iloc[0] if "vendor_id_full" in g and g["vendor_id_full"].notna().any() else None,
                 "payment_terms": g["payment_terms"].dropna().astype(str).iloc[0] if g["payment_terms"].notna().any() else None,
                 "currency": g["currency"].dropna().astype(str).iloc[0] if g["currency"].notna().any() else None,
+                "invoice_payment_terms": g["invoice_payment_terms"].dropna().astype(str).iloc[0] if "invoice_payment_terms" in g and g["invoice_payment_terms"].notna().any() else None,
+                "po_payment_terms": g["po_payment_terms"].dropna().astype(str).iloc[0] if "po_payment_terms" in g and g["po_payment_terms"].notna().any() else None,
+                "vendor_master_payment_terms": g["vendor_master_payment_terms"].dropna().astype(str).iloc[0] if "vendor_master_payment_terms" in g and g["vendor_master_payment_terms"].notna().any() else None,
+                "clearing_document_number": g["clearing_document_number"].dropna().astype(str).iloc[0] if "clearing_document_number" in g and g["clearing_document_number"].notna().any() else None,
+                "fiscal_year": g["fiscal_year"].dropna().astype(str).iloc[0] if "fiscal_year" in g and g["fiscal_year"].notna().any() else None,
                 "invoice_amount_case_table": float(amount_series.iloc[0]) if not amount_series.empty else None,
                 "document_type": g["document_type"].dropna().astype(str).iloc[0] if "document_type" in g and g["document_type"].notna().any() else None,
                 "company_code": g["company_code"].dropna().astype(str).iloc[0] if "company_code" in g and g["company_code"].notna().any() else None,
@@ -1049,6 +1307,9 @@ class DataCacheService:
                 "discount_days_1": g["discount_days_1"].dropna().iloc[0] if "discount_days_1" in g and g["discount_days_1"].notna().any() else None,
                 "discount_days_2": g["discount_days_2"].dropna().iloc[0] if "discount_days_2" in g and g["discount_days_2"].notna().any() else None,
                 "discount_days_3": g["discount_days_3"].dropna().iloc[0] if "discount_days_3" in g and g["discount_days_3"].notna().any() else None,
+                "baseline_date": g["baseline_date"].dropna().iloc[0] if "baseline_date" in g and g["baseline_date"].notna().any() else None,
+                "due_date": g["due_date"].dropna().iloc[0] if "due_date" in g and g["due_date"].notna().any() else None,
+                "cleared_date": g["cleared_date"].dropna().iloc[0] if "cleared_date" in g and g["cleared_date"].notna().any() else None,
                 "activity_trace": activities,
                 "activity_trace_text": activity_trace_text,
                 "start_time": start_ts,
@@ -1058,7 +1319,7 @@ class DataCacheService:
             grouped.append(row)
 
         case_level = pd.DataFrame(grouped)
-        case_level["invoice_id"] = case_level["document_number"]
+        case_level["invoice_id"] = case_level["invoice_number"].fillna(case_level["document_number"])
 
         avg_end_to_end = float(process_context.get("avg_end_to_end_days", 0) or 0)
         case_level["estimated_processing_days"] = avg_end_to_end if avg_end_to_end > 0 else case_level["duration_days"].mean()
@@ -1067,12 +1328,16 @@ class DataCacheService:
         case_level["value_at_risk"] = None
         case_level["actual_dpo"] = case_level["duration_days"].fillna(0.0)
         case_level["potential_dpo"] = case_level["actual_dpo"]
-        for dt_col in ["document_date", "submit_date", "ordered_date", "create_date", "changed_date"]:
+        for dt_col in ["document_date", "submit_date", "ordered_date", "create_date", "changed_date", "baseline_date", "due_date", "cleared_date"]:
             if dt_col in case_level.columns:
                 case_level[dt_col] = pd.to_datetime(case_level[dt_col], errors="coerce")
 
         discount_days = pd.to_numeric(case_level.get("discount_days_1"), errors="coerce").fillna(0)
-        case_level["due_date_estimated"] = case_level["document_date"] + pd.to_timedelta(discount_days, unit="D")
+        case_level["due_date_estimated"] = case_level["due_date"]
+        missing_due_mask = case_level["due_date_estimated"].isna()
+        case_level.loc[missing_due_mask, "due_date_estimated"] = (
+            case_level.loc[missing_due_mask, "document_date"] + pd.to_timedelta(discount_days.loc[missing_due_mask], unit="D")
+        )
         now = pd.Timestamp.now()
         case_level["days_until_due"] = (case_level["due_date_estimated"] - now).dt.total_seconds() / 86400
         return case_level
@@ -1247,31 +1512,62 @@ class DataCacheService:
             return self._to_jsonable(record)
 
         activity_l = case_level["activity_trace_text"].str.lower().fillna("")
+        empty_str_series = pd.Series(index=case_level.index, dtype=str)
         payment_terms_l = case_level["payment_terms"].astype(str).str.lower().fillna("")
+        invoice_terms_l = case_level.get("invoice_payment_terms", empty_str_series).astype(str).str.lower().fillna("")
+        po_terms_l = case_level.get("po_payment_terms", empty_str_series).astype(str).str.lower().fillna("")
+        vendor_terms_l = case_level.get("vendor_master_payment_terms", empty_str_series).astype(str).str.lower().fillna("")
         processing_l = case_level["processing_status"].astype(str).str.lower().fillna("")
-        payment_status_l = case_level.get("payment_status", pd.Series(dtype=str)).astype(str).str.lower().fillna("")
-        open_closed_status_l = case_level.get("open_closed_status", pd.Series(dtype=str)).astype(str).str.lower().fillna("")
+        payment_status_l = case_level.get("payment_status", empty_str_series).astype(str).str.lower().fillna("")
+        open_closed_status_l = case_level.get("open_closed_status", empty_str_series).astype(str).str.lower().fillna("")
+        days_until_due = pd.to_numeric(case_level.get("days_until_due"), errors="coerce")
+        estimated_days = pd.to_numeric(case_level.get("estimated_processing_days"), errors="coerce").fillna(0).clip(lower=1)
 
         payment_terms_mask = (
-            activity_l.str.contains("payment term", na=False)
+            (
+                invoice_terms_l.ne("")
+                & (
+                    (po_terms_l.ne("") & invoice_terms_l.ne(po_terms_l))
+                    | (vendor_terms_l.ne("") & invoice_terms_l.ne(vendor_terms_l))
+                )
+            )
             | payment_terms_l.isin(["0", "0000", "immediate", "0 days"])
         )
-        invoice_exception_mask = activity_l.str.contains("exception", na=False)
-        short_terms_mask = payment_terms_l.isin(["0", "0000", "immediate", "0 days"])
-        early_payment_mask = case_level["actual_dpo"].fillna(0) <= 7
-        paid_late_mask = (
-            activity_l.str.contains("due date passed", na=False)
-            | (case_level["days_until_due"].fillna(9999) < 0)
+        invoice_exception_mask = (
+            processing_l.str.contains("exception|blocked|moved out", regex=True, na=False)
+            | activity_l.str.contains(r"\bexception\b|moved out|block", regex=True, na=False)
         )
-        open_risk_mask = processing_l.str.contains("open|pending", na=False) | ~activity_l.str.contains("clear invoice|clear", na=False)
+        short_terms_mask = (
+            invoice_terms_l.isin(["0", "0000", "immediate", "0 days"])
+            | payment_terms_l.isin(["0", "0000", "immediate", "0 days"])
+        )
+        early_payment_mask = (
+            open_closed_status_l.eq("paid_early")
+            | payment_status_l.str.contains("paid early|early", regex=True, na=False)
+        )
+        paid_late_mask = (
+            open_closed_status_l.eq("paid_late")
+            | payment_status_l.str.contains("paid late|late", regex=True, na=False)
+            | (days_until_due.fillna(9999) < 0)
+        )
+        open_risk_mask = (
+            (
+                open_closed_status_l.eq("open")
+                | payment_status_l.str.contains("open|pending", regex=True, na=False)
+                | processing_l.str.contains("open|pending", regex=True, na=False)
+            )
+            & days_until_due.notna()
+            & (days_until_due <= estimated_days)
+        )
 
         records_map[self._normalize_exception_key("Payment Terms Mismatch")] = [
             mk_record(
                 r,
                 "Payment Terms Mismatch",
                 {
-                    "invoice_payment_terms": r.get("payment_terms"),
-                    "po_payment_terms": r.get("payment_terms"),
+                    "invoice_payment_terms": r.get("invoice_payment_terms") or r.get("payment_terms"),
+                    "po_payment_terms": r.get("po_payment_terms") or r.get("payment_terms"),
+                    "vendor_master_payment_terms": r.get("vendor_master_payment_terms"),
                     "risk_level": "MEDIUM",
                     "status": "OPEN",
                     "value_at_risk": r.get("invoice_amount"),
@@ -1346,68 +1642,6 @@ class DataCacheService:
                 },
             )
             for _, r in case_level[open_risk_mask].iterrows()
-        ]
-
-        # Open/Closed profile status buckets
-        records_map[self._normalize_exception_key("Open Invoices")] = [
-            mk_record(
-                r,
-                "Open Invoices",
-                {
-                    "status": "OPEN",
-                    "days_until_due": r.get("days_until_due"),
-                    "risk_level": "MEDIUM" if float(r.get("days_until_due") or 0) > 0 else "HIGH",
-                },
-            )
-            for _, r in case_level[
-                open_closed_status_l.eq("open") | payment_status_l.str.contains("open|pending", na=False)
-            ].iterrows()
-        ]
-        records_map[self._normalize_exception_key("Closed Invoices")] = [
-            mk_record(
-                r,
-                "Closed Invoices",
-                {
-                    "status": "CLOSED",
-                    "risk_level": "LOW",
-                },
-            )
-            for _, r in case_level[open_closed_status_l.eq("closed")].iterrows()
-        ]
-        records_map[self._normalize_exception_key("Paid On Time")] = [
-            mk_record(
-                r,
-                "Paid On Time",
-                {
-                    "status": "CLOSED",
-                    "risk_level": "LOW",
-                },
-            )
-            for _, r in case_level[open_closed_status_l.eq("paid_on_time")].iterrows()
-        ]
-        records_map[self._normalize_exception_key("Paid Early")] = [
-            mk_record(
-                r,
-                "Paid Early",
-                {
-                    "status": "CLOSED",
-                    "risk_level": "LOW",
-                },
-            )
-            for _, r in case_level[open_closed_status_l.eq("paid_early")].iterrows()
-        ]
-        records_map[self._normalize_exception_key("Paid Late (Status)")] = [
-            mk_record(
-                r,
-                "Paid Late (Status)",
-                {
-                    "status": "CLOSED",
-                    "risk_level": "HIGH",
-                },
-            )
-            for _, r in case_level[
-                open_closed_status_l.eq("paid_late") | payment_status_l.str.contains("paid late", na=False)
-            ].iterrows()
         ]
 
         # Dynamic individual exception discovery from activity paths.

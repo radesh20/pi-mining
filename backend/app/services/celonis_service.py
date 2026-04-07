@@ -66,6 +66,7 @@ class CelonisService:
         self._case_durations_cache = None
         self._vendor_stats_cache = None
         self._table_data_cache: Dict[str, pd.DataFrame] = {}
+        self._last_accounting_source_table: Optional[str] = None
 
         self._connect()
         self._normalize_configured_tables()
@@ -337,6 +338,8 @@ class CelonisService:
         }
         preferred = [
             self.case_table,
+            "t_o_custom_AccountingDocumentHeader",
+            "AccountingDocumentHeader",
             "t_o_custom_PurchasingDocumentHeader",
             "PurchasingDocumentHeader",
             "t_o_custom_VimHeader",
@@ -393,6 +396,52 @@ class CelonisService:
         if best is None:
             raise Exception("No suitable case attribute table found with required columns (document_number/vendor_id).")
         return best
+
+    def _discover_accounting_attr_source(self) -> Dict[str, Any]:
+        aliases = {
+            "case_id": [self.case_col, "CASEKEY", "_CASE_KEY", "CASE_ID", "CASEID"],
+            "document_number": [self.case_table_doc_col, "EBELN", "DOCUMENT_NUMBER", "PO_NUMBER"],
+            "invoice_number": ["BELNR", "INVOICE_NUMBER", "INV_NUMBER"],
+            "fiscal_year": ["GJAHR", "FISCAL_YEAR"],
+            "company_code": ["BUKRS", "COMPANY_CODE"],
+            "clearing_document_number": ["AUGBL", "CLEARING_DOCUMENT_NUMBER", "CLEARING_DOCUMENT"],
+            "baseline_date": ["ZFBDT", "BASELINE_DATE"],
+            "due_date": ["FAEDT", "NETDT", "DUE_DATE"],
+            "cleared_date": ["AUGDT", "CLEARED_DATE"],
+            "invoice_payment_terms": ["ZTERM", "INVOICE_PAYMENT_TERMS", "INVOICE_PT"],
+            "po_payment_terms": ["ZTERM_PO", "PO_PAYMENT_TERMS", "PO_PAYMENT_TERM"],
+            "vendor_master_payment_terms": ["ZTERM_VENDOR", "VENDOR_MASTER_PAYMENT_TERMS", "VENDOR_MASTER_PT"],
+        }
+        preferred = [
+            "t_o_custom_AccountingDocumentHeader",
+            "AccountingDocumentHeader",
+        ]
+
+        candidate_names = []
+        known_names = set(self._get_table_names())
+        for name in preferred:
+            if name in known_names and name not in candidate_names:
+                candidate_names.append(name)
+
+        best: Optional[Dict[str, Any]] = None
+        for table_name in candidate_names:
+            cols = self._table_columns_safe(table_name)
+            if not cols:
+                continue
+            mapping = {target: self._find_col_by_aliases(cols, a) for target, a in aliases.items()}
+            mandatory = bool(mapping.get("invoice_number")) or bool(mapping.get("document_number")) or bool(mapping.get("case_id"))
+            score = sum(1 for v in mapping.values() if v)
+            if not mandatory:
+                continue
+            candidate = {"table": table_name, "mapping": mapping, "score": score}
+            if best is None or candidate["score"] > best["score"]:
+                best = candidate
+            if score >= 4:
+                return candidate
+
+        if best is not None:
+            return best
+        raise Exception("No suitable accounting header table found with case/invoice/document keys.")
 
     def _resolve_table_name(self, configured_name: str) -> str:
         table_names = self._get_table_names()
@@ -615,6 +664,7 @@ class CelonisService:
             df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
             df = df.sort_values(["case_id", "timestamp"], na_position="last").reset_index(drop=True)
             self._event_log_cache = df[expected_cols]
+            logger.info("Event log source selected: %s (rows=%s)", source_table, len(self._event_log_cache))
             return self._event_log_cache.copy()
         except Exception as e:
             raise Exception(f"Event log extraction failed: {str(e)}")
@@ -650,6 +700,88 @@ class CelonisService:
             return self._case_attributes_cache.copy()
         except Exception as e:
             raise Exception(f"Case attributes extraction failed: {str(e)}")
+
+    def get_accounting_document_attributes(self) -> pd.DataFrame:
+        try:
+            source = self._discover_accounting_attr_source()
+            source_table = source["table"]
+            mapping = source["mapping"]
+            self._last_accounting_source_table = source_table
+            source_columns = [col for col in mapping.values() if col]
+            if not source_columns:
+                return pd.DataFrame()
+
+            raw_df = self._extract_table_rows_paginated(
+                table_name=source_table,
+                columns=source_columns,
+                operation_name="accounting header extraction",
+            )
+            rename_map = {src: tgt for tgt, src in mapping.items() if src}
+            df = raw_df.rename(columns=rename_map)
+            if df.empty:
+                logger.warning("Accounting header extraction returned no rows from source table=%s", source_table)
+                return pd.DataFrame(columns=list(mapping.keys()))
+
+            for col in mapping.keys():
+                if col not in df.columns:
+                    df[col] = None
+
+            for dt_col in ["baseline_date", "due_date", "cleared_date"]:
+                if dt_col in df.columns:
+                    df[dt_col] = pd.to_datetime(df[dt_col], errors="coerce")
+
+            result = df.drop_duplicates().reset_index(drop=True)
+            sample_cols = [c for c in ["case_id", "document_number", "invoice_number", "due_date"] if c in result.columns]
+            sample_rows = result[sample_cols].head(3).astype(str).to_dict(orient="records") if sample_cols else []
+            logger.info(
+                "Accounting header extraction succeeded: table=%s rows=%s cols=%s sample=%s",
+                source_table,
+                len(result),
+                list(result.columns),
+                sample_rows,
+            )
+            return result
+        except Exception as e:
+            logger.warning("Accounting header extraction unavailable: %s", str(e))
+            return pd.DataFrame()
+
+    def get_vendor_statistics(self) -> pd.DataFrame:
+        try:
+            df = self.get_event_log_with_vendor()
+            if df.empty:
+                return pd.DataFrame(columns=["vendor_id", "case_count", "exception_case_count", "exception_rate_pct"])
+
+            work = df.copy()
+            work["vendor_id"] = work["vendor_id"].fillna("UNKNOWN").astype(str)
+            work["case_id"] = work["case_id"].astype(str)
+            work["activity"] = work["activity"].fillna("").astype(str).str.lower()
+            exception_case_map = (
+                work.groupby("case_id")["activity"]
+                .apply(lambda s: int(s.str.contains(r"\bexception\b|moved out|due date passed|block", regex=True, na=False).any()))
+                .reset_index(name="is_exception")
+            )
+            vendor_case_map = (
+                work.groupby("case_id")["vendor_id"]
+                .agg(lambda s: s.dropna().iloc[0] if not s.dropna().empty else "UNKNOWN")
+                .reset_index()
+            )
+            merged = vendor_case_map.merge(exception_case_map, on="case_id", how="left")
+            merged["is_exception"] = merged["is_exception"].fillna(0).astype(int)
+
+            result = (
+                merged.groupby("vendor_id", dropna=False)
+                .agg(
+                    case_count=("case_id", "nunique"),
+                    exception_case_count=("is_exception", "sum"),
+                )
+                .reset_index()
+            )
+            result["exception_rate_pct"] = (
+                result["exception_case_count"] / result["case_count"].replace(0, pd.NA) * 100
+            ).fillna(0.0).round(2)
+            return result
+        except Exception as e:
+            raise Exception(f"Vendor statistics extraction failed: {str(e)}")
 
     def get_vendor_mapping(self) -> pd.DataFrame:
         """

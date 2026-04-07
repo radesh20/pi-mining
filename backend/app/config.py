@@ -41,8 +41,17 @@ class Settings:
     CELONIS_DATA_MODEL_ID: str = os.getenv("CELONIS_DATA_MODEL_ID", "")
 
     # Main event/activity table
-    ACTIVITY_TABLE: str = os.getenv("ACTIVITY_TABLE", "t_o_custom_VimHeader").split(",")[0].strip()
-    ACTIVITY_TABLES: list = [t.strip() for t in os.getenv("ACTIVITY_TABLE", "t_o_custom_VimHeader").split(",")]
+    ACTIVITY_TABLE: str = os.getenv(
+        "ACTIVITY_TABLE",
+        "t_o_custom_VimHeader",
+    ).split(",")[0].strip()
+    ACTIVITY_TABLES: list = [
+        t.strip()
+        for t in os.getenv(
+            "ACTIVITY_TABLE",
+            "t_o_custom_VimHeader",
+        ).split(",")
+    ]
     CASE_COLUMN: str = os.getenv("CASE_COLUMN", "CASEKEY")
     ACTIVITY_COLUMN: str = os.getenv("ACTIVITY_COLUMN", "ACTIVITYEN")
     TIMESTAMP_COLUMN: str = os.getenv("TIMESTAMP_COLUMN", "EVENTTIME")
@@ -88,6 +97,9 @@ class Settings:
         ),
     )
     WCM_OLAP_MAX_ROWS: int = int(os.getenv("WCM_OLAP_MAX_ROWS", "200000"))
+    WCM_ALIGN_CASE_LEVEL_TO_OLAP_SCOPE: bool = os.getenv(
+        "WCM_ALIGN_CASE_LEVEL_TO_OLAP_SCOPE", "true"
+    ).lower() == "true"
 
     # Optional explicit OLAP source overrides for environments with non-standard naming
     WCM_OLAP_SOURCE_TABLE: str = os.getenv("WCM_OLAP_SOURCE_TABLE", "")
