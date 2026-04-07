@@ -39,6 +39,7 @@ class CelonisService:
         self.data_model = None
 
         self.activity_table = settings.ACTIVITY_TABLE
+        self.activity_tables = settings.ACTIVITY_TABLES
         self.case_col = settings.CASE_COLUMN
         self.activity_col = settings.ACTIVITY_COLUMN
         self.timestamp_col = settings.TIMESTAMP_COLUMN
@@ -263,8 +264,7 @@ class CelonisService:
             "transaction_code": [self.transaction_col, "TRANSACTIONCODE", "TRANSACTION_CODE", "TCODE"],
         }
 
-        preferred = [
-            self.activity_table,
+        preferred = list(self.activity_tables) + [
             "t_o_custom_VimHeader",
             "t_o_custom_VIMHEADER",
             "VimHeader",
@@ -1123,7 +1123,8 @@ class CelonisService:
             series = pd.to_numeric(df[col], errors="coerce")
             non_null_count_by_column[col] = int(series.notna().sum())
             if series.notna().any():
-                totals_by_column[col] = float(series.fillna(0).sum())
+                total = series.fillna(0).sum()
+                totals_by_column[col] = float(total) if math.isfinite(float(total)) else 0.0
 
         preferred = self._pick_best_amount_column(df[amount_columns]) if amount_columns else None
         return {
@@ -1162,7 +1163,7 @@ class CelonisService:
         }
         if include_rows:
             payload["rows"] = df.where(pd.notnull(df), None).to_dict(orient="records")
-        return payload
+        return self._json_safe(payload)
 
     def get_all_tables_extract(
         self,
@@ -1903,6 +1904,7 @@ class CelonisService:
             "data_model_id": settings.CELONIS_DATA_MODEL_ID,
             "data_model_name": self.data_model.name if self.data_model else "N/A",
             "activity_table": self.activity_table,
+            "activity_tables": self.activity_tables,
             "case_column": self.case_col,
             "activity_column": self.activity_col,
             "timestamp_column": self.timestamp_col,
