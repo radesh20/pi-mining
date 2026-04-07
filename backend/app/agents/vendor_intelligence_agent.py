@@ -54,12 +54,15 @@ class VendorIntelligenceAgent(BaseAgent):
         result["ai_recommendations"] = result.get("ai_recommendations") or deterministic.get("default_recommendations", [])
         result["celonis_evidence"] = result.get(
             "celonis_evidence",
-            "Derived from Celonis vendor/process metrics and supplied vendor-specific anchors.",
+            "Celonis context was provided in prompt; LLM did not return specific evidence citation."
+            if self._context_available()
+            else "[Celonis data unavailable for this request]",
         )
         result["ai_reasoning"] = result.get(
             "ai_reasoning",
             "GPT-4o synthesized vendor risk and optimization recommendations from process mining context.",
         )
+        self._provenance_tag(result)
         return result
 
     def _merge_vendor_analysis(self, deterministic: Dict[str, Any], llm_analysis: Dict[str, Any]) -> Dict[str, Any]:
@@ -137,17 +140,22 @@ class VendorIntelligenceAgent(BaseAgent):
             "exception_path_count": len(exception_paths),
         }
 
-    @staticmethod
-    def _known_vendor_data() -> Dict:
-        return {
-            "vendors": [
-                {"vendor_id": "D4", "invoice_count": 3, "value_usd": 5700000},
-                {"vendor_id": "B2", "invoice_count": 2, "value_usd": 6200000},
-                {"vendor_id": "A27", "invoice_count": 2, "value_usd": 4100000},
-                {"vendor_id": "F6", "invoice_count": 2, "value_usd": 3300000},
-                {"vendor_id": "H8", "invoice_count": 1, "value_usd": 2900000},
-                {"vendor_id": "C3", "invoice_count": 1, "value_usd": 1500000},
-                {"vendor_id": "I9", "invoice_count": None, "value_usd": None},
-                {"vendor_id": "V22", "invoice_count": None, "value_usd": None},
-            ]
-        }
+    def _known_vendor_data(self) -> Dict:
+        """Extract vendor anchors from live process_context. No hardcoded values."""
+        ctx = self.process_context or {}
+        vendor_stats = ctx.get("vendor_stats", [])
+        if not vendor_stats and isinstance(ctx, dict):
+            vendor_stats = []
+        vendors = []
+        for vs in vendor_stats:
+            if not isinstance(vs, dict):
+                continue
+            vendors.append({
+                "vendor_id": vs.get("vendor_id", ""),
+                "invoice_count": int(vs.get("total_cases", 0) or 0) or None,
+                "value_usd": float(vs.get("total_value", 0) or 0) or None,
+                "_data_source": "celonis",
+            })
+        if not vendors:
+            return {"vendors": [], "_data_source": "unavailable"}
+        return {"vendors": vendors, "_data_source": "celonis"}

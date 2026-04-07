@@ -41,6 +41,7 @@ class AutomationPolicyAgent(BaseAgent):
             message_bus_input=input_data,
         )
         normalized = self._normalize_result(result)
+        self._provenance_tag(normalized)
         handoff = {
             "recommended_agent": normalized.get("recommended_agent"),
             "automation_decision": normalized.get("automation_decision"),
@@ -58,7 +59,9 @@ class AutomationPolicyAgent(BaseAgent):
         )
         result["celonis_evidence"] = result.get(
             "celonis_evidence",
-            "Uses Celonis exception frequencies, DPO signals, and value-at-risk metrics supplied in prompt context.",
+            "Celonis context was provided in prompt; LLM did not return specific evidence citation."
+            if self._context_available()
+            else "[Celonis data unavailable for this request]",
         )
         result["recommended_agent"] = result.get(
             "recommended_agent",
@@ -68,43 +71,30 @@ class AutomationPolicyAgent(BaseAgent):
         result["exception_specific_policies"] = result.get("exception_specific_policies", {})
         return result
 
-    @staticmethod
-    def _policy_seed() -> Dict:
-        return {
-            "payment_terms_mismatch": {
-                "frequency_pct": 100.0,
-                "value_usd": 22500000,
-                "risk": "MEDIUM",
-                "suggested_policy": "AUTOMATE_WITH_MONITORING",
-            },
-            "invoice_exception": {
-                "frequency_pct": 51.4,
-                "value_usd": 2480000,
-                "risk": "HIGH",
-                "suggested_policy": "HUMAN_REQUIRED for complex, AUTO for known high-confidence patterns",
-            },
-            "short_payment_terms": {
-                "frequency_pct": 67.6,
-                "value_usd": 15300000,
-                "risk": "CRITICAL",
-                "suggested_policy": "AUTO_ESCALATE",
-            },
-            "early_payment": {
-                "frequency_pct": 62.2,
-                "value_usd": 19000000,
-                "risk": "LOW",
-                "suggested_policy": "AUTOMATE",
-            },
-            "open_invoices": {
-                "frequency_pct": 10.8,
-                "value_usd": 2960000,
-                "risk": "MEDIUM",
-                "suggested_policy": "AUTOMATE",
-            },
-            "paid_late": {
-                "frequency_pct": 29.7,
-                "value_usd": 5410000,
-                "risk": "HIGH",
-                "suggested_policy": "ANALYZE",
-            },
-        }
+    def _policy_seed(self) -> Dict:
+        """Build policy seed from live process_context exception patterns. No hardcoded values."""
+        ctx = self.process_context or {}
+        exception_patterns = ctx.get("exception_patterns", [])
+        seed = {}
+        for pat in exception_patterns:
+            exc_type = str(pat.get("exception_type", "")).lower()
+            key = exc_type.replace(" ", "_").replace("(", "").replace(")", "")
+            if not key:
+                continue
+            freq = float(pat.get("frequency_percentage", 0) or 0)
+            seed[key] = {
+                "frequency_pct": freq,
+                "value_usd": 0.0,
+                "risk": "CRITICAL" if freq >= 60 else "HIGH" if freq >= 40 else "MEDIUM" if freq >= 20 else "LOW",
+                "suggested_policy": "HUMAN_REQUIRED" if freq >= 60 else "MONITOR" if freq >= 40 else "AUTOMATE_WITH_MONITORING",
+                "_data_source": "celonis",
+            }
+        if not seed:
+            seed["_empty"] = {
+                "frequency_pct": 0.0,
+                "value_usd": 0.0,
+                "risk": "UNKNOWN",
+                "suggested_policy": "MONITOR",
+                "_data_source": "unavailable",
+            }
+        return seed

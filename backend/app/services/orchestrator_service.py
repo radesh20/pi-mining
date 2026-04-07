@@ -406,6 +406,27 @@ class OrchestratorService:
             err = f"{agent_label} failed: {str(exc)}"
             output = {"error": err}
 
+        celonis_ev_raw = (output or {}).get("celonis_evidence")
+        if celonis_ev_raw:
+            celonis_evidence_used = str(celonis_ev_raw)
+        elif (output or {}).get("_data_provenance", {}).get("context_grounded"):
+            celonis_evidence_used = "Celonis context was provided in prompt; agent did not return a specific citation."
+        else:
+            celonis_evidence_used = "[PI data unavailable for this step — Celonis cache was not loaded or context was empty.]"
+
+        # Propagate real guardrail result from agent output into the trace step.
+        # This replaces the HARDCODED_AGENT_GUARDRAILS used in the UI with actual backend results.
+        raw_guardrail = (output or {}).get("guardrail_result")
+        guardrail_checks: list = []
+        if isinstance(raw_guardrail, dict):
+            guardrail_checks = [{
+                "ruleId": raw_guardrail.get("rule_id", "UNKNOWN"),
+                "status": "pass" if raw_guardrail.get("passed") else "warn" if "OVERRIDE" in str(raw_guardrail.get("action_taken", "")) else "fail",
+                "title": raw_guardrail.get("reason", "Guardrail check"),
+                "detail": raw_guardrail.get("action_taken", ""),
+                "enforcement": "code",
+            }]
+
         trace["steps"].append(
             {
                 "step_number": step_number,
@@ -414,10 +435,7 @@ class OrchestratorService:
                 "input": input_payload,
                 "input_summary": self._summarize_payload(input_payload),
                 "output_summary": self._summarize_output(output),
-                "celonis_evidence_used": (output or {}).get(
-                    "celonis_evidence",
-                    "Derived from process_context and provided Celonis portfolio metrics.",
-                ),
+                "celonis_evidence_used": celonis_evidence_used,
                 "financial_impact": self._extract_financial_hint(output),
                 "detected_process_step": (output or {}).get("detected_process_step", action),
                 "expected_turnaround_days": self._extract_expected_turnaround_days(output),
@@ -427,6 +445,7 @@ class OrchestratorService:
                     "payload_field_justification_from_pi",
                     "Fields selected using PI context: path stage, turnaround, and conformance risk.",
                 ),
+                "guardrail_checks": guardrail_checks,
                 "full_output": output,
                 "error": err,
             }
@@ -482,6 +501,8 @@ class OrchestratorService:
 
     def _build_fast_interaction_trace(self, invoice_data: Dict, cache_key: str) -> Dict:
         trace = self._init_trace(invoice_data)
+        trace["_synthetic"] = True
+        trace["_synthetic_label"] = "[SYNTHETIC] Fast-mode trace — no LLM calls were made"
         scenario = self._detect_scenario(invoice_data)
         risk_level = self._infer_risk_level(invoice_data, scenario)
         days_until_due = float(invoice_data.get("days_until_due", 0) or 0)
@@ -509,9 +530,15 @@ class OrchestratorService:
                 },
                 "vendor_risk_score": risk_level,
                 "payment_behavior": {
-                    "on_time_pct": 62.0 if risk_level in {"LOW", "MEDIUM"} else 38.0,
-                    "late_pct": 18.0 if risk_level in {"LOW", "MEDIUM"} else 41.0,
-                    "early_pct": 20.0 if scenario["id"] == "early_payment" else 6.0,
+                    # [SYNTHETIC] Fast-mode: real payment behavior requires a Celonis
+                    # case-level query that is NOT executed in this path.
+                    # Null values are explicit — do NOT substitute fabricated percentages.
+                    "on_time_pct": None,
+                    "late_pct": None,
+                    "early_pct": None,
+                    "open_pct": None,
+                    "_source": "synthetic",
+                    "_note": "Fast-mode: no Celonis query executed; real payment data unavailable",
                 },
             },
             "ai_recommendations": [
@@ -552,6 +579,7 @@ class OrchestratorService:
             action="Analyze vendor risk and historical process behavior",
             input_payload=vendor_input,
             output=vendor_output,
+            synthetic=True,
         )
         trace["handoff_messages"].append(
             self._build_handoff(
@@ -564,6 +592,7 @@ class OrchestratorService:
                 days_until_due=days_until_due,
                 urgency=urgency,
                 rationale="Vendor context is passed first so downstream prompts inherit risk, value, and timing evidence.",
+                synthetic=True,
             )
         )
 
@@ -638,6 +667,7 @@ class OrchestratorService:
             action="Generate vendor-aware prompts for Exception Agent",
             input_payload=prompt_input,
             output=prompt_output,
+            synthetic=True,
         )
         trace["handoff_messages"].append(
             self._build_handoff(
@@ -650,6 +680,7 @@ class OrchestratorService:
                 days_until_due=days_until_due,
                 urgency=urgency,
                 rationale="Policy needs the same prompt constraints that downstream action agents will receive.",
+                synthetic=True,
             )
         )
 
@@ -715,6 +746,7 @@ class OrchestratorService:
                 "generated_prompts_summary": prompt_output["generated_prompts"],
             },
             output=policy_output,
+            synthetic=True,
         )
         trace["handoff_messages"].append(
             self._build_handoff(
@@ -727,6 +759,7 @@ class OrchestratorService:
                 days_until_due=days_until_due,
                 urgency=urgency,
                 rationale="Invoice Processing Agent needs the policy posture before choosing the routing branch.",
+                synthetic=True,
             )
         )
 
@@ -818,6 +851,7 @@ class OrchestratorService:
                 "policy_decision": policy_output,
             },
             output=invoice_output,
+            synthetic=True,
         )
         trace["handoff_messages"].append(
             self._build_handoff(
@@ -830,6 +864,7 @@ class OrchestratorService:
                 days_until_due=days_until_due,
                 urgency=urgency,
                 rationale=invoice_output["handoff_payload"]["payload_field_justification_from_pi"],
+                synthetic=True,
             )
         )
 
@@ -942,6 +977,7 @@ class OrchestratorService:
                 "invoice_processing_output": invoice_output,
             },
             output=exception_output,
+            synthetic=True,
         )
         trace["handoff_messages"].append(
             self._build_handoff(
@@ -954,6 +990,7 @@ class OrchestratorService:
                 days_until_due=days_until_due,
                 urgency=urgency,
                 rationale=exception_output["payload_field_justification_from_pi"],
+                synthetic=True,
             )
         )
 
@@ -1024,6 +1061,7 @@ class OrchestratorService:
                     "automation_policy": policy_output,
                 },
                 output=human_output,
+                synthetic=True,
             )
 
         trace["final_status"] = final_status
@@ -1033,6 +1071,7 @@ class OrchestratorService:
             "resolution": exception_output["resolution_strategy"] if resolved else "Escalated for human decision",
             "resolved_by": exception_output["resolved_by"],
             "reasoning": exception_output["ai_reasoning"],
+            "_synthetic": True,
         }
         trace["financial_summary"] = self._build_financial_summary(
             invoice_data=invoice_data,
@@ -1040,11 +1079,20 @@ class OrchestratorService:
             exception_output=exception_output,
             human_output=human_output,
         )
+        # Stamp fast-mode sub-objects so consumers can distinguish them from real agent output
+        trace["financial_summary"]["_synthetic"] = True
+        trace["financial_summary"]["_synthetic_label"] = (
+            "[SYNTHETIC] Fast-mode financial summary — derived from invoice payload, not from Celonis OLAP data"
+        )
         trace["turnaround_assessment"] = self._build_turnaround_assessment(
             invoice_data=invoice_data,
             invoice_output=invoice_output,
             exception_output=exception_output,
             human_output=human_output,
+        )
+        trace["turnaround_assessment"]["_synthetic"] = True
+        trace["turnaround_assessment"]["_synthetic_label"] = (
+            "[SYNTHETIC] Fast-mode turnaround assessment — derived from request payload, not from Celonis event log"
         )
         return self._finalize_result(
             cache_key=cache_key,
@@ -1065,32 +1113,43 @@ class OrchestratorService:
         action: str,
         input_payload: Dict,
         output: Dict,
+        synthetic: bool = False,
     ) -> None:
-        trace["steps"].append(
-            {
-                "step_number": step_number,
-                "agent": agent_label,
-                "action": action,
-                "input": input_payload,
-                "input_summary": self._summarize_payload(input_payload),
-                "output_summary": self._summarize_output(output),
-                "celonis_evidence_used": (output or {}).get(
-                    "celonis_evidence",
-                    "Derived from process context and selected exception record.",
-                ),
-                "financial_impact": self._extract_financial_hint(output),
-                "detected_process_step": (output or {}).get("detected_process_step", action),
-                "expected_turnaround_days": self._extract_expected_turnaround_days(output),
-                "days_until_due": self._extract_days_until_due(output, input_payload),
-                "urgency_decision": self._extract_urgency(output),
-                "payload_field_justification_from_pi": (output or {}).get(
-                    "payload_field_justification_from_pi",
-                    "Fields selected using PI context: path stage, turnaround, and conformance risk.",
-                ),
-                "full_output": output,
-                "error": None,
-            }
-        )
+        """
+        Append one agent step to the trace.
+        Pass synthetic=True from fast-mode callers so every step is
+        unmistakably watermarked — no LLM inference was performed.
+        """
+        step = {
+            "step_number": step_number,
+            "agent": agent_label,
+            "action": action,
+            "input": input_payload,
+            "input_summary": self._summarize_payload(input_payload),
+            "output_summary": self._summarize_output(output),
+            "celonis_evidence_used": (output or {}).get(
+                "celonis_evidence",
+                "Derived from process context and selected exception record.",
+            ),
+            "financial_impact": self._extract_financial_hint(output),
+            "detected_process_step": (output or {}).get("detected_process_step", action),
+            "expected_turnaround_days": self._extract_expected_turnaround_days(output),
+            "days_until_due": self._extract_days_until_due(output, input_payload),
+            "urgency_decision": self._extract_urgency(output),
+            "payload_field_justification_from_pi": (output or {}).get(
+                "payload_field_justification_from_pi",
+                "Fields selected using PI context: path stage, turnaround, and conformance risk.",
+            ),
+            "full_output": output,
+            "error": None,
+        }
+        if synthetic:
+            step["_synthetic"] = True
+            step["_synthetic_label"] = (
+                "[SYNTHETIC] Fast-mode step — no LLM inference was performed; "
+                "output is deterministically constructed from invoice payload"
+            )
+        trace["steps"].append(step)
 
     def _build_fast_prompt_trace(
         self,
@@ -1103,18 +1162,20 @@ class OrchestratorService:
         system_prompt: str,
         user_prompt: str,
         model_output: Dict,
-        handoff: Dict,
+        handoff: Dict, 
     ) -> Dict:
         return {
-            "agent_id": agent_id,
-            "agent_name": agent_name,
-            "prompt_purpose": prompt_purpose,
-            "guardrails": guardrails,
-            "message_bus_input": self._compact_payload(message_bus_input),
-            "system_prompt": system_prompt,
-            "user_prompt": user_prompt,
-            "model_output": self._compact_payload(model_output),
-            "handoff": self._compact_payload(handoff),
+        "agent_id": agent_id,
+        "agent_name": agent_name,
+        "prompt_purpose": prompt_purpose,
+        "guardrails": guardrails,
+        "message_bus_input": self._compact_payload(message_bus_input),
+        "system_prompt": system_prompt,
+        "user_prompt": user_prompt,
+        "model_output": self._compact_payload(model_output),
+        "handoff": self._compact_payload(handoff),
+        "_synthetic": True,
+        "_synthetic_label": "[SYNTHETIC] Fast-mode prompt trace — no LLM inference was performed",
         }
 
     def _build_handoff(
@@ -1129,8 +1190,13 @@ class OrchestratorService:
         days_until_due: float,
         urgency: str,
         rationale: str,
+        synthetic: bool = False,
     ) -> Dict:
-        return {
+        """
+        Build one agent handoff message.
+        Pass synthetic=True from fast-mode callers to watermark the message.
+        """
+        msg: Dict[str, Any] = {
             "from_agent": from_agent,
             "to_agent": to_agent,
             "message_type": message_type,
@@ -1141,6 +1207,13 @@ class OrchestratorService:
             "urgency_decision": urgency,
             "pi_payload_justification": rationale,
         }
+        if synthetic:
+            msg["_synthetic"] = True
+            msg["_synthetic_label"] = (
+                "[SYNTHETIC] Fast-mode handoff — no real agent execution; "
+                "message constructed deterministically from invoice payload"
+            )
+        return msg
 
     @staticmethod
     def _compact_payload(value: Any, depth: int = 0) -> Any:

@@ -39,6 +39,7 @@ class HumanInLoopAgent(BaseAgent):
             message_bus_input=input_data,
         )
         normalized = self._normalize_result(result)
+        self._provenance_tag(normalized)
         handoff = {
             "assigned_role": normalized.get("assigned_role"),
             "priority": normalized.get("priority"),
@@ -75,7 +76,9 @@ class HumanInLoopAgent(BaseAgent):
         )
         result["celonis_evidence"] = result.get(
             "celonis_evidence",
-            "Grounded in Celonis role mappings, exception behavior, and turnaround metrics.",
+            "Celonis context was provided in prompt; LLM did not return specific evidence citation."
+            if self._context_available()
+            else "[Celonis data unavailable for this request]",
         )
         result["ai_reasoning"] = result.get(
             "ai_reasoning",

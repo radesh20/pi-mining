@@ -19,6 +19,76 @@ class BaseAgent(ABC):
         self.guardrails = guardrails or []
         self.last_prompt_trace: Dict[str, Any] = {}
 
+    def _context_available(self) -> bool:
+        """Return True when process_context carries real Celonis data."""
+        return bool(
+            self.process_context
+            and int(self.process_context.get("total_cases", 0) or 0) > 0
+        )
+
+    # ------------------------------------------------------------------
+    # Provenance helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_provenance(
+        source: str,
+        *,
+        context_grounded: Optional[bool] = None,
+        note: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Build a standard _data_provenance block.
+
+        source must be one of: "celonis" | "llm" | "fallback" | "synthetic" | "unavailable"
+        """
+        valid = {"celonis", "llm", "fallback", "synthetic", "unavailable"}
+        if source not in valid:
+            source = "unavailable"
+        tag: Dict[str, Any] = {"source": source}
+        if context_grounded is not None:
+            tag["context_grounded"] = context_grounded
+        if note:
+            tag["note"] = note
+        return tag
+
+    def _provenance_tag(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Stamp result with data provenance metadata.
+        Extends the result dict in-place and returns it.
+
+        Fields added:
+          _data_provenance.context_grounded  – bool
+          _data_provenance.context_source    – "celonis" | "unavailable"
+          _data_provenance.field_sources     – dict of field → source label
+        """
+        has_data = self._context_available()
+        result["_data_provenance"] = {
+            "context_grounded": has_data,
+            "context_source": "celonis" if has_data else "unavailable",
+            # Per-field source map — filled in by agents that set _field_sources
+            "field_sources": result.pop("_field_sources", {}),
+        }
+        return result
+
+    def _tag_field(
+        self,
+        result: Dict[str, Any],
+        field: str,
+        source: str,
+    ) -> None:
+        """
+        Mark an individual output field with its data source.
+        Call this before _provenance_tag() so the map is captured.
+
+        source: "celonis" | "llm" | "fallback" | "synthetic"
+        """
+        result.setdefault("_field_sources", {})[field] = source
+
+    # ------------------------------------------------------------------
+    # LLM reasoning
+    # ------------------------------------------------------------------
+
     @abstractmethod
     def process(self, input_data: Dict) -> Dict:
         pass
@@ -39,6 +109,8 @@ class BaseAgent(ABC):
             "message_bus_input": self._compact_trace_payload(message_bus_input or {}),
             "system_prompt": system_prompt.strip(),
             "user_prompt": user_prompt.strip(),
+            # Real LLM call — NOT synthetic
+            "_synthetic": False,
         }
         result = self.llm.chat_json(system_prompt, user_prompt)
         self.last_prompt_trace["model_output"] = self._compact_trace_payload(
@@ -58,6 +130,10 @@ class BaseAgent(ABC):
             "handoff": self._compact_trace_payload(handoff or {}),
         }
         return result
+
+    # ------------------------------------------------------------------
+    # Utility helpers
+    # ------------------------------------------------------------------
 
     def _compact_trace_payload(self, value: Any, depth: int = 0) -> Any:
         if depth >= 3:

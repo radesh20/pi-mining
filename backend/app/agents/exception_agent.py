@@ -70,6 +70,7 @@ class ExceptionAgent(BaseAgent):
             message_bus_input=input_data,
         )
         normalized = self._normalize_result(result)
+        self._provenance_tag(normalized)
         guardrail_result = self.validate_output(normalized)
         normalized["guardrail_result"] = {
             "passed": guardrail_result.passed,
@@ -109,7 +110,9 @@ class ExceptionAgent(BaseAgent):
         )
         result["celonis_evidence"] = result.get(
             "celonis_evidence",
-            "Based on Celonis exception distribution, DPO delays, and role mappings from process context.",
+            "Celonis context was provided in prompt; LLM did not return specific evidence citation."
+            if self._context_available()
+            else "[Celonis data unavailable for this request]",
         )
         result["financial_impact"] = result.get(
             "financial_impact",
@@ -150,27 +153,28 @@ class ExceptionAgent(BaseAgent):
         )
         return result
 
-    @staticmethod
-    def _known_exception_facts() -> Dict:
-        return {
-            "payment_terms_mismatch": {
-                "affected_invoices": 37,
-                "value_usd": 22500000,
-                "avg_dpo_days": 36.52,
-            },
-            "invoice_exception_queue": {
-                "affected_invoices": 19,
-                "value_usd": 2480000,
-                "avg_dpo_days": 80.83,
-            },
-            "short_payment_terms_0_days": {
-                "affected_invoices": 25,
-                "value_usd": 15300000,
-                "avg_dpo_days": 1.21,
-            },
-            "early_payment_optimization": {
-                "affected_invoices": 23,
-                "value_usd": 19000000,
-                "potential_dpo_days": 63,
-            },
-        }
+    def _known_exception_facts(self) -> Dict:
+        """Extract exception portfolio from live process_context. No hardcoded values."""
+        ctx = self.process_context or {}
+        exception_patterns = ctx.get("exception_patterns", [])
+        result = {}
+        for pat in exception_patterns:
+            exc_type = str(pat.get("exception_type", "")).lower()
+            key = exc_type.replace(" ", "_").replace("(", "").replace(")", "")
+            if not key:
+                continue
+            result[key] = {
+                "affected_invoices": int(pat.get("affected_cases", 0) or 0),
+                "value_usd": 0.0,
+                "avg_dpo_days": float(pat.get("avg_resolution_time_days", 0) or 0),
+                "frequency_pct": float(pat.get("frequency_percentage", 0) or 0),
+                "_data_source": "celonis",
+            }
+        if not result:
+            result["_empty"] = {
+                "affected_invoices": 0,
+                "value_usd": 0.0,
+                "avg_dpo_days": 0.0,
+                "_data_source": "unavailable",
+            }
+        return result

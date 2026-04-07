@@ -166,7 +166,11 @@ def vendor_stats():
     try:
         cache = get_data_cache_service()
         data = cache.get_vendor_stats()
-        return {"success": True, "data": jsonable_encoder(data)}
+        return {
+            "success": True,
+            "data": jsonable_encoder(data),
+            "data_freshness": jsonable_encoder(cache.get_data_freshness()),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Vendor stats endpoint failed: {str(e)}")
 
@@ -199,11 +203,40 @@ def get_process_insights():
     try:
         cache = get_data_cache_service()
         context = cache.get_process_context()
-        return {"success": True, "data": jsonable_encoder(context)}
+        freshness = cache.get_data_freshness()
+        # Surface unavailability explicitly — do not imply real data when cache is empty
+        if not freshness.get("data_available") and not context.get("total_cases"):
+            return {
+                "success": True,
+                "data": context,
+                "data_freshness": jsonable_encoder(freshness),
+                "data_status": "unavailable",
+                "data_status_reason": "Celonis cache has not loaded or has exceeded the max staleness threshold.",
+            }
+        return {
+            "success": True,
+            "data": jsonable_encoder(context),
+            "data_freshness": jsonable_encoder(freshness),
+            "data_status": "stale" if freshness.get("is_stale") else "live",
+        }
     except CelonisConnectionError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to extract insights: {str(e)}")
+
+
+@router.get("/process/data-freshness")
+def get_data_freshness():
+    """
+    Dedicated endpoint to surface cache freshness metadata.
+    Returns last_refreshed, is_stale, age_seconds, exceeds_max_staleness, data_available.
+    Suitable for health checks and UI staleness indicators.
+    """
+    try:
+        cache = get_data_cache_service()
+        return {"success": True, "data": jsonable_encoder(cache.get_data_freshness())}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read data freshness: {str(e)}")
 
 
 @router.get("/process/context-coverage")
@@ -215,7 +248,11 @@ def get_context_coverage():
     try:
         cache = get_data_cache_service()
         data = cache.get_context_coverage()
-        return {"success": True, "data": jsonable_encoder(data)}
+        return {
+            "success": True,
+            "data": jsonable_encoder(data),
+            "data_freshness": jsonable_encoder(cache.get_data_freshness()),
+        }
     except CelonisConnectionError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
