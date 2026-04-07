@@ -248,6 +248,7 @@ class DataCacheService:
             case_level = self._build_case_level_dataset(enriched, process_context)
             case_level = self._enrich_case_level_with_olap(case_level, detailed_olap_df)
             case_level = self._backfill_invoice_amounts_from_aux_tables(case_level, celonis)
+            case_level, olap_scope_alignment = self._align_case_level_to_olap_scope(case_level, detailed_olap_df)
 
             accounting_fields = [
                 "invoice_number",
@@ -414,6 +415,7 @@ class DataCacheService:
                 "accounting_join_diagnostics": accounting_join_diagnostics,
                 "accounting_enriched_non_null": enriched_non_null,
                 "accounting_case_level_non_null": case_level_non_null,
+                "olap_scope_alignment": olap_scope_alignment,
                 "total_cases": int(process_context.get("total_cases", 0) or 0),
                 "total_events": int(process_context.get("total_events", 0) or 0),
             }
@@ -538,6 +540,7 @@ class DataCacheService:
                 "accounting_join_diagnostics": self.cache_meta.get("accounting_join_diagnostics", {}),
                 "accounting_enriched_non_null": self.cache_meta.get("accounting_enriched_non_null", {}),
                 "accounting_case_level_non_null": self.cache_meta.get("accounting_case_level_non_null", {}),
+                "olap_scope_alignment": self.cache_meta.get("olap_scope_alignment", {}),
                 "wcm_group_count": int(self.cache_meta.get("wcm_group_count", 0)),
                 "available_vendors": self.available_vendors,
                 "last_error": self.last_error,
@@ -970,6 +973,67 @@ class DataCacheService:
     @staticmethod
     def _sample_values(series: pd.Series, max_items: int = 5) -> List[str]:
         return [str(v) for v in series.dropna().head(max_items).tolist()]
+
+    def _align_case_level_to_olap_scope(
+        self,
+        case_level: pd.DataFrame,
+        olap_df: pd.DataFrame,
+    ) -> tuple[pd.DataFrame, Dict[str, Any]]:
+        summary: Dict[str, Any] = {
+            "enabled": bool(getattr(settings, "WCM_ALIGN_CASE_LEVEL_TO_OLAP_SCOPE", True)),
+            "applied": False,
+            "before_rows": int(len(case_level)) if case_level is not None else 0,
+            "after_rows": int(len(case_level)) if case_level is not None else 0,
+            "olap_rows": int(len(olap_df)) if olap_df is not None else 0,
+            "olap_invoice_keys": 0,
+            "reason": "not_applicable",
+        }
+        if not summary["enabled"]:
+            summary["reason"] = "disabled"
+            return case_level, summary
+        if case_level is None or case_level.empty:
+            summary["reason"] = "case_level_empty"
+            return case_level, summary
+        if olap_df is None or olap_df.empty:
+            summary["reason"] = "olap_empty"
+            return case_level, summary
+        if "invoice_number" not in olap_df.columns:
+            summary["reason"] = "olap_missing_invoice_number"
+            return case_level, summary
+
+        olap_invoice_key = self._normalized_join_key(olap_df["invoice_number"], normalize=True)
+        olap_invoice_key = pd.Index(olap_invoice_key.dropna().unique())
+        summary["olap_invoice_keys"] = int(len(olap_invoice_key))
+        if len(olap_invoice_key) == 0:
+            summary["reason"] = "olap_invoice_keys_empty"
+            return case_level, summary
+
+        aligned = case_level.copy()
+        invoice_id_key = (
+            self._normalized_join_key(aligned["invoice_id"], normalize=True)
+            if "invoice_id" in aligned.columns
+            else pd.Series([pd.NA] * len(aligned), index=aligned.index)
+        )
+        doc_key = (
+            self._normalized_join_key(aligned["document_number"], normalize=True)
+            if "document_number" in aligned.columns
+            else pd.Series([pd.NA] * len(aligned), index=aligned.index)
+        )
+        mask = invoice_id_key.isin(olap_invoice_key) | doc_key.isin(olap_invoice_key)
+        aligned = aligned[mask].copy()
+
+        summary["applied"] = True
+        summary["after_rows"] = int(len(aligned))
+        summary["reason"] = "aligned_to_olap_invoice_scope"
+        summary["sample_olap_invoice_keys"] = [str(k) for k in list(olap_invoice_key[:5])]
+        logger.info(
+            "Case-level OLAP scope alignment applied: before=%s after=%s olap_rows=%s invoice_keys=%s",
+            summary["before_rows"],
+            summary["after_rows"],
+            summary["olap_rows"],
+            summary["olap_invoice_keys"],
+        )
+        return aligned, summary
 
     def _build_enriched_event_log(
         self,

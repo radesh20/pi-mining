@@ -97,6 +97,9 @@ class Settings:
         ),
     )
     WCM_OLAP_MAX_ROWS: int = int(os.getenv("WCM_OLAP_MAX_ROWS", "200000"))
+    WCM_ALIGN_CASE_LEVEL_TO_OLAP_SCOPE: bool = os.getenv(
+        "WCM_ALIGN_CASE_LEVEL_TO_OLAP_SCOPE", "true"
+    ).lower() == "true"
 
     # Optional explicit OLAP source overrides for environments with non-standard naming
     WCM_OLAP_SOURCE_TABLE: str = os.getenv("WCM_OLAP_SOURCE_TABLE", "")
