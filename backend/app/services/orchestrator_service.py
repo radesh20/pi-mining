@@ -406,6 +406,27 @@ class OrchestratorService:
             err = f"{agent_label} failed: {str(exc)}"
             output = {"error": err}
 
+        celonis_ev_raw = (output or {}).get("celonis_evidence")
+        if celonis_ev_raw:
+            celonis_evidence_used = str(celonis_ev_raw)
+        elif (output or {}).get("_data_provenance", {}).get("context_grounded"):
+            celonis_evidence_used = "Celonis context was provided in prompt; agent did not return a specific citation."
+        else:
+            celonis_evidence_used = "[PI data unavailable for this step — Celonis cache was not loaded or context was empty.]"
+
+        # Propagate real guardrail result from agent output into the trace step.
+        # This replaces the HARDCODED_AGENT_GUARDRAILS used in the UI with actual backend results.
+        raw_guardrail = (output or {}).get("guardrail_result")
+        guardrail_checks: list = []
+        if isinstance(raw_guardrail, dict):
+            guardrail_checks = [{
+                "ruleId": raw_guardrail.get("rule_id", "UNKNOWN"),
+                "status": "pass" if raw_guardrail.get("passed") else "warn" if "OVERRIDE" in str(raw_guardrail.get("action_taken", "")) else "fail",
+                "title": raw_guardrail.get("reason", "Guardrail check"),
+                "detail": raw_guardrail.get("action_taken", ""),
+                "enforcement": "code",
+            }]
+
         trace["steps"].append(
             {
                 "step_number": step_number,
@@ -414,10 +435,7 @@ class OrchestratorService:
                 "input": input_payload,
                 "input_summary": self._summarize_payload(input_payload),
                 "output_summary": self._summarize_output(output),
-                "celonis_evidence_used": (output or {}).get(
-                    "celonis_evidence",
-                    "Derived from process_context and provided Celonis portfolio metrics.",
-                ),
+                "celonis_evidence_used": celonis_evidence_used,
                 "financial_impact": self._extract_financial_hint(output),
                 "detected_process_step": (output or {}).get("detected_process_step", action),
                 "expected_turnaround_days": self._extract_expected_turnaround_days(output),
@@ -427,6 +445,7 @@ class OrchestratorService:
                     "payload_field_justification_from_pi",
                     "Fields selected using PI context: path stage, turnaround, and conformance risk.",
                 ),
+                "guardrail_checks": guardrail_checks,
                 "full_output": output,
                 "error": err,
             }

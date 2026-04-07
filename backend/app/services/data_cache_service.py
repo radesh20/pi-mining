@@ -19,6 +19,10 @@ class DataCacheService:
     Singleton-style in-memory cache for Celonis-derived data and prepared analytics.
     """
 
+    # Hard ceiling: if cache age exceeds this, enforce_max_staleness() raises.
+    # Operators can override via CACHE_MAX_STALENESS_SECONDS env-var (see ensure_loaded).
+    MAX_STALENESS_SECONDS: int = 7200  # 2 hours default
+
     EXCEPTION_LABELS = [
         "Payment Terms Mismatch",
         "Invoices with Exception",
@@ -405,6 +409,58 @@ class DataCacheService:
     def is_stale(self) -> bool:
         with self._lock:
             return self._is_stale_locked()
+
+    def get_age_seconds(self) -> Optional[float]:
+        """Return seconds since last successful cache refresh, or None if never loaded."""
+        with self._lock:
+            if not self.last_refreshed_at:
+                return None
+            try:
+                refreshed = datetime.fromisoformat(self.last_refreshed_at.replace("Z", "+00:00"))
+                return (datetime.now(timezone.utc) - refreshed).total_seconds()
+            except Exception:
+                return None
+
+    def get_data_freshness(self) -> Dict[str, Any]:
+        """
+        Return structured data-freshness metadata for API responses and UI consumption.
+
+        Contract:
+          last_refreshed        – ISO-8601 UTC timestamp of last successful refresh (or null)
+          is_stale              – True when TTL has elapsed and background refresh is pending
+          age_seconds           – Seconds since last refresh (null if never loaded)
+          is_loaded             – Whether any cache snapshot exists
+          refresh_in_progress   – Whether a background refresh is running right now
+          max_staleness_seconds – Configured hard staleness ceiling
+          exceeds_max_staleness – True when age_seconds > max_staleness_seconds
+          data_available        – True when loaded AND not exceeding max staleness
+        """
+        with self._lock:
+            age: Optional[float] = None
+            exceeds_max = False
+            if self.last_refreshed_at:
+                try:
+                    refreshed = datetime.fromisoformat(self.last_refreshed_at.replace("Z", "+00:00"))
+                    age = (datetime.now(timezone.utc) - refreshed).total_seconds()
+                    max_staleness = max(
+                        int(getattr(settings, "CACHE_MAX_STALENESS_SECONDS", self.MAX_STALENESS_SECONDS) or self.MAX_STALENESS_SECONDS),
+                        60,
+                    )
+                    exceeds_max = age > max_staleness
+                except Exception:
+                    pass
+
+            return {
+                "last_refreshed": self.last_refreshed_at,
+                "is_stale": self._is_stale_locked(),
+                "age_seconds": round(age, 1) if age is not None else None,
+                "is_loaded": self._is_loaded,
+                "refresh_in_progress": self._refresh_in_progress,
+                "max_staleness_seconds": self.MAX_STALENESS_SECONDS,
+                "exceeds_max_staleness": exceeds_max,
+                "data_available": self._is_loaded and not exceeds_max,
+                "last_error": self.last_error,
+            }
 
     def get_case_table(self) -> List[Dict[str, Any]]:
         """Return full purchasing document header table for detailed views."""
