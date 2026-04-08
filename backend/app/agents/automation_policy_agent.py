@@ -38,10 +38,18 @@ class AutomationPolicyAgent(BaseAgent):
             prompt_config["system_prompt"],
             prompt_config["user_prompt"],
             prompt_purpose="Decide automation policy, route, and human-oversight posture",
+            prompt_version=prompt_config.get("version", "-"),
             message_bus_input=input_data,
         )
         normalized = self._normalize_result(result)
         self._provenance_tag(normalized)
+        guardrail_result = self.validate_output(normalized)
+        normalized["guardrail_result"] = {
+            "passed": guardrail_result.passed,
+            "rule_id": guardrail_result.rule_id,
+            "reason": guardrail_result.reason,
+            "action_taken": guardrail_result.action_taken,
+        }
         handoff = {
             "recommended_agent": normalized.get("recommended_agent"),
             "automation_decision": normalized.get("automation_decision"),
@@ -98,3 +106,39 @@ class AutomationPolicyAgent(BaseAgent):
                 "_data_source": "unavailable",
             }
         return seed
+
+    def validate_output(self, output: Dict) -> object:
+        """
+        Real guardrail check for AutomationPolicyAgent.
+        Enforces: automation_decision is valid, celonis_evidence present,
+        and reasoning includes turnaround-time awareness.
+        """
+        try:
+            from app.guardrails.exceptions import GuardrailViolation, GuardrailResult
+        except ImportError:
+            from app.guardrails.exceptions import GuardrailViolation, GuardrailResult  # type: ignore
+
+        valid_decisions = {
+            "AUTOMATE", "MONITOR", "HUMAN_REQUIRED", "BLOCK",
+            "AUTOMATE_WITH_MONITORING", "AUTO_ESCALATE", "ANALYZE",
+        }
+        decision = str(output.get("automation_decision", "")).upper()
+        if decision not in valid_decisions:
+            raise GuardrailViolation("POLICY_INVALID_DECISION", f"Unknown automation_decision: {decision}")
+
+        reasoning = str(output.get("reasoning", "")).lower()
+        if not any(kw in reasoning for kw in ["turnaround", "processing", "due-date", "urgency", "timing"]):
+            raise GuardrailViolation(
+                "POLICY_MUST_INCLUDE_TURNAROUND",
+                "Policy reasoning must include turnaround/timing context",
+            )
+
+        if not output.get("celonis_evidence") or "unavailable" in str(output.get("celonis_evidence", "")).lower():
+            return GuardrailResult(
+                passed=False,
+                rule_id="EVIDENCE_REQUIRED",
+                reason="celonis_evidence is absent or unavailable",
+                action_taken="FLAGGED",
+            )
+
+        return GuardrailResult(passed=True, rule_id="ALL", reason="Policy checks passed", action_taken="ALLOWED")

@@ -1,0 +1,63 @@
+def reset_shared_connection(cls) -> None:
+def __init__(self):
+def _build_ocpm_event_log(self) -> pd.DataFrame:
+def _validate_and_log_connection_config(self):
+def _connect(self):
+def _get_data_model(self):
+def _run_with_timeout(fn, timeout_seconds: int, label: str):
+def _run_pql(self, query: Any, operation_name: str) -> pd.DataFrame:
+def _get_table_names(self) -> List[str]:
+def _table_columns_safe(self, table_name: str) -> List[str]:
+def _normalize_col_key(col_name: str) -> str:
+def _find_col_by_aliases(self, table_columns: List[str], aliases: List[str]) -> Optional[str]:
+def _discover_event_source(self) -> Dict[str, Any]:
+def _discover_case_attr_source(self) -> Dict[str, Any]:
+def _resolve_table_name(self, configured_name: str) -> str:
+def _normalize_configured_tables(self) -> None:
+def _to_pql_table_name(table_name: str) -> str:
+def _effective_batch_size(self, requested_batch_size: Optional[int] = None) -> int:
+def _effective_max_rows(self, requested_max_rows: Optional[int] = None) -> Optional[int]:
+def _extract_table_rows_paginated(
+def _build_ocpm_event_log(self) -> pd.DataFrame:
+def get_event_log(self, use_cache: bool = True) -> pd.DataFrame:
+def get_case_attributes(self) -> pd.DataFrame:
+def get_vendor_mapping(self) -> pd.DataFrame:
+def get_event_log_with_vendor(self) -> pd.DataFrame:
+def get_table_data(
+def get_working_capital_extract(
+def _table_is_activity_like(columns: List[str], activity_col: str, timestamp_col: str) -> bool:
+def _candidate_object_table_names(base_name: str) -> List[str]:
+def _normalize_table_filters(items: Optional[List[str]]) -> List[str]:
+def _infer_event_object_group(
+def get_working_capital_grouped_extract(
+def build_table_payload(table_name: str) -> Dict[str, Any]:
+def _pick_best_amount_column(df: pd.DataFrame) -> Optional[str]:
+def _find_amount_like_columns(df: pd.DataFrame) -> List[str]:
+def _build_amount_summary(self, df: pd.DataFrame) -> Dict[str, Any]:
+def get_table_extract_payload(
+def get_all_tables_extract(
+def get_all_tables_grouped_extract(
+def _normalize_col(col_name: str) -> str:
+def _find_matching_column(self, columns: List[str], aliases: List[str]) -> Optional[str]:
+def _score_table_for_olap(self, columns: List[str], required_aliases: Dict[str, List[str]]) -> int:
+def _discover_best_olap_table(self, required_aliases: Dict[str, List[str]]) -> Dict[str, Any]:
+def get_detailed_transaction_olap(
+def _get_explicit_olap_mapping() -> Dict[str, str]:
+def _df_to_json_records(df: pd.DataFrame) -> List[Dict[str, Any]]:
+def _json_safe(cls, value: Any) -> Any:
+def get_vendor_statistics(self) -> pd.DataFrame:
+def get_vendor_stats_api(self) -> List[Dict[str, Any]]:
+def get_vendor_paths(self, vendor_id: str) -> Dict[str, Any]:
+def classify_exception_type(variant: str) -> str:
+def aggregate_variants(frame: pd.DataFrame) -> pd.DataFrame:
+def partition_paths(agg: pd.DataFrame, source: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def get_variants(self) -> pd.DataFrame:
+def get_throughput_times(self) -> pd.DataFrame:
+def get_activity_frequencies(self) -> pd.DataFrame:
+def get_resource_activity_mapping(self) -> pd.DataFrame:
+def get_case_durations(self) -> pd.DataFrame:
+def list_pools_and_models(self) -> List[Dict]:
+def list_tables(self) -> List[Dict]:
+def list_columns(self, table_name: str) -> List[str]:
+def get_connection_info(self) -> Dict:
+def validate_data_fetch(self) -> Dict[str, Any]:

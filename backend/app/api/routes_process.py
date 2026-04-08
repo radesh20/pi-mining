@@ -239,6 +239,30 @@ def get_data_freshness():
         raise HTTPException(status_code=500, detail=f"Failed to read data freshness: {str(e)}")
 
 
+@router.post("/process/refresh")
+def force_refresh():
+    """
+    Full cache wipe + Celonis connection reset.
+
+    Call this whenever the Celonis team changes their data model, renames columns,
+    adds/removes tables, or modifies any connection config.
+
+    What it does:
+      1. Resets the CelonisService SDK singleton so the next request re-connects fresh
+      2. Clears all class-level table name / column schema caches
+      3. Wipes all DataFrames in the DataCacheService snapshot
+      4. Starts a background re-load so new data is available on the next request cycle
+
+    After calling this, poll GET /process/data-freshness until is_loaded=true.
+    """
+    try:
+        cache = get_data_cache_service()
+        result = cache.force_reset()
+        return {"success": True, "data": jsonable_encoder(result)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Cache refresh failed: {str(e)}")
+
+
 @router.get("/process/context-coverage")
 def get_context_coverage():
     """
@@ -277,7 +301,11 @@ def get_celonis_context_layer():
 
 @router.get("/cache/debug-columns")
 def debug_columns():
-    """Temporary debug endpoint - REMOVE after fixing."""
+    """Debug endpoint — only active when DEBUG_ENDPOINTS=true in environment."""
+    if not settings.DEBUG_ENDPOINTS:
+        from fastapi import HTTPException as _HTTPException
+        raise _HTTPException(status_code=403, detail="Debug endpoints are disabled. Set DEBUG_ENDPOINTS=true to enable.")
+
     from app.services.data_cache_service import get_data_cache_service
 
     # Try to import _GLOBAL_CACHE - might fail depending on your structure
@@ -773,3 +801,95 @@ def detailed_transaction_olap(
         return {"success": True, "data": jsonable_encoder(data)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Detailed transaction OLAP extraction failed: {str(e)}")
+
+
+@router.get("/diagnostics/data-provenance")
+def diagnostics_data_provenance():
+    """
+    Data provenance diagnostic endpoint.
+
+    Returns a structured summary of:
+    - Whether Celonis data is available and loaded (affects agent context_grounded flag)
+    - LLM cache state (size, max_size, enabled)
+    - Prompt version currently loaded for each agent (from prompt_loader cache)
+    - Agent temperature config
+    - Debug endpoints gate status
+
+    This endpoint is always enabled (not gated) because it surfaces metadata only,
+    never raw data or secrets.
+    """
+    import time as _time
+
+    # --- Celonis / process context provenance ---
+    cache = get_data_cache_service()
+    freshness = cache.get_data_freshness()
+    cache_status = cache.get_cache_status()
+    is_loaded = bool(cache_status.get("is_loaded", False))
+    last_error = cache_status.get("last_error")
+
+    try:
+        process_context = cache.get_process_context()
+        total_cases = int(process_context.get("total_cases", 0) or 0)
+    except Exception:
+        total_cases = 0
+
+    context_grounded = is_loaded and total_cases > 0 and not last_error
+
+    # --- LLM cache provenance ---
+    from app.services.azure_openai_service import AzureOpenAIService
+    with AzureOpenAIService._cache_lock:
+        llm_cache_size = len(AzureOpenAIService._response_cache)
+        # Sample oldest and newest entry timestamps
+        entries = list(AzureOpenAIService._response_cache.values())
+        if entries:
+            oldest_ts = min(e["ts"] for e in entries)
+            newest_ts = max(e["ts"] for e in entries)
+            oldest_age_s = round(_time.time() - oldest_ts, 1)
+            newest_age_s = round(_time.time() - newest_ts, 1)
+        else:
+            oldest_age_s = None
+            newest_age_s = None
+
+    # --- Prompt versions ---
+    from app.prompts.prompt_loader import _cache as _prompt_cache
+    prompt_versions = {
+        agent: entry.get("version", "unknown")
+        for agent, entry in _prompt_cache.items()
+    }
+
+    provenance = {
+        "celonis": {
+            "context_grounded": context_grounded,
+            "is_loaded": is_loaded,
+            "total_cases": total_cases,
+            "last_error": last_error,
+            "is_stale": freshness.get("is_stale", True),
+            "last_refreshed_at": freshness.get("last_refreshed_at"),
+            "data_available": freshness.get("data_available", False),
+        },
+        "llm_cache": {
+            "enabled": bool(settings.LLM_CACHE_ENABLED),
+            "current_size": llm_cache_size,
+            "max_size": int(getattr(settings, "LLM_CACHE_MAX_SIZE", 256)),
+            "ttl_seconds": int(settings.LLM_CACHE_TTL_SECONDS),
+            "oldest_entry_age_seconds": oldest_age_s,
+            "newest_entry_age_seconds": newest_age_s,
+        },
+        "prompts": {
+            "loaded_agent_versions": prompt_versions,
+            "_note": "Empty if no agent has processed a request since server start (prompt cache is populated lazily).",
+        },
+        "agent_config": {
+            "temperature": float(getattr(settings, "AGENT_TEMPERATURE", 0.2)),
+        },
+        "debug_endpoints": {
+            "enabled": bool(getattr(settings, "DEBUG_ENDPOINTS", False)),
+            "_note": "Set DEBUG_ENDPOINTS=true to enable /cache/debug-columns and /chat/debug/columns.",
+        },
+    }
+
+    return {
+        "success": True,
+        "data": jsonable_encoder(provenance),
+        "data_freshness": jsonable_encoder(freshness),
+    }

@@ -18,7 +18,7 @@ def _load_env_files() -> None:
         candidates.append(cwd_env)
     for env_path in candidates:
         if env_path.exists():
-            load_dotenv(dotenv_path=env_path, override=False)
+            load_dotenv(dotenv_path=env_path, override=True)
 
 
 _load_env_files()
@@ -41,8 +41,13 @@ class Settings:
     CELONIS_DATA_MODEL_ID: str = os.getenv("CELONIS_DATA_MODEL_ID", "")
 
     # Main event/activity table
-    ACTIVITY_TABLE: str = os.getenv("ACTIVITY_TABLE", "t_o_custom_VimHeader").split(",")[0].strip()
-    ACTIVITY_TABLES: list = [t.strip() for t in os.getenv("ACTIVITY_TABLE", "t_o_custom_VimHeader").split(",")]
+    # Main event/activity tables
+    ACTIVITY_TABLES: list = [
+        t.strip()
+        for t in os.getenv("ACTIVITY_TABLE", "t_o_custom_VimHeader").split(",")
+        if t.strip()
+    ]
+    ACTIVITY_TABLE: str = ACTIVITY_TABLES[0] if ACTIVITY_TABLES else "t_o_custom_VimHeader"
     CASE_COLUMN: str = os.getenv("CASE_COLUMN", "CASEKEY")
     ACTIVITY_COLUMN: str = os.getenv("ACTIVITY_COLUMN", "ACTIVITYEN")
     TIMESTAMP_COLUMN: str = os.getenv("TIMESTAMP_COLUMN", "EVENTTIME")
@@ -125,6 +130,14 @@ class Settings:
     # LLM response cache
     LLM_CACHE_ENABLED: bool = os.getenv("LLM_CACHE_ENABLED", "true").lower() == "true"
     LLM_CACHE_TTL_SECONDS: int = int(os.getenv("LLM_CACHE_TTL_SECONDS", "900"))
+    LLM_CACHE_MAX_SIZE: int = int(os.getenv("LLM_CACHE_MAX_SIZE", "256"))  # Max LRU entries
+
+    # Debug / observability
+    # Set DEBUG_ENDPOINTS=true ONLY in dev/staging — never in production.
+    DEBUG_ENDPOINTS: bool = os.getenv("DEBUG_ENDPOINTS", "false").lower() == "true"
+
+    # Agent LLM temperature (0.0–1.0). Lower = more deterministic.
+    AGENT_TEMPERATURE: float = float(os.getenv("AGENT_TEMPERATURE", "0.2"))
 
     # Microsoft Teams
     TEAMS_WEBHOOK_URL: str = os.getenv(

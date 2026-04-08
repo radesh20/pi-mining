@@ -375,6 +375,15 @@ class ChatService:
 
     def _fetch_event_log_once(self) -> pd.DataFrame:
         try:
+            from app.services.data_cache_service import get_data_cache_service
+            cache = get_data_cache_service()
+            if not cache._is_loaded:
+                cache.ensure_loaded()
+            if cache._is_loaded:
+                df = cache.get_event_log()
+                if not df.empty:
+                    return df.copy()
+
             df = self.celonis.get_event_log()
             if df is None or df.empty:
                 logger.warning("Event log returned empty")
@@ -407,7 +416,14 @@ class ChatService:
 
         # 1. Global process statistics
         try:
-            process_ctx = self.process_insight.build_process_context()
+            from app.services.data_cache_service import get_data_cache_service
+            cache = get_data_cache_service()
+            if not cache._is_loaded:
+                cache.ensure_loaded()
+            if cache._is_loaded:
+                process_ctx = cache.get_process_context()
+            else:
+                process_ctx = self.process_insight.build_process_context()
             bottleneck = process_ctx.get("bottleneck", {})
             variants = process_ctx.get("variants", [])
             exc_patterns = process_ctx.get("exception_patterns", [])

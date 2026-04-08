@@ -37,9 +37,17 @@ class VendorIntelligenceAgent(BaseAgent):
             prompt_config["system_prompt"],
             prompt_config["user_prompt"],
             prompt_purpose="Assess vendor behavior and risk from Celonis process context",
+            prompt_version=prompt_config.get("version", "-"),
             message_bus_input=input_data,
         )
         normalized = self._normalize_result(result, input_data)
+        guardrail_result = self.validate_output(normalized)
+        normalized["guardrail_result"] = {
+            "passed": guardrail_result.passed,
+            "rule_id": guardrail_result.rule_id,
+            "reason": guardrail_result.reason,
+            "action_taken": guardrail_result.action_taken,
+        }
         return self.attach_prompt_trace(normalized)
 
     def _normalize_result(self, result: Dict, input_data: Dict) -> Dict:
@@ -159,3 +167,30 @@ class VendorIntelligenceAgent(BaseAgent):
         if not vendors:
             return {"vendors": [], "_data_source": "unavailable"}
         return {"vendors": vendors, "_data_source": "celonis"}
+
+    def validate_output(self, output: Dict) -> object:
+        """
+        Real guardrail check for VendorIntelligenceAgent.
+        Enforces: vendor_id present, vendor_analysis has risk_score, celonis evidence exists.
+        """
+        try:
+            from app.guardrails.exceptions import GuardrailViolation, GuardrailResult
+        except ImportError:
+            from app.guardrails.exceptions import GuardrailViolation, GuardrailResult  # type: ignore
+
+        if not output.get("vendor_id"):
+            raise GuardrailViolation("SCHEMA_INVALID", "vendor_id is missing from output")
+
+        vendor_analysis = output.get("vendor_analysis", {})
+        if not isinstance(vendor_analysis, dict) or not vendor_analysis.get("vendor_risk_score"):
+            raise GuardrailViolation("RISK_SCORE_REQUIRED", "vendor_analysis.vendor_risk_score is missing")
+
+        if not output.get("celonis_evidence") or "unavailable" in str(output.get("celonis_evidence", "")).lower():
+            return GuardrailResult(
+                passed=False,
+                rule_id="EVIDENCE_BACKED_ANALYSIS",
+                reason="celonis_evidence is absent or indicates data was unavailable",
+                action_taken="FLAGGED",
+            )
+
+        return GuardrailResult(passed=True, rule_id="ALL", reason="Vendor analysis checks passed", action_taken="ALLOWED")

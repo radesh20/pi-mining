@@ -36,10 +36,18 @@ class HumanInLoopAgent(BaseAgent):
             prompt_config["system_prompt"],
             prompt_config["user_prompt"],
             prompt_purpose="Prepare human review package and escalation recommendation",
+            prompt_version=prompt_config.get("version", "-"),
             message_bus_input=input_data,
         )
         normalized = self._normalize_result(result)
         self._provenance_tag(normalized)
+        guardrail_result = self.validate_output(normalized)
+        normalized["guardrail_result"] = {
+            "passed": guardrail_result.passed,
+            "rule_id": guardrail_result.rule_id,
+            "reason": guardrail_result.reason,
+            "action_taken": guardrail_result.action_taken,
+        }
         handoff = {
             "assigned_role": normalized.get("assigned_role"),
             "priority": normalized.get("priority"),
@@ -85,6 +93,35 @@ class HumanInLoopAgent(BaseAgent):
             "GPT-4o prepared the review package using process evidence and financial/turnaround context.",
         )
         return result
+
+    def validate_output(self, output: Dict) -> object:
+        """
+        Real guardrail check for HumanInLoopAgent.
+        Enforces: decision-ready package has case_summary, assigned_role, celonis evidence.
+        """
+        try:
+            from app.guardrails.exceptions import GuardrailViolation, GuardrailResult
+        except ImportError:
+            from app.guardrails.exceptions import GuardrailViolation, GuardrailResult  # type: ignore
+
+        required_keys = {"case_summary", "reason_for_review", "ai_recommendation", "priority"}
+        missing = required_keys - output.keys()
+        if missing:
+            raise GuardrailViolation("DECISION_READY_PACKAGE", f"Missing required fields: {missing}")
+
+        ai_rec = output.get("ai_recommendation", {})
+        if not isinstance(ai_rec, dict) or not ai_rec.get("suggested_action"):
+            raise GuardrailViolation("DECISION_READY_PACKAGE", "ai_recommendation.suggested_action is required")
+
+        if not output.get("celonis_evidence") or "unavailable" in str(output.get("celonis_evidence", "")).lower():
+            return GuardrailResult(
+                passed=False,
+                rule_id="CELONIS_EVIDENCE_IN_ALL_FIELDS",
+                reason="celonis_evidence is absent or unavailable",
+                action_taken="FLAGGED",
+            )
+
+        return GuardrailResult(passed=True, rule_id="ALL", reason="Review package checks passed", action_taken="ALLOWED")
 
     def process_and_notify(self, input_data: Dict) -> Dict:
         """

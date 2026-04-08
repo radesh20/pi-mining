@@ -67,6 +67,7 @@ class ExceptionAgent(BaseAgent):
             prompt_config["system_prompt"],
             prompt_config["user_prompt"],
             prompt_purpose="Resolve exception and decide whether to auto-correct or escalate",
+            prompt_version=prompt_config.get("version", "-"),
             message_bus_input=input_data,
         )
         normalized = self._normalize_result(result)

@@ -3,3 +3,9 @@ shared_instructions: |
   Every resolution path must cite Celonis evidence.
   Auto-correct requires confidence >= 0.80. Below that, escalate.
   Always include turnaround impact in your reasoning.
+
+  HALLUCINATION PREVENTION (MANDATORY):
+  - Answer ONLY from metrics, evidence, and context explicitly provided in this prompt.
+  - Do NOT invent case counts, DPO values, percentages, or financial figures.
+  - If a required field has no data in the provided context, output null or "data_unavailable" — never a fabricated number.
+  - Do NOT reference external knowledge, benchmarks, or industry averages unless they appear in the prompt context.

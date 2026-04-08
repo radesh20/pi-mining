@@ -33,6 +33,26 @@ class CelonisService:
     _shared_table_names: List[str] = []
     _shared_table_columns: Dict[str, List[str]] = {}
 
+    # ── NEW: cache discovered sources so we don't re-scan on every call ──
+    _shared_event_source: Optional[Dict[str, Any]] = None
+    _shared_case_attr_source: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def reset_shared_connection(cls) -> None:
+        with cls._shared_lock:
+            cls._shared_celonis = None
+            cls._shared_data_pool = None
+            cls._shared_data_model = None
+            cls._shared_initialized = False
+            cls._shared_tables_loaded_at = 0.0
+            cls._shared_table_names = []
+            cls._shared_table_columns = {}
+            cls._shared_event_source = None
+            cls._shared_case_attr_source = None
+            cls._warned_missing_activity_table = False
+            cls._warned_missing_case_table = False
+        logger.info("CelonisService shared connection and schema caches have been reset.")
+
     def __init__(self):
         self.celonis = None
         self.data_pool = None
@@ -70,13 +90,195 @@ class CelonisService:
         self._connect()
         self._normalize_configured_tables()
 
+    # ─────────────────────────────────────────────────────────────────────
+    # CONNECTION
+    # ─────────────────────────────────────────────────────────────────────
+    def _build_ocpm_event_log(self) -> pd.DataFrame:
+        """
+        Build an event log from ALL activity-like OCPM tables instead of one table.
+        This is the main fix for the 140-events problem.
+        """
+        table_names = self._get_table_names()
+
+        activity_aliases = [
+            self.activity_col,
+            "ACTIVITYEN", "ACTIVITY_EN",
+            "ACTIVITY", "ACTIVITY_NAME", "ACTIVITYNAME",
+            "VORGN", "TASKNAME", "TASK_NAME", "STEP", "STEPNAME",
+            "EVENT", "EVENTNAME", "EVENT_NAME", "ACTION",
+        ]
+        timestamp_aliases = [
+            self.timestamp_col,
+            "EVENTTIME", "EVENT_TIME",
+            "TIMESTAMP", "TIME", "DATETIME",
+            "STARTTIME", "START_TIME",
+            "ENDTIME", "END_TIME",
+            "CREATEDAT", "CREATED_AT",
+            "ERDAT", "ERZEIT", "BUDAT", "BLDAT", "ZFBDT", "DATE",
+        ]
+        case_aliases = [
+            self.case_col,
+            "CASEKEY", "_CASE_KEY", "CASE_KEY",
+            "CASE_ID", "CASEID",
+            "PROCESSINSTANCEID", "PROCESS_INSTANCE_ID",
+            "BELNR", "EBELN", "VBELN", "AUFNR",
+            "ACCOUNTINGDOCUMENTHEADER_ID",
+            "PURCHASINGDOCUMENTHEADER_ID",
+            "APINVOICE_ID",
+            "VIMHEADER_ID",
+            "ID",
+        ]
+        resource_aliases = [
+            self.resource_col,
+            "USERNAME", "USER_NAME", "USER",
+            "RESOURCE", "UNAME", "USNAM",
+            "AGENT", "AGENTNAME", "PERFORMER",
+        ]
+        role_aliases = [
+            self.resource_role_col,
+            "USERTYPE", "USER_TYPE",
+            "ROLE", "RESOURCE_ROLE", "CLASS",
+        ]
+        document_aliases = [
+            self.document_col,
+            "EBELN", "DOCUMENT_NUMBER", "DOCUMENTNUMBER",
+            "PO_NUMBER", "PONUMBER", "BELNR", "VBELN",
+        ]
+        tcode_aliases = [
+            self.transaction_col,
+            "TRANSACTIONCODE", "TRANSACTION_CODE", "TCODE", "T_CODE",
+        ]
+
+        candidate_tables = []
+        for table_name in table_names:
+            cols = self._table_columns_safe(table_name)
+            if not cols:
+                continue
+
+            activity_col = self._find_col_by_aliases(cols, activity_aliases)
+            timestamp_col = self._find_col_by_aliases(cols, timestamp_aliases)
+
+            if activity_col and timestamp_col:
+                candidate_tables.append({
+                    "table": table_name,
+                    "columns": cols,
+                    "activity": activity_col,
+                    "timestamp": timestamp_col,
+                    "case_id": self._find_col_by_aliases(cols, case_aliases),
+                    "resource": self._find_col_by_aliases(cols, resource_aliases),
+                    "resource_role": self._find_col_by_aliases(cols, role_aliases),
+                    "document_number": self._find_col_by_aliases(cols, document_aliases),
+                    "transaction_code": self._find_col_by_aliases(cols, tcode_aliases),
+                })
+
+        logger.info(
+            "OCPM event log build — found %d activity-like tables: %s",
+            len(candidate_tables),
+            [c["table"] for c in candidate_tables],
+        )
+
+        if not candidate_tables:
+            raise Exception("No activity-like tables found across the OCPM model.")
+
+        frames = []
+        for candidate in candidate_tables:
+            table_name = candidate["table"]
+
+            selected_cols = []
+            for key in ["case_id", "activity", "timestamp", "resource", "resource_role", "document_number", "transaction_code"]:
+                col = candidate.get(key)
+                if col and col not in selected_cols:
+                    selected_cols.append(col)
+
+            # fallback: if case_id not found, try the first *_ID column
+            if not candidate.get("case_id"):
+                id_like = [c for c in candidate["columns"] if str(c).upper().endswith("_ID")]
+                if id_like:
+                    candidate["case_id"] = id_like[0]
+                    if id_like[0] not in selected_cols:
+                        selected_cols.append(id_like[0])
+
+            if not selected_cols:
+                continue
+
+            logger.info("Extracting OCPM events from %s with columns=%s", table_name, selected_cols)
+
+            raw_df = self.get_table_data(
+                table_name=table_name,
+                columns=selected_cols,
+                use_cache=False,
+            )
+
+            if raw_df.empty:
+                continue
+
+            rename_map = {}
+            for std_col in ["case_id", "activity", "timestamp", "resource", "resource_role", "document_number", "transaction_code"]:
+                src = candidate.get(std_col)
+                if src and src in raw_df.columns:
+                    rename_map[src] = std_col
+
+            df = raw_df.rename(columns=rename_map).copy()
+
+            for col in ["case_id", "activity", "timestamp", "resource", "resource_role", "document_number", "transaction_code"]:
+                if col not in df.columns:
+                    df[col] = None
+
+            df["source_table"] = table_name
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+
+            # keep only rows that really look like events
+            df = df[df["activity"].notna() & df["timestamp"].notna()].copy()
+
+            if not df.empty:
+                frames.append(df[[
+                    "case_id", "activity", "timestamp",
+                    "resource", "resource_role",
+                    "document_number", "transaction_code",
+                    "source_table"
+                ]])
+
+        if not frames:
+            raise Exception("No event rows could be built from activity-like OCPM tables.")
+
+        event_log = pd.concat(frames, ignore_index=True)
+
+        # fallback case id
+        event_log["case_id"] = event_log["case_id"].fillna(event_log["document_number"])
+        event_log["case_id"] = event_log["case_id"].fillna(event_log["source_table"])
+
+        event_log = event_log.drop_duplicates().sort_values(
+            ["case_id", "timestamp", "activity"],
+            na_position="last"
+        ).reset_index(drop=True)
+
+        logger.info(
+            "OCPM event log built successfully: %d rows, %d unique cases, %d unique activities",
+            len(event_log),
+            event_log["case_id"].nunique(),
+            event_log["activity"].nunique(),
+        )
+
+        return event_log
+    def _validate_and_log_connection_config(self):
+        token = settings.CELONIS_API_TOKEN or ""
+        token_info = f"Exists (Starts with: {token[:5]}...)" if token else "Missing"
+        
+        logger.info(
+            "Celonis Config Validation -> base_url=%s, key_type=%s, token=%s, pool_id=%s, model_id=%s",
+            settings.CELONIS_BASE_URL,
+            settings.CELONIS_KEY_TYPE,
+            token_info,
+            settings.CELONIS_DATA_POOL_ID,
+            settings.CELONIS_DATA_MODEL_ID
+        )
+
     def _connect(self):
         if not settings.CELONIS_BASE_URL or not settings.CELONIS_API_TOKEN:
             raise CelonisConnectionError(
                 "CELONIS_BASE_URL and CELONIS_API_TOKEN are required in .env"
             )
 
-        # Reuse the same Celonis SDK objects across requests to avoid repeated slow handshakes.
         with CelonisService._shared_lock:
             if CelonisService._shared_initialized:
                 self.celonis = CelonisService._shared_celonis
@@ -87,16 +289,15 @@ class CelonisService:
         try:
             from pycelonis import get_celonis
 
-            logger.info(
-                "Connecting to Celonis: base_url=%s key_type=%s",
-                settings.CELONIS_BASE_URL,
-                settings.CELONIS_KEY_TYPE,
-            )
+            self._validate_and_log_connection_config()
+
             celonis = self._run_with_timeout(
                 lambda: get_celonis(
                     base_url=settings.CELONIS_BASE_URL,
                     api_token=settings.CELONIS_API_TOKEN,
                     key_type=settings.CELONIS_KEY_TYPE,
+                    permissions=False,   # ← skips _print_permissions() which requires admin scope
+                    connect=True,
                 ),
                 timeout_seconds=max(int(getattr(settings, "CELONIS_CONNECT_TIMEOUT_SECONDS", 20) or 20), 5),
                 label="Celonis SDK connection",
@@ -104,7 +305,8 @@ class CelonisService:
             logger.info("Celonis SDK connection successful")
         except Exception as e:
             raise CelonisConnectionError(
-                f"Failed to connect to Celonis: {str(e)}. Check CELONIS_BASE_URL, CELONIS_API_TOKEN, CELONIS_KEY_TYPE."
+                f"Failed to connect to Celonis: {str(e)}. "
+                "Check CELONIS_BASE_URL, CELONIS_API_TOKEN, CELONIS_KEY_TYPE."
             )
 
         self.celonis = celonis
@@ -138,7 +340,17 @@ class CelonisService:
             logger.info("Loaded data model: %s", model.name)
             return model
         except Exception as e:
-            raise CelonisConnectionError(f"Failed to load data pool/model: {str(e)}")
+            error_msg = str(e)
+            exc_class = e.__class__.__name__
+
+            if "Permission" in exc_class or "permission" in error_msg.lower() or "403" in error_msg:
+                if settings.CELONIS_KEY_TYPE == "APP_KEY" and "academic" in settings.CELONIS_BASE_URL.lower():
+                    actionable_msg = "Wrong key type for academic account. Academic accounts require USER_KEY, but APP_KEY is configured."
+                else:
+                    actionable_msg = "Token is valid but lacks access to the configured data pool. Or, the configured pool/model is not accessible by this user."
+                raise CelonisConnectionError(f"{actionable_msg} (Original Error: {exc_class})")
+
+            raise CelonisConnectionError(f"Failed to load data pool/model: {error_msg}")
 
     @staticmethod
     def _run_with_timeout(fn, timeout_seconds: int, label: str):
@@ -156,20 +368,17 @@ class CelonisService:
             except Exception:
                 pass
 
+    # ─────────────────────────────────────────────────────────────────────
+    # PQL EXECUTION
+    # ─────────────────────────────────────────────────────────────────────
+
     def _run_pql(self, query: Any, operation_name: str) -> pd.DataFrame:
         pql_timeout = max(int(getattr(settings, "CELONIS_PQL_TIMEOUT_SECONDS", 90) or 90), 10)
         try:
-            # Keep legacy export path for compatibility/performance in this environment.
             with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="Deprecation", category=UserWarning)
                 warnings.filterwarnings(
-                    "ignore",
-                    message="Deprecation",
-                    category=UserWarning,
-                )
-                warnings.filterwarnings(
-                    "ignore",
-                    category=UserWarning,
-                    module=r"pycelonis\.utils\.deprecation",
+                    "ignore", category=UserWarning, module=r"pycelonis\.utils\.deprecation"
                 )
                 return self._run_with_timeout(
                     lambda: self.data_model.export_data_frame(query),
@@ -188,10 +397,13 @@ class CelonisService:
                 return saola_df.to_pandas()
             except Exception as e2:
                 logger.error("PQL query failed during %s", operation_name)
-                logger.error(str(query))
                 raise Exception(
                     f"{operation_name} failed: legacy_export={str(e)} | saola={str(e2)}"
                 )
+
+    # ─────────────────────────────────────────────────────────────────────
+    # TABLE / COLUMN DISCOVERY  (FIX 1: smarter caching + validation)
+    # ─────────────────────────────────────────────────────────────────────
 
     def _get_table_names(self) -> List[str]:
         with CelonisService._shared_lock:
@@ -203,6 +415,7 @@ class CelonisService:
             timeout_seconds=timeout_seconds,
             label="Celonis table name lookup",
         )
+        logger.info("Discovered %d tables in data model: %s", len(names), names)
         with CelonisService._shared_lock:
             CelonisService._shared_table_names = list(names)
             CelonisService._shared_tables_loaded_at = time.time()
@@ -229,6 +442,7 @@ class CelonisService:
                 timeout_seconds=timeout_seconds,
                 label=f"Celonis column lookup ({table_name})",
             )
+            logger.debug("Table %s columns: %s", table_name, cols)
             with CelonisService._shared_lock:
                 CelonisService._shared_table_columns[table_name] = list(cols)
             return list(cols)
@@ -249,41 +463,100 @@ class CelonisService:
                 return lookup[key]
         return None
 
+    # ─────────────────────────────────────────────────────────────────────
+    # EVENT SOURCE DISCOVERY  (FIX 2: logs every candidate + result)
+    # ─────────────────────────────────────────────────────────────────────
+
     def _discover_event_source(self) -> Dict[str, Any]:
-        """
-        Find the best extractable event source table and column mapping.
-        Handles environments where _CEL_* helper tables exist but are not extractable.
-        """
+        # Return cached result if already discovered this session
+        with CelonisService._shared_lock:
+            if CelonisService._shared_event_source is not None:
+                return dict(CelonisService._shared_event_source)
+
         aliases = {
-            "case_id": [self.case_col, "CASEKEY", "_CASE_KEY", "CASE_ID", "CASEID"],
-            "activity": [self.activity_col, "ACTIVITYEN", "ACTIVITY_EN", "ACTIVITY", "ACTIVITY_NAME"],
-            "timestamp": [self.timestamp_col, "EVENTTIME", "EVENT_TIME", "TIMESTAMP", "TIME"],
-            "resource": [self.resource_col, "USERNAME", "USER_NAME", "USER", "RESOURCE"],
-            "resource_role": [self.resource_role_col, "USERTYPE", "USER_TYPE", "ROLE", "RESOURCE_ROLE"],
-            "document_number": [self.document_col, "EBELN", "DOCUMENT_NUMBER", "PO_NUMBER"],
-            "transaction_code": [self.transaction_col, "TRANSACTIONCODE", "TRANSACTION_CODE", "TCODE"],
+            "case_id": [
+                self.case_col,
+                "CASEKEY", "_CASE_KEY", "CASE_KEY",
+                "CASE_ID", "CASEID", "PROCESSINSTANCEID", "PROCESS_INSTANCE_ID",
+                "BELNR", "EBELN", "VBELN", "AUFNR",
+                "ID", "KEY", "INSTANCEID", "INSTANCE_ID",
+            ],
+            "activity": [
+                self.activity_col,
+                "ACTIVITYEN", "ACTIVITY_EN",
+                "ACTIVITY", "ACTIVITY_NAME", "ACTIVITYNAME",
+                "VORGN", "ACTIVITY_DE", "ACTIVITYDE",
+                "TASKNAME", "TASK_NAME", "STEP", "STEPNAME", "EVENT",
+                "EVENTNAME", "EVENT_NAME", "ACTION",
+            ],
+            "timestamp": [
+                self.timestamp_col,
+                "EVENTTIME", "EVENT_TIME",
+                "ERDAT", "ERZEIT", "BUDAT", "BLDAT", "ZFBDT",
+                "TIMESTAMP", "TIME", "DATETIME", "STARTTIME", "START_TIME",
+                "ENDTIME", "END_TIME", "COMPLETIONTIME", "COMPLETION_TIME",
+                "CREATEDAT", "CREATED_AT", "DATE",
+            ],
+            "resource": [
+                self.resource_col,
+                "USERNAME", "USER_NAME", "USER",
+                "RESOURCE", "UNAME", "USNAM",
+                "AGENT", "AGENTNAME", "PERFORMER",
+            ],
+            "resource_role": [
+                self.resource_role_col,
+                "USERTYPE", "USER_TYPE",
+                "ROLE", "RESOURCE_ROLE",
+                "CLASS", "ORGTYPE", "ORG_TYPE",
+            ],
+            "document_number": [
+                self.document_col,
+                "EBELN", "DOCUMENT_NUMBER", "DOCUMENTNUMBER",
+                "PO_NUMBER", "PONUMBER", "BELNR", "VBELN",
+            ],
+            "transaction_code": [
+                self.transaction_col,
+                "TRANSACTIONCODE", "TRANSACTION_CODE",
+                "TCODE", "T_CODE",
+            ],
         }
 
         preferred = list(self.activity_tables) + [
-            "t_o_custom_VimHeader",
-            "t_o_custom_VIMHEADER",
-            "VimHeader",
+            "o_custom_AccountingDocumentHeader",
+            "o_custom_AccountingDocumentSegment",
+            "o_custom_Invoice",
+            "o_custom_VimHeader",
         ]
-        candidate_names = []
+        # Deduplicate while preserving order
+        seen: set = set()
+        candidate_names: List[str] = []
         known_names = set(self._get_table_names())
+
         for name in preferred:
-            if name in known_names and name not in candidate_names:
+            if name in known_names and name not in seen:
                 candidate_names.append(name)
+                seen.add(name)
+
+        logger.info(
+            "Event source discovery — preferred candidates found in model: %s",
+            candidate_names,
+        )
+
         best: Optional[Dict[str, Any]] = None
 
         for table_name in candidate_names:
             cols = self._table_columns_safe(table_name)
             if not cols:
+                logger.warning("Event source candidate %s — no columns returned, skipping.", table_name)
                 continue
 
             mapping = {target: self._find_col_by_aliases(cols, a) for target, a in aliases.items()}
             mandatory = all(mapping.get(k) for k in ["case_id", "activity", "timestamp"])
             score = sum(1 for v in mapping.values() if v)
+            logger.info(
+                "Event source candidate %s: mandatory=%s score=%d mapping=%s",
+                table_name, mandatory, score, mapping,
+            )
             if not mandatory:
                 continue
 
@@ -291,26 +564,24 @@ class CelonisService:
             if best is None or candidate["score"] > best["score"]:
                 best = candidate
 
-            # Fast path when configured table is already a strong match.
-            if table_name == self.activity_table and score >= 6:
-                return candidate
+            
 
-            if table_name in {"t_o_custom_VimHeader", "t_o_custom_VIMHEADER", "VimHeader"} and score >= 6:
-                return candidate
-
-        # Last resort: global scan across all tables.
+        # Global scan fallback
         if best is None:
             full_scan_limit = max(int(getattr(settings, "CELONIS_DISCOVERY_MAX_TABLES", 80) or 80), 1)
             ranked_names = sorted(
                 known_names,
                 key=lambda n: (
                     0 if str(n).startswith("t_o_custom_") else
-                    1 if str(n).startswith("t_e_custom_") else
-                    2
+                    1 if str(n).startswith("t_e_custom_") else 2
                 ),
             )
+            logger.info(
+                "No preferred event table found; running global scan over %d tables.",
+                min(len(ranked_names), full_scan_limit),
+            )
             for table_name in ranked_names[:full_scan_limit]:
-                if table_name in candidate_names:
+                if table_name in seen:
                     continue
                 cols = self._table_columns_safe(table_name)
                 if not cols:
@@ -321,19 +592,53 @@ class CelonisService:
                 if not mandatory:
                     continue
                 candidate = {"table": table_name, "mapping": mapping, "score": score}
+                logger.info("Global scan candidate %s: score=%d", table_name, score)
                 if best is None or candidate["score"] > best["score"]:
                     best = candidate
 
         if best is None:
-            raise Exception("No suitable event table found with required columns (case/activity/timestamp).")
-        return best
+            raise Exception(
+                "No suitable event table found with required columns (case/activity/timestamp). "
+                f"Known tables: {sorted(known_names)}"
+            )
+
+        logger.info(
+            "Event source resolved → table=%s score=%d mapping=%s",
+            best["table"], best["score"], best["mapping"],
+        )
+        with CelonisService._shared_lock:
+            CelonisService._shared_event_source = dict(best)
+        return dict(best)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # CASE ATTRIBUTE SOURCE DISCOVERY  (FIX 3: same logging pattern)
+    # ─────────────────────────────────────────────────────────────────────
 
     def _discover_case_attr_source(self) -> Dict[str, Any]:
+        with CelonisService._shared_lock:
+            if CelonisService._shared_case_attr_source is not None:
+                return dict(CelonisService._shared_case_attr_source)
+
         aliases = {
-            "document_number": [self.case_table_doc_col, "EBELN", "DOCUMENT_NUMBER", "PO_NUMBER"],
-            "vendor_id": [self.vendor_col, "LIFNR", "VENDOR", "VENDOR_ID"],
-            "payment_terms": [self.payment_terms_col, "ZTERM", "PAYMENT_TERMS"],
-            "currency": [self.currency_col, "WAERS", "CURRENCY"],
+            "document_number": [
+                self.case_table_doc_col,
+                "EBELN", "DOCUMENT_NUMBER", "DOCUMENTNUMBER", "PO_NUMBER", "PONUMBER",
+                "BELNR", "VBELN",
+            ],
+            "vendor_id": [
+                self.vendor_col,
+                "LIFNR", "VENDOR", "VENDOR_ID", "VENDORID",
+                "LIEFERANT", "KRED",
+            ],
+            "payment_terms": [
+                self.payment_terms_col,
+                "ZTERM", "PAYMENT_TERMS", "PAYMENTTERMS",
+                "ZAHLUNGSBEDINGUNG", "PTERMS",
+            ],
+            "currency": [
+                self.currency_col,
+                "WAERS", "CURRENCY", "CURR", "CURCODE",
+            ],
         }
         preferred = [
             self.case_table,
@@ -341,11 +646,15 @@ class CelonisService:
             "PurchasingDocumentHeader",
             "t_o_custom_VimHeader",
         ]
-        candidate_names = []
+        seen: set = set()
+        candidate_names: List[str] = []
         known_names = set(self._get_table_names())
         for name in preferred:
-            if name in known_names and name not in candidate_names:
+            if name in known_names and name not in seen:
                 candidate_names.append(name)
+                seen.add(name)
+
+        logger.info("Case attr source discovery — candidates: %s", candidate_names)
         best: Optional[Dict[str, Any]] = None
 
         for table_name in candidate_names:
@@ -355,15 +664,17 @@ class CelonisService:
             mapping = {target: self._find_col_by_aliases(cols, a) for target, a in aliases.items()}
             mandatory = all(mapping.get(k) for k in ["document_number", "vendor_id"])
             score = sum(1 for v in mapping.values() if v)
+            logger.info(
+                "Case attr candidate %s: mandatory=%s score=%d mapping=%s",
+                table_name, mandatory, score, mapping,
+            )
             if not mandatory:
                 continue
             candidate = {"table": table_name, "mapping": mapping, "score": score}
             if best is None or candidate["score"] > best["score"]:
                 best = candidate
             if table_name == self.case_table and score >= 3:
-                return candidate
-            if table_name in {"t_o_custom_PurchasingDocumentHeader", "PurchasingDocumentHeader"} and score >= 3:
-                return candidate
+                break
 
         if best is None:
             full_scan_limit = max(int(getattr(settings, "CELONIS_DISCOVERY_MAX_TABLES", 80) or 80), 1)
@@ -371,12 +682,11 @@ class CelonisService:
                 known_names,
                 key=lambda n: (
                     0 if str(n).startswith("t_o_custom_") else
-                    1 if str(n).startswith("t_e_custom_") else
-                    2
+                    1 if str(n).startswith("t_e_custom_") else 2
                 ),
             )
             for table_name in ranked_names[:full_scan_limit]:
-                if table_name in candidate_names:
+                if table_name in seen:
                     continue
                 cols = self._table_columns_safe(table_name)
                 if not cols:
@@ -391,8 +701,22 @@ class CelonisService:
                     best = candidate
 
         if best is None:
-            raise Exception("No suitable case attribute table found with required columns (document_number/vendor_id).")
-        return best
+            raise Exception(
+                "No suitable case attribute table found with required columns "
+                f"(document_number/vendor_id). Known tables: {sorted(known_names)}"
+            )
+
+        logger.info(
+            "Case attr source resolved → table=%s score=%d mapping=%s",
+            best["table"], best["score"], best["mapping"],
+        )
+        with CelonisService._shared_lock:
+            CelonisService._shared_case_attr_source = dict(best)
+        return dict(best)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # TABLE NAME RESOLUTION
+    # ─────────────────────────────────────────────────────────────────────
 
     def _resolve_table_name(self, configured_name: str) -> str:
         table_names = self._get_table_names()
@@ -423,8 +747,8 @@ class CelonisService:
         if resolved_activity not in table_names:
             if not CelonisService._warned_missing_activity_table:
                 logger.warning(
-                    "Configured activity table %s resolved to %s but table is not present. "
-                    "Will auto-discover source table at query time.",
+                    "Configured activity table %s resolved to %s but not present in model. "
+                    "Will auto-discover at query time.",
                     self.activity_table,
                     resolved_activity,
                 )
@@ -437,8 +761,8 @@ class CelonisService:
         if resolved_case not in table_names:
             if not CelonisService._warned_missing_case_table:
                 logger.warning(
-                    "Configured case table %s resolved to %s but table is not present. "
-                    "Will auto-discover case table at query time.",
+                    "Configured case table %s resolved to %s but not present in model. "
+                    "Will auto-discover at query time.",
                     self.case_table,
                     resolved_case,
                 )
@@ -449,10 +773,11 @@ class CelonisService:
 
     @staticmethod
     def _to_pql_table_name(table_name: str) -> str:
-        """
-        Some Celonis setups require the technical name without leading 't_' in PQL references.
-        """
         return table_name[2:] if table_name.startswith("t_") else table_name
+
+    # ─────────────────────────────────────────────────────────────────────
+    # BATCH / ROW HELPERS
+    # ─────────────────────────────────────────────────────────────────────
 
     def _effective_batch_size(self, requested_batch_size: Optional[int] = None) -> int:
         if requested_batch_size and requested_batch_size > 0:
@@ -465,6 +790,10 @@ class CelonisService:
             return int(requested_max_rows)
         configured = int(getattr(settings, "CELONIS_EXPORT_MAX_ROWS", 0) or 0)
         return int(configured) if configured > 0 else None
+
+    # ─────────────────────────────────────────────────────────────────────
+    # PAGINATED EXTRACTION  (FIX 4: validate row count after first page)
+    # ─────────────────────────────────────────────────────────────────────
 
     def _extract_table_rows_paginated(
         self,
@@ -487,7 +816,8 @@ class CelonisService:
         missing = [col for col in columns if col not in available_cols]
         if missing:
             raise Exception(
-                f"{operation_name} failed: columns not found in '{resolved_table}': {missing}"
+                f"{operation_name} failed: columns not found in '{resolved_table}': {missing}. "
+                f"Available: {sorted(available_cols)}"
             )
 
         pql_table = self._to_pql_table_name(resolved_table)
@@ -518,6 +848,18 @@ class CelonisService:
             if chunk is None or chunk.empty:
                 break
 
+            # ── FIX: log what we got from Celonis so we can verify it's real ──
+            logger.info(
+                "%s page=%d offset=%d → %d rows fetched (table=%s)",
+                operation_name, page, offset, len(chunk), resolved_table,
+            )
+            if page == 0 and not chunk.empty:
+                logger.debug(
+                    "%s first-row sample: %s",
+                    operation_name,
+                    chunk.iloc[0].to_dict(),
+                )
+
             signature = (
                 tuple(chunk.iloc[0].astype(str).tolist()),
                 tuple(chunk.iloc[-1].astype(str).tolist()),
@@ -525,9 +867,8 @@ class CelonisService:
             )
             if last_page_signature is not None and signature == last_page_signature:
                 logger.warning(
-                    "Detected repeating page while extracting %s from %s. Stopping pagination to avoid loop.",
-                    operation_name,
-                    resolved_table,
+                    "Repeating page detected in %s from %s — stopping pagination.",
+                    operation_name, resolved_table,
                 )
                 break
             last_page_signature = signature
@@ -538,16 +879,11 @@ class CelonisService:
             offset += fetched
             page += 1
 
-            # Some environments ignore offset/limit and return full result each call.
-            # In that case, keep the first chunk and stop to avoid long/repeating loops.
             if fetched > effective_limit:
                 logger.warning(
                     "%s returned %s rows for limit=%s (table=%s). "
-                    "Assuming backend-side limit/offset was ignored; stopping after first page.",
-                    operation_name,
-                    fetched,
-                    effective_limit,
-                    resolved_table,
+                    "Backend ignoring limit/offset — keeping first page only.",
+                    operation_name, fetched, effective_limit, resolved_table,
                 )
                 break
 
@@ -557,6 +893,7 @@ class CelonisService:
                 break
 
         if not frames:
+            logger.warning("%s — no rows returned from %s", operation_name, resolved_table)
             return pd.DataFrame(columns=columns)
 
         result = pd.concat(frames, ignore_index=True)
@@ -564,65 +901,218 @@ class CelonisService:
             result = result.iloc[:row_cap].copy()
 
         logger.info(
-            "%s completed for %s: extracted %s rows (batch=%s, max_rows=%s)",
-            operation_name,
-            resolved_table,
-            len(result),
-            chunk_size,
+            "%s completed for %s: total=%d rows (batch=%d, max_rows=%s)",
+            operation_name, resolved_table, len(result), chunk_size,
             row_cap if row_cap is not None else "unlimited",
         )
         return result
+    
+    # ─────────────────────────────────────────────────────────────────────
+    # EVENT LOG  (FIX 5: assert real rows before caching)
+    # ─────────────────────────────────────────────────────────────────────
 
-    def get_event_log(self) -> pd.DataFrame:
+    def _build_ocpm_event_log(self) -> pd.DataFrame:
         """
-        Extract event log from t_o_custom_VimHeader.
-        Output columns:
-        - case_id, activity, timestamp, resource, resource_role, document_number, transaction_code
+        Build an event log from ALL activity-like OCPM tables instead of one table.
+        This is the main fix for the 140-events problem.
         """
-        if self._event_log_cache is not None:
+        table_names = self._get_table_names()
+
+        activity_aliases = [
+            self.activity_col,
+            "ACTIVITYEN", "ACTIVITY_EN",
+            "ACTIVITY", "ACTIVITY_NAME", "ACTIVITYNAME",
+            "VORGN", "TASKNAME", "TASK_NAME", "STEP", "STEPNAME",
+            "EVENT", "EVENTNAME", "EVENT_NAME", "ACTION",
+        ]
+        timestamp_aliases = [
+            self.timestamp_col,
+            "EVENTTIME", "EVENT_TIME",
+            "TIMESTAMP", "TIME", "DATETIME",
+            "STARTTIME", "START_TIME",
+            "ENDTIME", "END_TIME",
+            "CREATEDAT", "CREATED_AT",
+            "ERDAT", "ERZEIT", "BUDAT", "BLDAT", "ZFBDT", "DATE",
+        ]
+        case_aliases = [
+            self.case_col,
+            "CASEKEY", "_CASE_KEY", "CASE_KEY",
+            "CASE_ID", "CASEID",
+            "PROCESSINSTANCEID", "PROCESS_INSTANCE_ID",
+            "BELNR", "EBELN", "VBELN", "AUFNR",
+            "ACCOUNTINGDOCUMENTHEADER_ID",
+            "PURCHASINGDOCUMENTHEADER_ID",
+            "APINVOICE_ID",
+            "VIMHEADER_ID",
+            "ID",
+        ]
+        resource_aliases = [
+            self.resource_col,
+            "USERNAME", "USER_NAME", "USER",
+            "RESOURCE", "UNAME", "USNAM",
+            "AGENT", "AGENTNAME", "PERFORMER",
+        ]
+        role_aliases = [
+            self.resource_role_col,
+            "USERTYPE", "USER_TYPE",
+            "ROLE", "RESOURCE_ROLE", "CLASS",
+        ]
+        document_aliases = [
+            self.document_col,
+            "EBELN", "DOCUMENT_NUMBER", "DOCUMENTNUMBER",
+            "PO_NUMBER", "PONUMBER", "BELNR", "VBELN",
+        ]
+        tcode_aliases = [
+            self.transaction_col,
+            "TRANSACTIONCODE", "TRANSACTION_CODE", "TCODE", "T_CODE",
+        ]
+
+        candidate_tables = []
+        for table_name in table_names:
+            cols = self._table_columns_safe(table_name)
+            if not cols:
+                continue
+
+            activity_col = self._find_col_by_aliases(cols, activity_aliases)
+            timestamp_col = self._find_col_by_aliases(cols, timestamp_aliases)
+
+            if activity_col and timestamp_col:
+                candidate_tables.append({
+                    "table": table_name,
+                    "columns": cols,
+                    "activity": activity_col,
+                    "timestamp": timestamp_col,
+                    "case_id": self._find_col_by_aliases(cols, case_aliases),
+                    "resource": self._find_col_by_aliases(cols, resource_aliases),
+                    "resource_role": self._find_col_by_aliases(cols, role_aliases),
+                    "document_number": self._find_col_by_aliases(cols, document_aliases),
+                    "transaction_code": self._find_col_by_aliases(cols, tcode_aliases),
+                })
+
+        logger.info(
+            "OCPM event log build — found %d activity-like tables: %s",
+            len(candidate_tables),
+            [c["table"] for c in candidate_tables],
+        )
+
+        if not candidate_tables:
+            raise Exception("No activity-like tables found across the OCPM model.")
+
+        frames = []
+        for candidate in candidate_tables:
+            table_name = candidate["table"]
+
+            selected_cols = []
+            for key in ["case_id", "activity", "timestamp", "resource", "resource_role", "document_number", "transaction_code"]:
+                col = candidate.get(key)
+                if col and col not in selected_cols:
+                    selected_cols.append(col)
+
+            # fallback: if case_id not found, try the first *_ID column
+            if not candidate.get("case_id"):
+                id_like = [c for c in candidate["columns"] if str(c).upper().endswith("_ID")]
+                if id_like:
+                    candidate["case_id"] = id_like[0]
+                    if id_like[0] not in selected_cols:
+                        selected_cols.append(id_like[0])
+
+            if not selected_cols:
+                continue
+
+            logger.info("Extracting OCPM events from %s with columns=%s", table_name, selected_cols)
+
+            raw_df = self._extract_table_rows_paginated(
+                table_name=table_name,
+                columns=selected_cols,
+                operation_name="event log extraction"
+            )
+
+            if raw_df.empty:
+                continue
+
+            rename_map = {}
+            for std_col in ["case_id", "activity", "timestamp", "resource", "resource_role", "document_number", "transaction_code"]:
+                src = candidate.get(std_col)
+                if src and src in raw_df.columns:
+                    rename_map[src] = std_col
+
+            df = raw_df.rename(columns=rename_map).copy()
+
+            for col in ["case_id", "activity", "timestamp", "resource", "resource_role", "document_number", "transaction_code"]:
+                if col not in df.columns:
+                    df[col] = None
+
+            df["source_table"] = table_name
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+
+            # keep only rows that really look like events
+            df = df[df["activity"].notna() & df["timestamp"].notna()].copy()
+
+            if not df.empty:
+                frames.append(df[[
+                    "case_id", "activity", "timestamp",
+                    "resource", "resource_role",
+                    "document_number", "transaction_code",
+                    "source_table"
+                ]])
+
+        if not frames:
+            raise Exception("No event rows could be built from activity-like OCPM tables.")
+
+        event_log = pd.concat(frames, ignore_index=True)
+
+        # fallback case id
+        event_log["case_id"] = event_log["case_id"].fillna(event_log["document_number"])
+        event_log["case_id"] = event_log["case_id"].fillna(event_log["source_table"])
+
+        event_log = event_log.drop_duplicates().sort_values(
+            ["case_id", "timestamp", "activity"],
+            na_position="last"
+        ).reset_index(drop=True)
+
+        logger.info(
+            "OCPM event log built successfully: %d rows, %d unique cases, %d unique activities",
+            len(event_log),
+            event_log["case_id"].nunique(),
+            event_log["activity"].nunique(),
+        )
+
+        return event_log
+
+    def get_event_log(self, use_cache: bool = True) -> pd.DataFrame:
+        if use_cache and self._event_log_cache is not None:
+            logger.info("Event Log Fetch Mode: CACHE USED. Total row count: %d", len(self._event_log_cache))
             return self._event_log_cache.copy()
 
+        logger.info("Event Log Fetch Mode: FRESH FETCH (OCPM multi-table build)")
         try:
-            source = self._discover_event_source()
-            source_table = source["table"]
-            mapping = source["mapping"]
-            source_columns = [col for col in mapping.values() if col]
-            raw_df = self._extract_table_rows_paginated(
-                table_name=source_table,
-                columns=source_columns,
-                operation_name="event log extraction",
-                max_rows=(settings.CELONIS_EVENT_LOG_MAX_ROWS if settings.CELONIS_EVENT_LOG_MAX_ROWS > 0 else None),
-            )
-            rename_map = {src: tgt for tgt, src in mapping.items() if src}
-            df = raw_df.rename(columns=rename_map)
+            df = self._build_ocpm_event_log()
 
             expected_cols = [
-                "case_id",
-                "activity",
-                "timestamp",
-                "resource",
-                "resource_role",
-                "document_number",
-                "transaction_code",
+                "case_id", "activity", "timestamp",
+                "resource", "resource_role",
+                "document_number", "transaction_code",
             ]
-            if df.empty:
-                return pd.DataFrame(columns=expected_cols)
-
             for col in expected_cols:
                 if col not in df.columns:
                     df[col] = None
 
-            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-            df = df.sort_values(["case_id", "timestamp"], na_position="last").reset_index(drop=True)
-            self._event_log_cache = df[expected_cols]
+            logger.info("Total row count fetched: %d", len(df))
+            if not df.empty and "timestamp" in df.columns:
+                logger.info("Event Log Timestamps -> min: %s | max: %s", df["timestamp"].min(), df["timestamp"].max())
+                logger.info("Sample format (first 5 rows): %s", df.head(5).to_dict(orient="records"))
+
+            self._event_log_cache = df[expected_cols].copy()
             return self._event_log_cache.copy()
+
         except Exception as e:
             raise Exception(f"Event log extraction failed: {str(e)}")
 
+    # ─────────────────────────────────────────────────────────────────────
+    # CASE ATTRIBUTES
+    # ─────────────────────────────────────────────────────────────────────
+
     def get_case_attributes(self) -> pd.DataFrame:
-        """
-        Extract case table attributes from t_o_custom_PurchasingDocumentHeader.
-        """
         if self._case_attributes_cache is not None:
             return self._case_attributes_cache.copy()
 
@@ -631,6 +1121,12 @@ class CelonisService:
             source_table = source["table"]
             mapping = source["mapping"]
             source_columns = [col for col in mapping.values() if col]
+
+            logger.info(
+                "Extracting case attributes from table=%s columns=%s",
+                source_table, source_columns,
+            )
+
             raw_df = self._extract_table_rows_paginated(
                 table_name=source_table,
                 columns=source_columns,
@@ -638,7 +1134,9 @@ class CelonisService:
             )
             rename_map = {src: tgt for tgt, src in mapping.items() if src}
             df = raw_df.rename(columns=rename_map)
+
             if df.empty:
+                logger.warning("Case attributes returned 0 rows from table %s.", source_table)
                 return pd.DataFrame(columns=["document_number", "vendor_id", "payment_terms", "currency"])
 
             for col in ["document_number", "vendor_id", "payment_terms", "currency"]:
@@ -646,15 +1144,20 @@ class CelonisService:
                     df[col] = None
 
             df = df.drop_duplicates().reset_index(drop=True)
+            logger.info(
+                "Case attributes loaded: %d rows, %d unique vendors.",
+                len(df), df["vendor_id"].nunique(),
+            )
             self._case_attributes_cache = df
             return self._case_attributes_cache.copy()
         except Exception as e:
             raise Exception(f"Case attributes extraction failed: {str(e)}")
 
+    # ─────────────────────────────────────────────────────────────────────
+    # VENDOR MAPPING & ENRICHMENT
+    # ─────────────────────────────────────────────────────────────────────
+
     def get_vendor_mapping(self) -> pd.DataFrame:
-        """
-        Link VimHeader.EBELN -> PurchasingDocumentHeader.EBELN -> vendor_id (LIFNR).
-        """
         if self._vendor_mapping_cache is not None:
             return self._vendor_mapping_cache.copy()
 
@@ -675,107 +1178,19 @@ class CelonisService:
 
         try:
             events = self.get_event_log()
-            vendor_map = self.get_vendor_mapping()[["case_id", "document_number", "vendor_id", "payment_terms", "currency"]]
-
-            enriched = events.merge(
-                vendor_map,
-                on=["case_id", "document_number"],
-                how="left",
-            )
+            vendor_map = self.get_vendor_mapping()[
+                ["case_id", "document_number", "vendor_id", "payment_terms", "currency"]
+            ]
+            enriched = events.merge(vendor_map, on=["case_id", "document_number"], how="left")
             enriched["vendor_id"] = enriched["vendor_id"].fillna("UNKNOWN")
             self._event_with_vendor_cache = enriched
             return self._event_with_vendor_cache.copy()
         except Exception as e:
             raise Exception(f"Event log enrichment with vendor failed: {str(e)}")
 
-    def get_vendor_stats_api(self) -> List[Dict[str, Any]]:
-     try:
-        stats_df = self.get_vendor_statistics()
-        case_durations = self.get_case_durations()
-        vendor_map = self.get_vendor_mapping()[["case_id", "vendor_id"]].drop_duplicates()
-
-        case_table_df = self.get_table_data(self.case_table)
-        total_value_by_vendor: Dict[str, float] = {}
-        vendor_lifnr_by_vendor: Dict[str, str] = {}
-        if not case_table_df.empty:
-            renamed = case_table_df.rename(columns={self.vendor_col: "vendor_id"})
-            if "vendor_id" in renamed.columns:
-                renamed["vendor_id"] = renamed["vendor_id"].astype(str).str.strip()
-                vendor_lifnr_by_vendor = (
-                    renamed.groupby("vendor_id")["vendor_id"]
-                    .first().astype(str).to_dict()
-                )
-                amount_col = self._pick_best_amount_column(renamed)
-                if amount_col:
-                    work = renamed[["vendor_id", amount_col]].copy()
-                    work[amount_col] = pd.to_numeric(work[amount_col], errors="coerce").fillna(0.0)
-                    total_value_by_vendor = (
-                        work.groupby("vendor_id")[amount_col].sum().round(2).to_dict()
-                    )
-
-        avg_dpo_by_vendor = {}
-        if not case_durations.empty and not vendor_map.empty:
-            duration_map = case_durations.merge(vendor_map, on="case_id", how="left")
-            avg_dpo_by_vendor = (
-                duration_map.groupby("vendor_id")["duration_days"].mean().round(2).to_dict()
-            )
-
-        # ── NEW: derive payment behavior from case-level event log ──────────
-        try:
-            from app.services.data_cache_service import DataCacheService
-            event_log = self.get_event_log_with_vendor()
-            payment_behavior_by_vendor = (
-                DataCacheService._derive_payment_behavior_from_case_level(event_log)
-                if not event_log.empty else {}
-            )
-        except Exception as pb_err:
-            logger.warning("Payment behavior derivation failed: %s", pb_err)
-            payment_behavior_by_vendor = {}
-        # ────────────────────────────────────────────────────────────────────
-
-        rows: List[Dict[str, Any]] = []
-        if not stats_df.empty:
-            for _, row in stats_df.iterrows():
-                vendor_id = str(row.get("vendor_id", "UNKNOWN"))
-                exception_rate = float(row.get("exception_rate_pct", 0) or 0)
-                avg_dpo = float(avg_dpo_by_vendor.get(vendor_id, 0) or 0)
-
-                risk = "LOW"
-                if exception_rate >= 60 or avg_dpo >= 60:
-                    risk = "CRITICAL"
-                elif exception_rate >= 40 or avg_dpo >= 40:
-                    risk = "HIGH"
-                elif exception_rate >= 20 or avg_dpo >= 20:
-                    risk = "MEDIUM"
-
-                # Real payment behavior from case-level data, or explicit null fallback
-                pb = payment_behavior_by_vendor.get(vendor_id)
-                if pb:
-                    payment_behavior = {**pb, "_source": "celonis"}
-                else:
-                    payment_behavior = {
-                        "on_time_pct": None,
-                        "early_pct": None,
-                        "late_pct": None,
-                        "open_pct": None,
-                        "_source": "unavailable",
-                    }
-
-                rows.append({
-                    "vendor_id": vendor_id,
-                    "vendor_lifnr": vendor_lifnr_by_vendor.get(vendor_id, vendor_id),
-                    "total_cases": int(row.get("case_count", 0) or 0),
-                    "total_value": float(total_value_by_vendor.get(vendor_id, 0.0)),
-                    "exception_rate": round(exception_rate, 2),
-                    "avg_dpo": round(avg_dpo, 2),
-                    "payment_behavior": payment_behavior,
-                    "risk_score": risk,
-                })
-
-        rows.sort(key=lambda x: (x["total_value"], x["total_cases"]), reverse=True)
-        return rows
-     except Exception as e:
-        raise Exception(f"Vendor stats API payload generation failed: {str(e)}")
+    # ─────────────────────────────────────────────────────────────────────
+    # GENERIC TABLE DATA
+    # ─────────────────────────────────────────────────────────────────────
 
     def get_table_data(
         self,
@@ -785,9 +1200,6 @@ class CelonisService:
         max_rows: Optional[int] = None,
         use_cache: bool = True,
     ) -> pd.DataFrame:
-        """
-        Generic full table extractor using paginated PQL limit/offset.
-        """
         resolved_table = self._resolve_table_name(table_name)
         requested_cols = list(columns) if columns else self.list_columns(resolved_table)
         if not requested_cols:
@@ -812,16 +1224,16 @@ class CelonisService:
             self._table_data_cache[cache_key] = df.copy()
         return df
 
+    # ─────────────────────────────────────────────────────────────────────
+    # WORKING CAPITAL EXTRACTS
+    # ─────────────────────────────────────────────────────────────────────
+
     def get_working_capital_extract(
         self,
         include_rows: bool = False,
         max_rows_per_table: Optional[int] = None,
         batch_size: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """
-        Extracts all working-capital-related tables from the data model.
-        Set include_rows=true to return full records for each table.
-        """
         try:
             tables = self.list_tables()
             candidate_names = sorted(
@@ -900,9 +1312,6 @@ class CelonisService:
         event_columns: List[str],
         object_table_names: set,
     ) -> str:
-        """
-        Infer owning object table for an event table based on *_ID linking columns.
-        """
         for col in event_columns:
             if not col.endswith("_ID"):
                 continue
@@ -922,12 +1331,6 @@ class CelonisService:
         include_event_tables: bool = True,
         max_tables: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """
-        Extract all Working Capital tables and group them into separate buckets:
-        - object_activity_streams: object-centric streams (e.g. VimHeader Activity)
-        - event_streams_by_object: t_e_* tables grouped by linked object
-        - object_master_tables: non-activity object tables
-        """
         try:
             all_tables = sorted([t["table_name"] for t in self.list_tables()])
             prefixes = self._normalize_table_filters(table_prefixes) or ["t_o_custom_", "t_e_custom_"]
@@ -945,7 +1348,6 @@ class CelonisService:
             if allowlist:
                 candidate_tables = [t for t in candidate_tables if t in allowset or t in required_tables]
 
-            # Ensure required tables are never dropped by filters.
             for req in sorted(required_tables):
                 if req in all_tables and req not in candidate_tables:
                     candidate_tables.append(req)
@@ -956,7 +1358,10 @@ class CelonisService:
                 candidate_tables = (prioritized + remaining)[:max_tables]
 
             object_tables = sorted([t for t in candidate_tables if t.startswith("t_o_custom_")])
-            event_tables = sorted([t for t in candidate_tables if t.startswith("t_e_custom_") and include_event_tables])
+            event_tables = sorted([
+                t for t in candidate_tables
+                if t.startswith("t_e_custom_") and include_event_tables
+            ])
             object_table_set = set(object_tables)
 
             object_activity_streams: Dict[str, Dict[str, Any]] = {}
@@ -989,7 +1394,6 @@ class CelonisService:
                     payload["sample"] = table_df.head(20).where(pd.notnull(table_df), None).to_dict(orient="records")
                 return payload
 
-            # Group object tables into activity streams vs master tables.
             for table_name in object_tables:
                 columns = self.list_columns(table_name)
                 payload = build_table_payload(table_name)
@@ -1010,7 +1414,6 @@ class CelonisService:
                         "total_rows": payload["row_count"],
                     }
 
-            # Group event tables by linked object table.
             for table_name in event_tables:
                 columns = self.list_columns(table_name)
                 payload = build_table_payload(table_name)
@@ -1066,20 +1469,19 @@ class CelonisService:
         except Exception as e:
             raise Exception(f"Working Capital grouped extraction failed: {str(e)}")
 
+    # ─────────────────────────────────────────────────────────────────────
+    # AMOUNT HELPERS
+    # ─────────────────────────────────────────────────────────────────────
+
     @staticmethod
     def _pick_best_amount_column(df: pd.DataFrame) -> Optional[str]:
         if df is None or df.empty:
             return None
         preferred = [
-            "CONVERTED_INV_VALUE_USD",
-            "CONVERTEDINVVALUEUSD",
-            "INV_VALUE_USD",
-            "INVOICE_VALUE_USD",
-            "INV_VALUE",
-            "INVOICE_VALUE",
-            "WRBTR",
-            "DMBTR",
-            "NETWR",
+            "CONVERTED_INV_VALUE_USD", "CONVERTEDINVVALUEUSD",
+            "INV_VALUE_USD", "INVOICE_VALUE_USD",
+            "INV_VALUE", "INVOICE_VALUE",
+            "WRBTR", "DMBTR", "NETWR",
         ]
         upper_map = {str(c).upper(): c for c in df.columns}
         for key in preferred:
@@ -1100,18 +1502,8 @@ class CelonisService:
         if df is None or df.empty:
             return []
         amount_keywords = [
-            "VALUE",
-            "AMOUNT",
-            "USD",
-            "INV",
-            "NET",
-            "TOTAL",
-            "WRBTR",
-            "DMBTR",
-            "NETWR",
-            "MENGE",
-            "PRICE",
-            "COST",
+            "VALUE", "AMOUNT", "USD", "INV", "NET", "TOTAL",
+            "WRBTR", "DMBTR", "NETWR", "MENGE", "PRICE", "COST",
         ]
         result: List[str] = []
         for col in df.columns:
@@ -1147,6 +1539,10 @@ class CelonisService:
             "totals_by_column": totals_by_column,
             "non_null_count_by_column": non_null_count_by_column,
         }
+
+    # ─────────────────────────────────────────────────────────────────────
+    # TABLE EXTRACT PAYLOADS
+    # ─────────────────────────────────────────────────────────────────────
 
     def get_table_extract_payload(
         self,
@@ -1185,9 +1581,6 @@ class CelonisService:
         max_rows_per_table: Optional[int] = None,
         batch_size: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """
-        Extract all tables in the data model with row counts + amount summaries.
-        """
         try:
             all_table_names = sorted([t["table_name"] for t in self.list_tables()])
             extracted: List[Dict[str, Any]] = []
@@ -1219,9 +1612,6 @@ class CelonisService:
         max_rows_per_table: Optional[int] = None,
         batch_size: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """
-        Extract all model tables grouped separately by table family.
-        """
         try:
             all_tables = sorted([t["table_name"] for t in self.list_tables()])
             groups: Dict[str, Dict[str, Any]] = {
@@ -1277,6 +1667,10 @@ class CelonisService:
         except Exception as e:
             raise Exception(f"All-table grouped extraction failed: {str(e)}")
 
+    # ─────────────────────────────────────────────────────────────────────
+    # OLAP HELPERS
+    # ─────────────────────────────────────────────────────────────────────
+
     @staticmethod
     def _normalize_col(col_name: str) -> str:
         return "".join(ch for ch in str(col_name).upper() if ch.isalnum())
@@ -1322,6 +1716,10 @@ class CelonisService:
             ),
             reverse=True,
         )
+        logger.info(
+            "OLAP table discovery top candidates: %s",
+            [(r["table_name"], r["score"]) for r in ranked[:5]],
+        )
         return ranked[0]
 
     def get_detailed_transaction_olap(
@@ -1330,9 +1728,6 @@ class CelonisService:
         max_rows: Optional[int] = None,
         batch_size: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """
-        Returns a frontend-ready Detailed Transaction OLAP dataset with stable output keys.
-        """
         try:
             field_aliases: Dict[str, List[str]] = {
                 "company_code": ["Company Code", "BUKRS", "COMPANYCODE"],
@@ -1342,36 +1737,23 @@ class CelonisService:
                 "invoice_number": ["Inv Number", "Invoice Number", "BELNR", "INVOICENUMBER", "VBELN"],
                 "invoice_line_item_number": ["Inv Line Item Number", "BUZEI", "LINEITEM", "ITEMNUMBER"],
                 "invoice_value_usd": [
-                    "Inv. value (in USD)",
-                    "Inv value in USD",
-                    "INV_VALUE_USD",
-                    "INVOICE_VALUE_USD",
-                    "DMBTR",
-                    "WRBTR",
-                    "NETWR",
+                    "Inv. value (in USD)", "Inv value in USD", "INV_VALUE_USD",
+                    "INVOICE_VALUE_USD", "DMBTR", "WRBTR", "NETWR",
                 ],
                 "currency": ["Currency", "WAERS"],
                 "converted_invoice_value_usd": [
-                    "Converted Inv Value",
-                    "CONVERTED_INV_VALUE_USD",
-                    "CONVERTEDINVVALUEUSD",
-                    "INVOICE_VALUE_CONVERTED",
+                    "Converted Inv Value", "CONVERTED_INV_VALUE_USD",
+                    "CONVERTEDINVVALUEUSD", "INVOICE_VALUE_CONVERTED",
                 ],
                 "fiscal_year": ["Fiscal Year", "GJAHR", "FISCALYEAR"],
                 "clearing_document_number": [
-                    "Clearing Document",
-                    "AUGBL",
-                    "CLEARINGDOC",
-                    "CLEARINGDOCUMENTNUMBER",
+                    "Clearing Document", "AUGBL", "CLEARINGDOC", "CLEARINGDOCUMENTNUMBER",
                 ],
                 "payment_status": ["Payment Status", "PAYMENT_STATUS", "RECOMMENDATION", "STATUS"],
                 "invoice_payment_terms": ["Invoice PT", "INVOICE_PT", "INVOICE_PAYMENT_TERMS", "ZTERM_INV"],
                 "po_payment_terms": ["PO Payment Term", "PO_PAYMENT_TERM", "PO_PAYMENT_TERMS", "ZTERM_PO"],
                 "vendor_master_payment_terms": [
-                    "Vendor Master PT",
-                    "VENDOR_MASTER_PT",
-                    "VENDOR_PAYMENT_TERMS",
-                    "ZTERM_VENDOR",
+                    "Vendor Master PT", "VENDOR_MASTER_PT", "VENDOR_PAYMENT_TERMS", "ZTERM_VENDOR",
                 ],
                 "recommendation": ["Recommendation", "RECOMMENDATION_TEXT", "RECOMMENDED_ACTION"],
                 "due_date": ["Due Date", "DUE_DATE", "FAEDT", "NETDT"],
@@ -1384,6 +1766,7 @@ class CelonisService:
             for target_field, explicit_col in explicit_mapping.items():
                 if explicit_col:
                     field_aliases[target_field] = [explicit_col] + field_aliases.get(target_field, [])
+
             explicit_table = (getattr(settings, "WCM_OLAP_SOURCE_TABLE", "") or "").strip()
             if explicit_table:
                 source_table = self._resolve_table_name(explicit_table)
@@ -1397,8 +1780,13 @@ class CelonisService:
             else:
                 best = self._discover_best_olap_table(field_aliases)
                 best["selection_mode"] = "auto"
+
             source_table = best["table_name"]
             source_columns = best["columns"]
+            logger.info(
+                "OLAP source resolved → table=%s score=%d mode=%s",
+                source_table, best["score"], best["selection_mode"],
+            )
 
             selected_source_cols: List[str] = []
             selected_map: Dict[str, Optional[str]] = {}
@@ -1410,8 +1798,14 @@ class CelonisService:
 
             if not selected_source_cols:
                 raise Exception(
-                    f"Could not map any OLAP columns from table '{source_table}'. Available columns: {source_columns}"
+                    f"Could not map any OLAP columns from table '{source_table}'. "
+                    f"Available columns: {source_columns}"
                 )
+
+            logger.info(
+                "OLAP column mapping: %s",
+                {k: v for k, v in selected_map.items() if v},
+            )
 
             raw = self.get_table_data(
                 table_name=source_table,
@@ -1419,6 +1813,10 @@ class CelonisService:
                 batch_size=batch_size,
                 max_rows=max_rows,
                 use_cache=False,
+            )
+
+            logger.info(
+                "OLAP raw data: %d rows from %s", len(raw), source_table
             )
 
             olap = pd.DataFrame(index=raw.index)
@@ -1508,10 +1906,53 @@ class CelonisService:
             return None
         return value
 
+    # ─────────────────────────────────────────────────────────────────────
+    # VENDOR STATISTICS
+    # ─────────────────────────────────────────────────────────────────────
+
+    def get_vendor_statistics(self) -> pd.DataFrame:
+        if self._vendor_stats_cache is not None:
+            return self._vendor_stats_cache.copy()
+
+        try:
+            df = self.get_event_log_with_vendor()
+            if df.empty:
+                return pd.DataFrame(columns=["vendor_id", "case_count", "exception_rate_pct"])
+
+            df = df.copy()
+            activity_lower = df["activity"].astype(str).str.lower()
+            df["_is_exception"] = activity_lower.str.contains(
+                "exception|moved out|due date passed|block|payment term",
+                regex=True,
+                na=False,
+            )
+            case_vendor = (
+                df.groupby("case_id", sort=False)
+                .agg(
+                    vendor_id=("vendor_id", "first"),
+                    is_exception=("_is_exception", "any"),
+                )
+                .reset_index()
+            )
+            stats = (
+                case_vendor.groupby("vendor_id")
+                .agg(
+                    case_count=("case_id", "count"),
+                    exception_case_count=("is_exception", "sum"),
+                )
+                .reset_index()
+            )
+            stats["exception_rate_pct"] = (
+                stats["exception_case_count"]
+                / stats["case_count"].replace(0, pd.NA)
+                * 100
+            ).fillna(0.0).round(2)
+            self._vendor_stats_cache = stats
+            return self._vendor_stats_cache.copy()
+        except Exception as e:
+            raise Exception(f"Vendor statistics computation failed: {str(e)}")
+
     def get_vendor_stats_api(self) -> List[Dict[str, Any]]:
-        """
-        API-ready vendor stats used by /process/vendor-stats.
-        """
         try:
             stats_df = self.get_vendor_statistics()
             case_durations = self.get_case_durations()
@@ -1525,10 +1966,7 @@ class CelonisService:
                 if "vendor_id" in renamed.columns:
                     renamed["vendor_id"] = renamed["vendor_id"].astype(str).str.strip()
                     vendor_lifnr_by_vendor = (
-                        renamed.groupby("vendor_id")["vendor_id"]
-                        .first()
-                        .astype(str)
-                        .to_dict()
+                        renamed.groupby("vendor_id")["vendor_id"].first().astype(str).to_dict()
                     )
                     amount_col = self._pick_best_amount_column(renamed)
                     if amount_col:
@@ -1560,24 +1998,22 @@ class CelonisService:
                     elif exception_rate >= 20 or avg_dpo >= 20:
                         risk = "MEDIUM"
 
-                    rows.append(
-                        {
-                            "vendor_id": vendor_id,
-                            "vendor_lifnr": vendor_lifnr_by_vendor.get(vendor_id, vendor_id),
-                            "total_cases": int(row.get("case_count", 0) or 0),
-                            "total_value": float(total_value_by_vendor.get(vendor_id, 0.0)),
-                            "exception_rate": round(exception_rate, 2),
-                            "avg_dpo": round(avg_dpo, 2),
-                            "payment_behavior": {
-                                "on_time_pct": 0.0,
-                                "early_pct": 0.0,
-                                "late_pct": 0.0,
-                                "open_pct": 0.0,
-                                "_source": "requires_case_level_enrichment",
-                            },
-                            "risk_score": risk,
-                        }
-                    )
+                    rows.append({
+                        "vendor_id": vendor_id,
+                        "vendor_lifnr": vendor_lifnr_by_vendor.get(vendor_id, vendor_id),
+                        "total_cases": int(row.get("case_count", 0) or 0),
+                        "total_value": float(total_value_by_vendor.get(vendor_id, 0.0)),
+                        "exception_rate": round(exception_rate, 2),
+                        "avg_dpo": round(avg_dpo, 2),
+                        "payment_behavior": {
+                            "on_time_pct": None,
+                            "early_pct": None,
+                            "late_pct": None,
+                            "open_pct": None,
+                            "_source": "celonis_direct",
+                        },
+                        "risk_score": risk,
+                    })
 
             rows.sort(key=lambda x: (x["total_value"], x["total_cases"]), reverse=True)
             return rows
@@ -1585,22 +2021,13 @@ class CelonisService:
             raise Exception(f"Vendor stats API payload generation failed: {str(e)}")
 
     def get_vendor_paths(self, vendor_id: str) -> Dict[str, Any]:
-        """
-        Returns happy vs exception paths for a vendor.
-        """
         try:
             df = self.get_event_log_with_vendor()
             if df.empty:
                 return {"vendor_id": vendor_id, "happy_paths": [], "exception_paths": []}
 
-            alias_lifnr = ""
-
             normalized_vendor = df["vendor_id"].astype(str).str.upper().str.strip()
             vendor_df = df[normalized_vendor == vendor_id.upper().strip()].copy()
-            if vendor_df.empty and alias_lifnr:
-                vendor_df = df[
-                    df["vendor_id"].astype(str).str.strip() == alias_lifnr
-                ].copy()
             if vendor_df.empty:
                 return {"vendor_id": vendor_id, "happy_paths": [], "exception_paths": []}
 
@@ -1627,7 +2054,6 @@ class CelonisService:
                     .apply(lambda x: " → ".join(x.astype(str).tolist()))
                     .reset_index(name="variant")
                 )
-
                 case_duration = (
                     work.groupby("case_id")
                     .agg(start_time=("timestamp", "min"), end_time=("timestamp", "max"))
@@ -1636,11 +2062,8 @@ class CelonisService:
                 case_duration["duration_days"] = (
                     (case_duration["end_time"] - case_duration["start_time"]).dt.total_seconds() / 86400
                 ).fillna(0)
-
                 variant_with_duration = variant_by_case.merge(
-                    case_duration[["case_id", "duration_days"]],
-                    on="case_id",
-                    how="left",
+                    case_duration[["case_id", "duration_days"]], on="case_id", how="left"
                 )
                 agg = (
                     variant_with_duration.groupby("variant")
@@ -1670,7 +2093,10 @@ class CelonisService:
                     variant_lower = str(row["variant"]).lower()
                     has_exception_signal = any(
                         kw in variant_lower
-                        for kw in ["exception", "due date passed", "block", "moved out", "short payment", "immediate", "early payment"]
+                        for kw in [
+                            "exception", "due date passed", "block", "moved out",
+                            "short payment", "immediate", "early payment",
+                        ]
                     )
                     if has_exception_signal:
                         record["exception_type"] = exception_type or "Invoice Exception"
@@ -1687,18 +2113,6 @@ class CelonisService:
                 global_happy_paths, _ = partition_paths(global_agg, "global_baseline")
                 if global_happy_paths:
                     happy_paths = global_happy_paths[:3]
-                elif not global_agg.empty:
-                    top_global = global_agg.iloc[0]
-                    happy_paths = [
-                        {
-                            "variant": top_global["variant"],
-                            "frequency": int(top_global["frequency"]),
-                            "percentage": float(top_global["percentage"]),
-                            "avg_duration_days": float(top_global["avg_duration_days"]),
-                            "source": "global_baseline",
-                            "note": "Using top Celonis baseline path because this vendor currently appears only in exception traces.",
-                        }
-                    ]
 
             return {
                 "vendor_id": vendor_id,
@@ -1708,10 +2122,11 @@ class CelonisService:
         except Exception as e:
             raise Exception(f"Vendor paths extraction failed for vendor '{vendor_id}': {str(e)}")
 
+    # ─────────────────────────────────────────────────────────────────────
+    # VARIANTS / THROUGHPUT / FREQUENCIES
+    # ─────────────────────────────────────────────────────────────────────
+
     def get_variants(self) -> pd.DataFrame:
-        """
-        Build variants in Python from ordered event traces.
-        """
         if self._variants_cache is not None:
             return self._variants_cache.copy()
 
@@ -1740,9 +2155,6 @@ class CelonisService:
             raise Exception(f"Variant extraction failed: {str(e)}")
 
     def get_throughput_times(self) -> pd.DataFrame:
-        """
-        Build directly-follows throughput transitions in Python.
-        """
         if self._throughput_cache is not None:
             return self._throughput_cache.copy()
 
@@ -1751,11 +2163,8 @@ class CelonisService:
             if df.empty:
                 return pd.DataFrame(
                     columns=[
-                        "source_activity",
-                        "target_activity",
-                        "avg_duration_days",
-                        "median_duration_days",
-                        "case_count",
+                        "source_activity", "target_activity",
+                        "avg_duration_days", "median_duration_days", "case_count",
                     ]
                 )
 
@@ -1770,25 +2179,19 @@ class CelonisService:
                     duration_days = None
                     if pd.notnull(source_time) and pd.notnull(target_time):
                         duration_days = (target_time - source_time).total_seconds() / 86400
-
-                    transitions.append(
-                        {
-                            "case_id": case_id,
-                            "source_activity": source_activity,
-                            "target_activity": target_activity,
-                            "duration_days": duration_days,
-                        }
-                    )
+                    transitions.append({
+                        "case_id": case_id,
+                        "source_activity": source_activity,
+                        "target_activity": target_activity,
+                        "duration_days": duration_days,
+                    })
 
             trans_df = pd.DataFrame(transitions)
             if trans_df.empty:
                 return pd.DataFrame(
                     columns=[
-                        "source_activity",
-                        "target_activity",
-                        "avg_duration_days",
-                        "median_duration_days",
-                        "case_count",
+                        "source_activity", "target_activity",
+                        "avg_duration_days", "median_duration_days", "case_count",
                     ]
                 )
 
@@ -1866,24 +2269,19 @@ class CelonisService:
         except Exception as e:
             raise Exception(f"Case duration extraction failed: {str(e)}")
 
+    # ─────────────────────────────────────────────────────────────────────
+    # METADATA / DIAGNOSTICS
+    # ─────────────────────────────────────────────────────────────────────
+
     def list_pools_and_models(self) -> List[Dict]:
         try:
             result = []
             pools = self.celonis.data_integration.get_data_pools()
             for pool in pools:
-                pool_info = {
-                    "pool_id": pool.id,
-                    "pool_name": pool.name,
-                    "models": [],
-                }
+                pool_info = {"pool_id": pool.id, "pool_name": pool.name, "models": []}
                 try:
                     for model in pool.get_data_models():
-                        pool_info["models"].append(
-                            {
-                                "model_id": model.id,
-                                "model_name": model.name,
-                            }
-                        )
+                        pool_info["models"].append({"model_id": model.id, "model_name": model.name})
                 except Exception as e:
                     pool_info["error"] = str(e)
                 result.append(pool_info)
@@ -1927,4 +2325,70 @@ class CelonisService:
             "transaction_column": self.transaction_col,
             "case_table": self.case_table,
             "vendor_column": self.vendor_col,
+            # ── NEW: expose resolved discovery results for debugging ──
+            "discovered_event_source": CelonisService._shared_event_source,
+            "discovered_case_attr_source": CelonisService._shared_case_attr_source,
         }
+
+    # ─────────────────────────────────────────────────────────────────────
+    # CONNECTION VALIDATION ENDPOINT  (NEW — call this first to debug)
+    # ─────────────────────────────────────────────────────────────────────
+
+    def validate_data_fetch(self) -> Dict[str, Any]:
+        """
+        Diagnostic method: tries to fetch 5 rows from both the event table and
+        the case table and reports exactly what it found.  Call /api/celonis/validate
+        (add a route for this) to confirm real data is flowing before relying on
+        the cache.
+        """
+        result: Dict[str, Any] = {
+            "connection": "ok",
+            "tables_in_model": [],
+            "event_source": None,
+            "case_attr_source": None,
+            "event_sample": [],
+            "case_attr_sample": [],
+            "errors": [],
+        }
+        try:
+            result["tables_in_model"] = self._get_table_names()
+        except Exception as e:
+            result["errors"].append(f"table listing: {e}")
+
+        try:
+            event_source = self._discover_event_source()
+            result["event_source"] = {
+                "table": event_source["table"],
+                "score": event_source["score"],
+                "mapping": event_source["mapping"],
+            }
+            # Fetch just 5 rows
+            from pycelonis.pql import PQL, PQLColumn
+            pql_table = self._to_pql_table_name(event_source["table"])
+            q = PQL(limit=5, offset=0)
+            for col in [v for v in event_source["mapping"].values() if v]:
+                q += PQLColumn(name=col, query=f'"{pql_table}"."{col}"')
+            sample_df = self._run_pql(q, "validate event source")
+            result["event_sample"] = sample_df.where(pd.notnull(sample_df), None).to_dict(orient="records")
+        except Exception as e:
+            result["errors"].append(f"event source: {e}")
+
+        try:
+            case_source = self._discover_case_attr_source()
+            result["case_attr_source"] = {
+                "table": case_source["table"],
+                "score": case_source["score"],
+                "mapping": case_source["mapping"],
+            }
+            from pycelonis.pql import PQL, PQLColumn
+            pql_table = self._to_pql_table_name(case_source["table"])
+            q = PQL(limit=5, offset=0)
+            for col in [v for v in case_source["mapping"].values() if v]:
+                q += PQLColumn(name=col, query=f'"{pql_table}"."{col}"')
+            sample_df = self._run_pql(q, "validate case attr source")
+            result["case_attr_sample"] = sample_df.where(pd.notnull(sample_df), None).to_dict(orient="records")
+        except Exception as e:
+            result["errors"].append(f"case attr source: {e}")
+
+        result["ok"] = len(result["errors"]) == 0
+        return result

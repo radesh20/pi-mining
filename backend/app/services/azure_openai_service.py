@@ -1,3 +1,4 @@
+import collections
 import json
 import logging
 import httpx
@@ -12,7 +13,8 @@ logger = logging.getLogger(__name__)
 class AzureOpenAIService:
     _sdk_mismatch_warned = False
     _cache_lock = threading.Lock()
-    _response_cache = {}
+    # OrderedDict preserves insertion order for LRU-style eviction
+    _response_cache: "collections.OrderedDict[str, dict]" = collections.OrderedDict()
 
     def __init__(self):
         if not settings.AZURE_OPENAI_API_KEY or not settings.AZURE_OPENAI_ENDPOINT:
@@ -54,6 +56,9 @@ class AzureOpenAIService:
         temperature: float = 0.2,
         max_tokens: int = 4000,
         json_mode: bool = False,
+        # Optional metadata for log traceability — not sent to the LLM
+        prompt_version: str = "",
+        prompt_purpose: str = "",
     ) -> str:
         kwargs = {
             "model": self.deployment,
@@ -73,24 +78,46 @@ class AzureOpenAIService:
             cache_key = self._build_cache_key(kwargs)
             cached = self._cache_get(cache_key)
             if cached is not None:
+                logger.debug(
+                    "LLM cache HIT | purpose=%s version=%s key=%s",
+                    prompt_purpose or "-",
+                    prompt_version or "-",
+                    cache_key[:12],
+                )
                 return cached
 
         if self._use_sdk:
             content = self._chat_via_sdk_with_retry(**kwargs)
-            if cache_key:
-                self._cache_set(cache_key, content)
-            return content
+        else:
+            content = self._chat_via_rest_with_retry(**kwargs)
 
-        content = self._chat_via_rest_with_retry(**kwargs)
+        # Log for traceability: version, purpose, response hash (never log raw content)
+        logger.info(
+            "LLM call | purpose=%s version=%s temp=%.2f response_hash=%s",
+            prompt_purpose or "-",
+            prompt_version or "-",
+            temperature,
+            hashlib.sha256(content.encode()).hexdigest()[:16] if content else "-",
+        )
         if cache_key:
             self._cache_set(cache_key, content)
         return content
 
-    def chat_json(self, system_prompt: str, user_prompt: str) -> dict:
+    def chat_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.2,
+        prompt_version: str = "",
+        prompt_purpose: str = "",
+    ) -> dict:
         response = self.chat(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
+            temperature=temperature,
             json_mode=True,
+            prompt_version=prompt_version,
+            prompt_purpose=prompt_purpose,
         )
         try:
             return json.loads(response)
@@ -215,5 +242,12 @@ class AzureOpenAIService:
             return item["value"]
 
     def _cache_set(self, key: str, value: str) -> None:
+        max_size = max(int(getattr(settings, "LLM_CACHE_MAX_SIZE", 256) or 256), 4)
         with AzureOpenAIService._cache_lock:
+            # Remove entry first (re-insert to move to end = most-recently-used)
+            AzureOpenAIService._response_cache.pop(key, None)
             AzureOpenAIService._response_cache[key] = {"value": value, "ts": time.time()}
+            # Evict oldest entries when over the size limit
+            while len(AzureOpenAIService._response_cache) > max_size:
+                evicted_key, _ = AzureOpenAIService._response_cache.popitem(last=False)
+                logger.debug("LLM cache LRU evict | key=%s", evicted_key[:12])

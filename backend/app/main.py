@@ -1,4 +1,5 @@
 import logging
+import logging.config
 import threading
 import time
 import warnings
@@ -12,9 +13,12 @@ from app.api.routes_agents import router as agents_router
 from app.api.routes_exceptions import router as exceptions_router
 from app.api.routes_vendors import router as vendors_router
 from app.api.routes_chat import router as chat_router
+from app.middleware.request_id import RequestIDMiddleware, get_logging_config
 from app.services.data_cache_service import get_data_cache_service
 from app.config import settings
 
+# ── Structured logging with request-ID correlation ───────────────────────────
+logging.config.dictConfig(get_logging_config(level="INFO"))
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
@@ -23,6 +27,10 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# Request-ID middleware must be added BEFORE CORSMiddleware so the ID is set
+# before any downstream handler logs (ASGI middleware runs outermost-first on
+# the way in, so adding it first here means it wraps everything else).
+app.add_middleware(RequestIDMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -80,6 +88,12 @@ def preload_data_cache() -> None:
                     cache.ensure_loaded()
                 except Exception as e:
                     logger.warning("Startup cache warmup failed (non-blocking): %s", str(e))
+                # ↑ This hides the real error. Change WARNING to ERROR so you see it clearly:
+                logger.error(
+                    "Startup cache warmup failed — Celonis connection error: %s", 
+                    str(e), 
+                    exc_info=True   # ADD THIS to get full traceback in logs
+                )
 
             threading.Thread(target=_warm_cache_once, daemon=True, name="cache-startup-warmup").start()
     except Exception:

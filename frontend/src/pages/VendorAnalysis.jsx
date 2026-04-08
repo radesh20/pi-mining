@@ -13,7 +13,7 @@ const EXCEPTION_META = [
   { key: "payment_terms_mismatch", title: "Payment Terms Mismatch", color: "#B03030", subtle: "#FAEAEA", border: "#E0A0A0", icon: "📋" },
   { key: "invoice_exception", title: "Invoice Exception", color: "#A05A10", subtle: "#FEF3DC", border: "#F0C870", icon: "⚠️" },
   { key: "short_payment_terms", title: "Short Payment Terms", color: "#1E4E8C", subtle: "#EBF2FC", border: "#90B8E8", icon: "⏱" },
-  { key: "early_payment", title: "Early Payment", color: "#1A6B5E", subtle: "#DCF0EB", border: "#8FCFC5", icon: "💰" },
+  { key: "invoices_having_actual_dpo_0_7_days", title: "Invoices having Actual DPO 0-7 Days", color: "#1A6B5E", subtle: "#DCF0EB", border: "#8FCFC5", icon: "💰" },
 ];
 
 const RISK_MAP = {
@@ -186,13 +186,13 @@ export default function VendorAnalysis() {
       payment_terms_mismatch: { count: 0, percentage: 0, value: 0 },
       invoice_exception: { count: 0, percentage: 0, avg_dpo: 0, value: 0, time_stuck_days: 0 },
       short_payment_terms: { count: 0, percentage: 0, value: 0, risk_level: "LOW" },
-      early_payment: { count: 0, percentage: 0, optimization_value: 0, value: 0 },
+      invoices_having_actual_dpo_0_7_days: { count: 0, percentage: 0, optimization_value: 0, value: 0 },
     };
     exceptionPaths.forEach((path) => {
       const key = normalizeKey(path.exception_type);
       if (key.includes("payment_terms")) { base.payment_terms_mismatch.count += Number(path.frequency || path.count || 0); base.payment_terms_mismatch.percentage += Number(path.percentage || 0); }
       else if (key.includes("short_payment")) { base.short_payment_terms.count += Number(path.frequency || path.count || 0); base.short_payment_terms.percentage += Number(path.percentage || 0); base.short_payment_terms.risk_level = "HIGH"; }
-      else if (key.includes("early_payment")) { base.early_payment.count += Number(path.frequency || path.count || 0); base.early_payment.percentage += Number(path.percentage || 0); }
+      else if (key.includes("actual_dpo") || key.includes("early_payment")) { base.invoices_having_actual_dpo_0_7_days.count += Number(path.frequency || path.count || 0); base.invoices_having_actual_dpo_0_7_days.percentage += Number(path.percentage || 0); }
       else { base.invoice_exception.count += Number(path.frequency || path.count || 0); base.invoice_exception.percentage += Number(path.percentage || 0); base.invoice_exception.avg_dpo = Math.max(base.invoice_exception.avg_dpo, Number(path.avg_dpo || path.avg_duration_days || 0)); base.invoice_exception.time_stuck_days = Math.max(base.invoice_exception.time_stuck_days, Number(path.avg_dpo || path.avg_duration_days || 0)); }
     });
     return base;

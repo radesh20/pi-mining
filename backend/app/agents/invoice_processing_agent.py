@@ -37,9 +37,18 @@ class InvoiceProcessingAgent(BaseAgent):
             prompt_config["system_prompt"],
             prompt_config["user_prompt"],
             prompt_purpose="Validate invoice and detect exception candidates before agent handoff",
+            prompt_version=prompt_config.get("version", "-"),
             message_bus_input=input_data,
         )
         normalized = self._normalize_result(result, input_data)
+        # Guardrail check — validates required fields and celonis evidence
+        guardrail_result = self.validate_output(normalized)
+        normalized["guardrail_result"] = {
+            "passed": guardrail_result.passed,
+            "rule_id": guardrail_result.rule_id,
+            "reason": guardrail_result.reason,
+            "action_taken": guardrail_result.action_taken,
+        }
         # Tag fields by data source before _provenance_tag consumes _field_sources
         self._tag_field(normalized, "turnaround_assessment", "celonis" if self._context_available() else "fallback")
         self._tag_field(normalized, "exceptions_found", "llm")
@@ -109,6 +118,36 @@ class InvoiceProcessingAgent(BaseAgent):
             "LLM assessed invoice risk across four exception families with turnaround constraints.",
         )
         return result
+
+    def validate_output(self, output: Dict) -> object:
+        """
+        Real guardrail check for InvoiceProcessingAgent.
+        Enforces: schema gate, exception-detection gate, celonis evidence.
+        """
+        try:
+            from app.guardrails.exceptions import GuardrailViolation, GuardrailResult
+        except ImportError:
+            from app.guardrails.exceptions import GuardrailViolation, GuardrailResult  # type: ignore
+
+        required_keys = {"validation_result", "exceptions_found", "turnaround_assessment", "celonis_evidence"}
+        missing = required_keys - output.keys()
+        if missing:
+            raise GuardrailViolation("SCHEMA_INVALID", f"Missing fields: {missing}")
+
+        valid_results = {"PASS", "EXCEPTION"}
+        if output.get("validation_result") not in valid_results:
+            raise GuardrailViolation("SCHEMA_INVALID", f"Unknown validation_result: {output.get('validation_result')}")
+
+        if not output.get("celonis_evidence") or "unavailable" in str(output.get("celonis_evidence", "")).lower():
+            # Soft warning — do not block, but flag it
+            return GuardrailResult(
+                passed=False,
+                rule_id="EVIDENCE_REQUIRED",
+                reason="celonis_evidence is absent or indicates data was unavailable",
+                action_taken="FLAGGED",
+            )
+
+        return GuardrailResult(passed=True, rule_id="ALL", reason="All schema checks passed", action_taken="ALLOWED")
 
     def _known_metrics(self) -> Dict:
         """

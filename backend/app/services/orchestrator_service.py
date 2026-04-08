@@ -453,6 +453,13 @@ class OrchestratorService:
         return output, err
 
     def _init_trace(self, invoice_data: Dict) -> Dict:
+        # Pull request_id from ContextVar for cross-agent correlation
+        try:
+            from app.middleware.request_id import get_request_id
+            request_id = get_request_id()
+        except Exception:
+            request_id = ""
+
         return {
             "invoice_id": invoice_data.get("invoice_id", "UNKNOWN"),
             "vendor_id": invoice_data.get("vendor_id", "UNKNOWN"),
@@ -465,6 +472,8 @@ class OrchestratorService:
             "exception_summary": {},
             "next_best_action_recommender_prompt": {},
             "started_at": datetime.utcnow().isoformat(),
+            "request_id": request_id or "-",
+            "_execution_mode": "real",  # overridden to 'synthetic_demo' by fast-mode path
         }
 
     @staticmethod
@@ -503,6 +512,7 @@ class OrchestratorService:
         trace = self._init_trace(invoice_data)
         trace["_synthetic"] = True
         trace["_synthetic_label"] = "[SYNTHETIC] Fast-mode trace — no LLM calls were made"
+        trace["_execution_mode"] = "synthetic_demo"  # Explicit label: this is NOT real agent execution
         scenario = self._detect_scenario(invoice_data)
         risk_level = self._infer_risk_level(invoice_data, scenario)
         days_until_due = float(invoice_data.get("days_until_due", 0) or 0)

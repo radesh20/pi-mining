@@ -27,7 +27,7 @@ class DataCacheService:
         "Payment Terms Mismatch",
         "Invoices with Exception",
         "Short Payment Terms (0 Days)",
-        "Early Payment / DPO 0-7 Days",
+        "Invoices having Actual DPO 0-7 Days",
         "Paid Late",
         "Open Invoices at Risk",
     ]
@@ -315,10 +315,26 @@ class DataCacheService:
             vendor_stats = self._build_vendor_stats(case_level, detailed_olap_df, process_context)
             process_context["vendor_stats"] = vendor_stats
             vendor_records_map = self._build_vendor_records_map(case_level, exception_records_map)
-            vendor_records_map = self._build_vendor_records_map(case_level, exception_records_map)
-            vendor_paths_map = self._build_vendor_paths_map(celonis, case_level)
             vendor_paths_map = self._build_vendor_paths_map(celonis, case_level)
             exception_categories = self._build_exception_categories(exception_records_map)
+            
+            # Map true Knowledge Model categories to process_context so Chat Service sees them
+            tot_cases = int(process_context.get("total_cases", 0) or 1)
+            km_patterns = []
+            for cat in exception_categories:
+                if cat.get("case_count", 0) > 0:
+                    km_patterns.append({
+                        "exception_type": cat.get("category_label"),
+                        "frequency_percentage": round((cat.get("case_count", 0) / max(tot_cases, 1)) * 100, 2),
+                        "case_count": cat.get("case_count", 0),
+                        "avg_resolution_time_days": 0.0,
+                        "trigger_condition": f"Knowledge Model: {cat.get('category_label')}",
+                        "typical_resolution": "N/A",
+                        "resolution_role": "N/A",
+                    })
+            if km_patterns:
+                process_context["exception_patterns"] = sorted(km_patterns, key=lambda x: x.get("case_count", 0), reverse=True)
+
             profile_summary = self._build_profile_summary(case_level, detailed_olap_df)
             discovered_exceptions = self._build_discovered_exception_summary(exception_records_map)
             celonis_context_layer = self._build_celonis_context_layer(
@@ -389,7 +405,6 @@ class DataCacheService:
             self.vendor_records_map = vendor_records_map
             self.process_context = process_context
             self.exception_records_map = exception_records_map
-            self.vendor_records_map = vendor_records_map
             self.vendor_paths_map = vendor_paths_map
             self.exception_categories = exception_categories
             self.available_vendors = available_vendors
@@ -461,6 +476,91 @@ class DataCacheService:
                 "data_available": self._is_loaded and not exceeds_max,
                 "last_error": self.last_error,
             }
+
+    def force_reset(self) -> Dict[str, Any]:
+        """
+        Full cache wipe + Celonis connection reset.
+
+        Use this when the Celonis team changes their data model, renames tables/columns,
+        or modifies the connection config. Sequence:
+          1. Reset CelonisService class-level connection + schema caches
+          2. Wipe all DataFrames and snapshot state in this instance
+          3. Kick off a background refresh so the next request sees fresh data
+        Returns a status dict describing what was cleared.
+        """
+        # Step 1 — reset the Celonis SDK singleton and all class-level schema caches.
+        CelonisService.reset_shared_connection()
+
+        # Step 2 — wipe this instance's DataFrames and state under the lock.
+        with self._lock:
+            self._is_loaded = False
+            self.last_refreshed_at = None
+            self.load_duration_seconds = 0.0
+            self.last_error = None
+            self.event_log_df = pd.DataFrame()
+            self.purchasing_header_df = pd.DataFrame()
+            self.enriched_event_log_df = pd.DataFrame()
+            self.case_level_df = pd.DataFrame()
+            self.case_table_full_df = pd.DataFrame()
+            self.wcm_olap_df = pd.DataFrame()
+            self.wcm_grouped_extract = {}
+            self.process_context = {}
+            self.vendor_stats = []
+            self.vendor_paths_map = {}
+            self.vendor_records_map = {}
+            self.exception_records_map = {}
+            self.exception_categories = []
+            self.available_vendors = []
+            self.cache_meta = {}
+            already_refreshing = self._refresh_in_progress
+
+        logger.info("DataCacheService: full cache wipe complete. Starting background re-load.")
+
+        # Step 3 — kick off a background refresh unless one is already running.
+        if not already_refreshing:
+            with self._lock:
+                self._refresh_in_progress = True
+                self._refresh_started_at = time.time()
+            threading.Thread(
+                target=self._refresh_in_background,
+                daemon=True,
+                name="cache-force-reset-bg",
+            ).start()
+
+        return {
+            "reset": True,
+            "celonis_connection_reset": True,
+            "cache_cleared": True,
+            "refresh_started": not already_refreshing,
+            "message": (
+                "All caches wiped and Celonis connection reset. "
+                "A background refresh has been started — new data will be available within the next refresh cycle."
+            ),
+        }
+
+    def force_refresh(self) -> Dict[str, Any]:
+        """
+        Clears all in-memory caches, resets Celonis shared connection,
+        and re-fetches data from scratch.
+        """
+        # 1. Reset Celonis connection
+        CelonisService.reset_shared_connection()
+        
+        # 2. Clear in-memory caches
+        with self._lock:
+            self._is_loaded = False
+            self.last_refreshed_at = None
+            self.event_log_df = pd.DataFrame()
+            self.purchasing_header_df = pd.DataFrame()
+            self.enriched_event_log_df = pd.DataFrame()
+            self.case_level_df = pd.DataFrame()
+            self.case_table_full_df = pd.DataFrame()
+            self.wcm_olap_df = pd.DataFrame()
+            self.process_context = {}
+            self._clear_stuck_refresh_locked()
+
+        # 3. Re-fetch data from scratch (synchronous)
+        return self.refresh_all_data()
 
     def get_case_table(self) -> List[Dict[str, Any]]:
         """Return full purchasing document header table for detailed views."""
@@ -1255,9 +1355,10 @@ class DataCacheService:
         payment_terms_mask = (
             activity_l.str.contains("payment term", na=False)
             | payment_terms_l.isin(["0", "0000", "immediate", "0 days"])
+            | (case_level["actual_dpo"].fillna(0) > 20)
         )
         invoice_exception_mask = activity_l.str.contains("exception", na=False)
-        short_terms_mask = payment_terms_l.isin(["0", "0000", "immediate", "0 days"])
+        short_terms_mask = payment_terms_l.isin(["0", "0000", "immediate", "0 days"]) | (case_level["actual_dpo"].fillna(999) < 5)
         early_payment_mask = case_level["actual_dpo"].fillna(0) <= 7
         paid_late_mask = (
             activity_l.str.contains("due date passed", na=False)
@@ -1308,10 +1409,10 @@ class DataCacheService:
             for _, r in case_level[short_terms_mask].iterrows()
         ]
 
-        records_map[self._normalize_exception_key("Early Payment / DPO 0-7 Days")] = [
+        records_map[self._normalize_exception_key("Invoices having Actual DPO 0-7 Days")] = [
             mk_record(
                 r,
-                "Early Payment / DPO 0-7 Days",
+                "Invoices having Actual DPO 0-7 Days",
                 {
                     "actual_dpo": r.get("actual_dpo"),
                     "potential_dpo": max(float(r.get("estimated_processing_days") or 0), float(r.get("actual_dpo") or 0)),
