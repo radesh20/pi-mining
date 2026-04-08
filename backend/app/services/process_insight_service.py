@@ -436,9 +436,17 @@ class ProcessInsightService:
         if enriched is None or enriched.empty:
             return []
 
+        # Defensive: ensure column names are consistent
+        if "vendor_id" not in enriched.columns and "LIFNR" in enriched.columns:
+            enriched["vendor_id"] = enriched["LIFNR"]
+        
+        if "vendor_id" not in enriched.columns:
+            logger.warning("Event log enrichment with vendor failed: 'vendor_id' or 'LIFNR' columns not found in enriched DataFrame.")
+            return []
+
         enriched = enriched.copy()
         enriched["case_id"] = enriched["case_id"].astype(str)
-        enriched["vendor_id"] = enriched["vendor_id"].fillna("UNKNOWN").astype(str)
+        enriched["vendor_id"] = enriched["vendor_id"].fillna("UNKNOWN").astype(str).str.replace(r"\.0$", "", regex=True)
         enriched["activity"] = enriched["activity"].fillna("UNKNOWN").astype(str)
         enriched["timestamp"] = pd.to_datetime(enriched["timestamp"], errors="coerce")
         enriched = enriched.sort_values(["case_id", "timestamp"], na_position="last")

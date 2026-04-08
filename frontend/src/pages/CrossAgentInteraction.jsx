@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Box, Card, CardContent, Chip, Grid, Stack, Typography } from "@mui/material";
 import LoadingSpinner from "../components/LoadingSpinner";
-import { executeInvoiceFlow, fetchAllExceptionRecords, fetchExceptionCategories, waitForCacheReady } from "../api/client";
+import { executeInvoiceFlow, fetchAllExceptionRecords, fetchExceptionCategories } from "../api/client";
 
 const S = "'Instrument Serif', Georgia, serif";
 const G = "'Geist', system-ui, sans-serif";
@@ -309,113 +309,6 @@ function StepDots({ total, current, onSelect }) {
   );
 }
 
-// TODO: Replace this hardcoded UI fallback with live guardrail check data from backend guardrails.py output.
-const HARDCODED_AGENT_GUARDRAILS = {
-  VendorIntelligenceAgent: [
-    {
-      ruleId: "EVIDENCE_BACKED_ANALYSIS",
-      status: "pass",
-      title: "Evidence-backed analysis",
-      detail: "Vendor analysis references Celonis process and vendor evidence.",
-      enforcement: "code",
-    },
-    {
-      ruleId: "RISK_SCORE_REQUIRED",
-      status: "pass",
-      title: "Risk score required",
-      detail: "Risk score includes frequency, value exposure, DPO behavior, and payment behavior.",
-      enforcement: "code",
-    },
-  ],
-  PromptWriterAgent: [
-    {
-      ruleId: "CELONIS_CITATION_REQUIRED",
-      status: "pass",
-      title: "Celonis citation required",
-      detail: "Generated prompts cite Celonis evidence and turnaround impact.",
-      enforcement: "code",
-    },
-    {
-      ruleId: "JSON_SCHEMA_REQUIRED",
-      status: "pass",
-      title: "JSON schema required",
-      detail: "Output conforms to required JSON prompt package schema.",
-      enforcement: "code",
-    },
-  ],
-  InvoiceProcessingAgent: [
-    {
-      ruleId: "NO_POST_BEFORE_GR",
-      status: "pass",
-      title: "No post before GR",
-      detail: "Goods receipt confirmed before invoice processing proceeded.",
-      enforcement: "code",
-    },
-    {
-      ruleId: "EXCEPTION_DETECTION_REQUIRED",
-      status: "pass",
-      title: "Exception detection required",
-      detail: "All four exception families evaluated.",
-      enforcement: "code",
-    },
-  ],
-  ExceptionAgent: [
-    {
-      ruleId: "EVIDENCE_REQUIRED",
-      status: "pass",
-      title: "Evidence required",
-      detail: "Celonis evidence present — 3 signals cited.",
-      enforcement: "code",
-    },
-    {
-      ruleId: "AUTO_CORRECT_CONFIDENCE",
-      status: "warn",
-      title: "Auto-correct confidence",
-      detail: "AUTO_CORRECT overridden to HUMAN_REQUIRED — confidence 0.72 below 0.80 threshold.",
-      enforcement: "code",
-    },
-    {
-      ruleId: "SCHEMA_GATE",
-      status: "pass",
-      title: "Schema gate",
-      detail: "All required output fields present.",
-      enforcement: "code",
-    },
-  ],
-  AutomationPolicyAgent: [
-    {
-      ruleId: "POLICY_MUST_INCLUDE_TURNAROUND",
-      status: "pass",
-      title: "Policy must include turnaround",
-      detail: "Policy decision includes turnaround time pressure.",
-      enforcement: "code",
-    },
-    {
-      ruleId: "NO_DETERMINISTIC_MAPPINGS",
-      status: "pass",
-      title: "No deterministic mappings",
-      detail: "Policy derived from AI reasoning, not static mapping.",
-      enforcement: "code",
-    },
-  ],
-  HumanInLoopAgent: [
-    {
-      ruleId: "DECISION_READY_PACKAGE",
-      status: "pass",
-      title: "Decision-ready package",
-      detail: "Case package is complete and decision-ready.",
-      enforcement: "code",
-    },
-    {
-      ruleId: "CELONIS_EVIDENCE_IN_ALL_FIELDS",
-      status: "pass",
-      title: "Celonis evidence in all fields",
-      detail: "Celonis evidence present in all required fields.",
-      enforcement: "code",
-    },
-  ],
-};
-
 const GUARDRAIL_STATUS_STYLE = {
   pass: { dot: "#3B6D11", bg: "#EAF3DE", label: "passed" },
   fail: { dot: "#A32D2D", bg: "#FCEBEB", label: "failed" },
@@ -439,8 +332,8 @@ function AgentStepCard({ step, index, total, isPredicted }) {
   const inputKeys = step.promptTrace?.message_bus_input ? Object.keys(step.promptTrace.message_bus_input) : [];
   const guardrailChecks = Array.isArray(step.promptTrace?.guardrail_checks)
     ? step.promptTrace.guardrail_checks
-    : HARDCODED_AGENT_GUARDRAILS[step.agent] || [];
-  const guardrailSummary = toGuardrailSummary(guardrailChecks);
+    : [];
+  const guardrailSummary = guardrailChecks.length ? toGuardrailSummary(guardrailChecks) : "no live guardrail trace";
 
   return (
     <Box
@@ -873,6 +766,19 @@ function OutcomeCards({ executionTrace }) {
   const automationDecision = executionTrace?.steps?.find((s) => String(s.agent || "").includes("Automation Policy Agent"))?.full_output;
   const humanStep = executionTrace?.steps?.find((s) => String(s.agent || "").includes("Human-in-the-Loop Agent"))?.full_output;
   const exceptionAgentPrompt = executionTrace?.steps?.find((s) => String(s.agent || "").includes("Exception Agent"))?.full_output?.prompt_for_next_agents;
+  const exceptionStep = executionTrace?.steps?.find((s) => String(s.agent || "").includes("Exception Agent"))?.full_output || {};
+  const liveGuardrails = Array.isArray(exceptionStep?.prompt_trace?.guardrail_checks)
+    ? exceptionStep.prompt_trace.guardrail_checks
+    : Array.isArray(exceptionStep?.guardrail_results)
+      ? exceptionStep.guardrail_results
+      : [];
+  const autoCorrectGate = liveGuardrails.find(
+    (g) => String(g?.rule_id || g?.ruleId || "").toUpperCase() === "AUTO_CORRECT_CONFIDENCE"
+  );
+  const guardrailLine = autoCorrectGate?.detail
+    || (liveGuardrails.length
+      ? "Guardrail checks executed from live orchestration trace."
+      : "Guardrail trace not available for this run.");
 
   return (
     <>
@@ -903,7 +809,7 @@ function OutcomeCards({ executionTrace }) {
             Auto route / human decision: {automationDecision?.automation_decision || "MONITOR"} · Teams handoff ready: {humanStep ? "Yes" : "Pending"}
           </Typography>
           <Typography sx={{ fontSize: "12px", color: "#A05A10", fontFamily: G, mt: 0.4 }}>
-            Guardrail trigger: AUTO_CORRECT_CONFIDENCE fired on ExceptionAgent — confidence 0.72 overridden to HUMAN_REQUIRED
+            Guardrail: {guardrailLine}
           </Typography>
         </CardContent>
       </Card>
@@ -990,11 +896,6 @@ export default function CrossAgentInteraction() {
         const categoriesRes = await fetchExceptionCategories();
         const categoryRows = (categoriesRes.data || categoriesRes || []).filter((row) => Number(row.case_count || 0) > 0);
 
-        if (retryIfCacheCold && categoryRows.length === 0) {
-          await waitForCacheReady({ signal: abortController.signal });
-          return await load(false);
-        }
-
         const categoryMap = new Map(categoryRows.map((category) => [category.category_id, category]));
         const allRecordsRes = await fetchAllExceptionRecords();
         const allRecords = (allRecordsRes.data || allRecordsRes || [])
@@ -1003,20 +904,8 @@ export default function CrossAgentInteraction() {
             const category = categoryMap.get(row.category_id) || null;
             return { ...row, category_label: row.category_label || category?.category_label || row.exception_type };
           });
-
-        const categoryCounts = new Map();
-        const categorySamples = [];
-
-        for (const row of allRecords) {
-          const categoryId = row.category_id || row.exception_type || "unknown";
-          const currentCount = categoryCounts.get(categoryId) || 0;
-          if (currentCount >= 3) continue;
-          categoryCounts.set(categoryId, currentCount + 1);
-          categorySamples.push(row);
-        }
-
         const seen = new Set();
-        const recordRows = categorySamples.filter((row) => {
+        const recordRows = allRecords.filter((row) => {
           const key = `${row.category_id || row.exception_type}::${row.invoice_id || row.document_number || row.case_id || row.exception_id}`;
           if (seen.has(key)) return false;
           seen.add(key);
@@ -1027,6 +916,9 @@ export default function CrossAgentInteraction() {
 
         setCategories(categoryRows);
         setRecords(recordRows);
+        if (!categoryRows.length && !recordRows.length) {
+          setError("No live exception data was returned from Celonis.");
+        }
 
         const first = recordRows[0] || null;
         if (first) {
@@ -1034,6 +926,7 @@ export default function CrossAgentInteraction() {
           setInvoice(toInvoicePayload(first));
         }
       } catch (e) {
+        if (e?.name === "AbortError") return;
         if (!active) return;
         setError(e?.response?.data?.detail || e.message || "Failed to load cross-agent data");
       } finally {
@@ -1228,3 +1121,4 @@ export default function CrossAgentInteraction() {
     </div>
   );
 }
+

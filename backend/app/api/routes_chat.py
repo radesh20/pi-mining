@@ -15,6 +15,7 @@ from app.services.agent_recommendation_service import AgentRecommendationService
 from app.services.suggestion_service import SuggestionService
 from app.services.chat_service import ChatService
 from app.services.sql_chat_service import SQLChatService
+from app.services.data_cache_service import get_data_cache_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -41,6 +42,7 @@ def _get_chat_service() -> ChatService:
             process_insight=process_insight,
             agent_recommendation=agent_rec,
             suggestion_service=suggestion,
+            data_cache_service=get_data_cache_service(),
         )
         logger.info("ChatService singleton created")
     return _chat_service

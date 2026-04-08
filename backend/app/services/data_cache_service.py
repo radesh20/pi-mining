@@ -152,7 +152,7 @@ class DataCacheService:
             return True
         return (datetime.now(timezone.utc) - refreshed).total_seconds() > ttl
 
-    def refresh_all_data(self) -> Dict[str, Any]:
+    def refresh_all_data(self, full_reload: bool = False) -> Dict[str, Any]:
         wait_seconds = max(int(getattr(settings, "CACHE_REFRESH_WAIT_SECONDS", 30) or 30), 1)
         with self._lock:
             self._clear_stuck_refresh_locked()
@@ -173,7 +173,7 @@ class DataCacheService:
             self._refresh_started_at = time.time()
 
         try:
-            self._refresh_all_data_impl()
+            self._refresh_all_data_impl(force_fresh=full_reload)
         finally:
             with self._lock:
                 self._refresh_in_progress = False
@@ -182,22 +182,29 @@ class DataCacheService:
 
         return self.get_cache_status()
 
-    def _refresh_all_data_impl(self) -> None:
+    def _refresh_all_data_impl(self, force_fresh: bool = False) -> None:
         start = time.perf_counter()
         logger.info("Refreshing Celonis data cache...")
         try:
             celonis = CelonisService()
+            should_force_fresh = bool(force_fresh or getattr(settings, "CELONIS_FORCE_FRESH_ON_REFRESH", False))
+            if should_force_fresh:
+                celonis.force_fresh_state(
+                    reconnect=bool(getattr(settings, "CELONIS_FORCE_RECONNECT_ON_REFRESH", False))
+                )
             insight_service = ProcessInsightService(celonis)
 
             event_log = celonis.get_event_log().copy()
             case_attrs = celonis.get_case_attributes().copy()
             case_table_full = celonis.get_table_data(celonis.case_table, use_cache=False).copy()
 
-            # ============================================================
-            # PHASE 1: Build initial process_context from Celonis
-            #   (needed as input to _build_case_level_dataset)
-            # ============================================================
             process_context = insight_service.build_process_context()
+            if bool(getattr(settings, "CELONIS_INCLUDE_FULL_MODEL_CONTEXT", True)):
+                model_context = celonis.get_data_model_context()
+                process_context["data_model_context"] = model_context
+                process_context["table_relationship_hints"] = model_context.get("relationship_hints", [])
+            else:
+                model_context = {}
 
             wcm_mode = getattr(settings, "WCM_CONTEXT_MODE", "full")
 
@@ -241,14 +248,9 @@ class DataCacheService:
             case_level = self._enrich_case_level_with_olap(case_level, detailed_olap_df)
             case_level = self._backfill_invoice_amounts_from_aux_tables(case_level, celonis)
 
-            # ============================================================
-            # 🔥 PHASE 2: UPDATE process_context with REAL enriched data
-            #   This is where the fix actually happens
-            # ============================================================
             process_context["total_cases"] = int(len(case_level))
             process_context["total_events"] = int(len(event_log))
 
-            # 🔥 Rebuild variants from case_level if empty/missing
             if not process_context.get("variants"):
                 logger.warning("process_context had empty variants, rebuilding from case_level...")
                 if "activity_sequence" in case_level.columns:
@@ -274,7 +276,6 @@ class DataCacheService:
                         for v, c in variant_counts.head(15).items()
                     ]
 
-            # 🔥 Rebuild exception_rate if zero
             if not process_context.get("exception_rate"):
                 exc_col = None
                 for col_name in ["has_exception", "is_exception", "exception_flag"]:
@@ -285,13 +286,14 @@ class DataCacheService:
                     exc_count = int(case_level[exc_col].sum())
                     total = max(len(case_level), 1)
                     process_context["exception_rate"] = round((exc_count / total) * 100, 2)
-                    logger.info("Rebuilt exception_rate from case_level: %.2f%%", process_context["exception_rate"])
+                    logger.info(
+                        "Rebuilt exception_rate from case_level: %.2f%%",
+                        process_context["exception_rate"],
+                    )
 
-            # 🔥 Rebuild golden_path_percentage if zero
             if not process_context.get("golden_path_percentage") and process_context.get("variants"):
                 process_context["golden_path_percentage"] = process_context["variants"][0].get("percentage", 0)
 
-            # 🔥 Update avg_end_to_end_days from case_level if available
             if not process_context.get("avg_end_to_end_days"):
                 for col_name in ["end_to_end_days", "cycle_time_days", "duration_days"]:
                     if col_name in case_level.columns:
@@ -307,16 +309,11 @@ class DataCacheService:
                 len(process_context.get("variants", [])),
                 process_context.get("exception_rate", 0),
             )
-            # ============================================================
-            # END PHASE 2
-            # ============================================================
 
             exception_records_map = self._build_exception_records_map(case_level, process_context)
             vendor_stats = self._build_vendor_stats(case_level, detailed_olap_df, process_context)
             process_context["vendor_stats"] = vendor_stats
             vendor_records_map = self._build_vendor_records_map(case_level, exception_records_map)
-            vendor_records_map = self._build_vendor_records_map(case_level, exception_records_map)
-            vendor_paths_map = self._build_vendor_paths_map(celonis, case_level)
             vendor_paths_map = self._build_vendor_paths_map(celonis, case_level)
             exception_categories = self._build_exception_categories(exception_records_map)
             profile_summary = self._build_profile_summary(case_level, detailed_olap_df)
@@ -335,8 +332,7 @@ class DataCacheService:
                 "grouped_extract_group_count": int(grouped_extract.get("group_count", 0) if grouped_extract else 0),
                 "grouped_extract_tables": int(grouped_extract.get("tables_extracted", 0) if grouped_extract else 0),
                 "grouped_selected_tables": grouped_extract.get("selected_tables", []) if grouped_extract else [],
-                "grouped_include_event_tables": grouped_extract.get("include_event_tables",
-                                                                    False) if grouped_extract else False,
+                "grouped_include_event_tables": grouped_extract.get("include_event_tables", False) if grouped_extract else False,
                 "grouped_max_tables": grouped_extract.get("max_tables", 0) if grouped_extract else 0,
                 "olap_rows": int(len(detailed_olap_df)),
                 "includes_open_and_closed": True,
@@ -370,6 +366,13 @@ class DataCacheService:
                 ],
                 "total_cases": int(process_context.get("total_cases", 0) or 0),
                 "total_events": int(process_context.get("total_events", 0) or 0),
+                "data_model_table_count": int((model_context or {}).get("table_count", 0) or 0),
+                "data_model_relationship_hints_count": int(
+                    len((model_context or {}).get("relationship_hints", []) or [])
+                ),
+                "detected_activity_table_count": int(
+                    len((model_context or {}).get("detected_activity_tables", []) or [])
+                ),
             }
         except Exception as e:
             with self._lock:
@@ -389,7 +392,6 @@ class DataCacheService:
             self.vendor_records_map = vendor_records_map
             self.process_context = process_context
             self.exception_records_map = exception_records_map
-            self.vendor_records_map = vendor_records_map
             self.vendor_paths_map = vendor_paths_map
             self.exception_categories = exception_categories
             self.available_vendors = available_vendors
@@ -405,11 +407,6 @@ class DataCacheService:
                 self.cache_meta["total_events"],
                 self.cache_meta["vendor_count"],
             )
-
-    def is_stale(self) -> bool:
-        with self._lock:
-            return self._is_stale_locked()
-
     def get_age_seconds(self) -> Optional[float]:
         """Return seconds since last successful cache refresh, or None if never loaded."""
         with self._lock:
@@ -423,17 +420,7 @@ class DataCacheService:
 
     def get_data_freshness(self) -> Dict[str, Any]:
         """
-        Return structured data-freshness metadata for API responses and UI consumption.
-
-        Contract:
-          last_refreshed        – ISO-8601 UTC timestamp of last successful refresh (or null)
-          is_stale              – True when TTL has elapsed and background refresh is pending
-          age_seconds           – Seconds since last refresh (null if never loaded)
-          is_loaded             – Whether any cache snapshot exists
-          refresh_in_progress   – Whether a background refresh is running right now
-          max_staleness_seconds – Configured hard staleness ceiling
-          exceeds_max_staleness – True when age_seconds > max_staleness_seconds
-          data_available        – True when loaded AND not exceeding max staleness
+        Return structured data freshness metadata for API responses and UI consumption.
         """
         with self._lock:
             age: Optional[float] = None
@@ -532,6 +519,187 @@ class DataCacheService:
             fallback["degraded_reason"] = self.last_error or "Cache not loaded yet"
             return fallback
 
+    def get_chat_runtime_snapshot(self) -> Dict[str, Any]:
+        """
+        Provide a chat-friendly live snapshot so PI chat can reuse the same
+        refreshed Celonis context as the rest of the app without recomputing it.
+        """
+        with self._lock:
+            if not self._is_loaded:
+                return {
+                    "event_log_df": pd.DataFrame(),
+                    "enriched_event_log_df": pd.DataFrame(),
+                    "process_context": self._empty_process_context(),
+                    "available_vendors": [],
+                    "freshness": self.get_data_freshness(),
+                }
+            return {
+                "event_log_df": self.event_log_df.copy(),
+                "enriched_event_log_df": self.enriched_event_log_df.copy(),
+                "process_context": dict(self.process_context) if self.process_context else self._empty_process_context(),
+                "available_vendors": list(self.available_vendors),
+                "freshness": self.get_data_freshness(),
+            }
+
+    def get_chat_runtime_snapshot(self) -> Dict[str, Any]:
+        """Provides a safe checkout of the current global data frames for LLM agent use."""
+        try:
+            self.ensure_loaded()
+        except Exception as e:
+            logger.warning("Serving partial chat runtime snapshot due to load error: %s", str(e))
+            
+        with self._lock:
+            return {
+                "event_log_df": self.event_log_df.copy() if not self.event_log_df.empty else pd.DataFrame(),
+                "enriched_event_log_df": self.enriched_event_log_df.copy() if not self.enriched_event_log_df.empty else pd.DataFrame(),
+                "process_context": dict(self.process_context),
+                "available_vendors": list(self.available_vendors),
+                "freshness": self.get_data_freshness(),
+            }
+
+    def build_live_exception_snapshot(self) -> Dict[str, Any]:
+        """
+        Build a lightweight live exception snapshot directly from Celonis without
+        waiting for the heavyweight full-cache warmup.
+        """
+        celonis = CelonisService()
+        try:
+            event_log = celonis.get_event_log_with_vendor().copy()
+        except Exception:
+            event_log = celonis.get_event_log().copy()
+
+        if event_log.empty:
+            return {
+                "categories": [],
+                "records": [],
+                "process_context": self._empty_process_context(),
+                "source": "live_celonis_fallback",
+                "case_count": 0,
+                "event_count": 0,
+            }
+
+        process_context = self._build_live_process_context_from_event_log(event_log)
+        case_level = self._build_case_level_dataset(event_log, process_context)
+        case_level = self._annotate_live_case_level_status(case_level)
+
+        exception_records_map = self._build_exception_records_map(case_level, process_context)
+        categories = self._build_exception_categories(exception_records_map)
+        records = self._flatten_exception_records(exception_records_map)
+
+        return {
+            "categories": categories,
+            "records": records,
+            "process_context": process_context,
+            "source": "live_celonis_fallback",
+            "case_count": int(len(case_level)),
+            "event_count": int(len(event_log)),
+        }
+
+    def _build_live_process_context_from_event_log(self, event_log: pd.DataFrame) -> Dict[str, Any]:
+        context = self._empty_process_context()
+        if event_log.empty:
+            return context
+
+        df = event_log.copy()
+        df["timestamp"] = pd.to_datetime(df.get("timestamp"), errors="coerce")
+        df = df.sort_values(["case_id", "timestamp"], na_position="last").reset_index(drop=True)
+
+        total_cases = int(df["case_id"].nunique()) if "case_id" in df.columns else 0
+        total_events = int(len(df))
+        durations: List[float] = []
+        variants: Dict[str, int] = {}
+        exception_hits: Dict[str, int] = {}
+        activity_freq: Dict[str, int] = {}
+        case_last_activity: Dict[str, str] = {}
+
+        for case_id, group in df.groupby("case_id", sort=False):
+            activities = group["activity"].dropna().astype(str).tolist()
+            if not activities:
+                continue
+            start_ts = group["timestamp"].min()
+            end_ts = group["timestamp"].max()
+            if pd.notnull(start_ts) and pd.notnull(end_ts):
+                durations.append(float((end_ts - start_ts).total_seconds() / 86400))
+            path = " -> ".join(activities)
+            variants[path] = variants.get(path, 0) + 1
+            case_last_activity[str(case_id)] = activities[-1]
+            for activity in activities:
+                activity_freq[activity] = activity_freq.get(activity, 0) + 1
+            lowered_path = path.lower()
+            if "exception" in lowered_path:
+                exception_hits["Invoices with Exception"] = exception_hits.get("Invoices with Exception", 0) + 1
+            if "due date passed" in lowered_path:
+                exception_hits["Due Date Passed"] = exception_hits.get("Due Date Passed", 0) + 1
+            if "payment term" in lowered_path:
+                exception_hits["Payment Terms Mismatch"] = exception_hits.get("Payment Terms Mismatch", 0) + 1
+            if "moved out" in lowered_path:
+                exception_hits["Moved Out of VIM"] = exception_hits.get("Moved Out of VIM", 0) + 1
+            if "block" in lowered_path:
+                exception_hits["Blocked Invoice or PO"] = exception_hits.get("Blocked Invoice or PO", 0) + 1
+
+        avg_days = round(sum(durations) / len(durations), 2) if durations else 0.0
+        sorted_variants = sorted(variants.items(), key=lambda item: item[1], reverse=True)
+        golden_path = sorted_variants[0][0] if sorted_variants else "N/A"
+        golden_count = sorted_variants[0][1] if sorted_variants else 0
+        sorted_activities = sorted(activity_freq.items(), key=lambda item: item[1], reverse=True)
+        bottleneck_name = sorted_activities[0][0] if sorted_activities else "N/A"
+        bottleneck_cases = sum(1 for activity in case_last_activity.values() if activity == bottleneck_name)
+
+        context.update({
+            "total_cases": total_cases,
+            "total_events": total_events,
+            "avg_end_to_end_days": avg_days,
+            "golden_path": golden_path,
+            "golden_path_percentage": round((golden_count / total_cases) * 100, 2) if total_cases else 0.0,
+            "bottleneck": {
+                "activity": bottleneck_name,
+                "duration_days": avg_days,
+                "case_count": bottleneck_cases or golden_count,
+            },
+            "variants": [
+                {
+                    "variant": path,
+                    "frequency": count,
+                    "percentage": round((count / total_cases) * 100, 2) if total_cases else 0.0,
+                }
+                for path, count in sorted_variants[:5]
+            ],
+            "exception_patterns": [
+                {
+                    "exception_type": label,
+                    "case_count": count,
+                    "frequency_percentage": round((count / total_cases) * 100, 2) if total_cases else 0.0,
+                    "avg_resolution_time_days": avg_days,
+                    "trigger_condition": label,
+                    "typical_resolution": "Review in PI Workbench",
+                    "resolution_role": "AP Analyst",
+                }
+                for label, count in sorted(exception_hits.items(), key=lambda item: item[1], reverse=True)
+            ],
+            "exception_rate": round(
+                (sum(exception_hits.values()) / total_cases) * 100,
+                2,
+            ) if total_cases else 0.0,
+        })
+        return context
+
+    def _annotate_live_case_level_status(self, case_level: pd.DataFrame) -> pd.DataFrame:
+        if case_level.empty:
+            return case_level
+
+        annotated = case_level.copy()
+        trace_l = annotated.get("activity_trace_text", pd.Series(dtype=str)).astype(str).str.lower().fillna("")
+        closed_mask = trace_l.str.contains("clear invoice|cleared|posted|payment", regex=True, na=False)
+        late_mask = trace_l.str.contains("due date passed|late", regex=True, na=False)
+
+        annotated["open_closed_status"] = "OPEN"
+        annotated.loc[closed_mask, "open_closed_status"] = "CLOSED"
+        annotated.loc[late_mask & closed_mask, "open_closed_status"] = "PAID_LATE"
+        annotated["payment_status"] = annotated["open_closed_status"]
+        annotated["invoice_amount"] = pd.to_numeric(annotated.get("invoice_amount"), errors="coerce").fillna(0.0)
+        annotated["value_at_risk"] = annotated["invoice_amount"]
+        return annotated
+
     def get_event_log(self) -> List[Dict[str, Any]]:
         try:
             self.ensure_loaded()
@@ -580,31 +748,12 @@ class DataCacheService:
         except Exception as e:
             logger.warning("Serving flattened exception records due to refresh/load error: %s", str(e))
         with self._lock:
-            rows: List[Dict[str, Any]] = []
-            seen: Set[str] = set()
-            for record_list in self.exception_records_map.values():
-                for row in record_list or []:
-                    record_id = str(row.get("exception_id") or row.get("case_id") or "")
-                    if record_id and record_id in seen:
-                        continue
-                    if record_id:
-                        seen.add(record_id)
-                    rows.append(self._to_jsonable(dict(row)))
-            return rows
+            return self._flatten_exception_records(self.exception_records_map)
 
     def get_exception_workbench_snapshot(self) -> Dict[str, Any]:
         with self._lock:
             categories = [self._to_jsonable(dict(row)) for row in (self.exception_categories or [])]
-            rows: List[Dict[str, Any]] = []
-            seen: set[str] = set()
-            for record_list in self.exception_records_map.values():
-                for row in record_list or []:
-                    record_id = str(row.get("exception_id") or row.get("case_id") or "")
-                    if record_id and record_id in seen:
-                        continue
-                    if record_id:
-                        seen.add(record_id)
-                    rows.append(self._to_jsonable(dict(row)))
+            rows = self._flatten_exception_records(self.exception_records_map)
             return {
                 "categories": categories,
                 "records": rows,
@@ -613,6 +762,22 @@ class DataCacheService:
                 "refresh_in_progress": self._refresh_in_progress,
                 "last_error": self.last_error,
             }
+
+    def _flatten_exception_records(
+        self,
+        exception_records_map: Dict[str, List[Dict[str, Any]]],
+    ) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        seen: Set[str] = set()
+        for record_list in (exception_records_map or {}).values():
+            for row in record_list or []:
+                record_id = str(row.get("exception_id") or row.get("case_id") or "")
+                if record_id and record_id in seen:
+                    continue
+                if record_id:
+                    seen.add(record_id)
+                rows.append(self._to_jsonable(dict(row)))
+        return rows
 
     def get_representative_exception_case(self) -> Dict[str, Any]:
         try:
@@ -2068,3 +2233,6 @@ def get_data_cache_service() -> DataCacheService:
         if _GLOBAL_CACHE is None:
             _GLOBAL_CACHE = DataCacheService()
     return _GLOBAL_CACHE
+
+
+

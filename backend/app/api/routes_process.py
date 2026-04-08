@@ -38,7 +38,8 @@ def check_connection(live: bool = Query(False, description="When true, performs 
             "case_table": settings.CASE_TABLE,
         }
         return {"success": True, "data": jsonable_encoder(data)}
-    except CelonisConnectionError as e:
+    except (CelonisConnectionError, ValueError) as e:
+
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
@@ -219,7 +220,8 @@ def get_process_insights():
             "data_freshness": jsonable_encoder(freshness),
             "data_status": "stale" if freshness.get("is_stale") else "live",
         }
-    except CelonisConnectionError as e:
+    except (CelonisConnectionError, ValueError) as e:
+
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to extract insights: {str(e)}")
@@ -253,7 +255,8 @@ def get_context_coverage():
             "data": jsonable_encoder(data),
             "data_freshness": jsonable_encoder(cache.get_data_freshness()),
         }
-    except CelonisConnectionError as e:
+    except (CelonisConnectionError, ValueError) as e:
+
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to build context coverage: {str(e)}")
@@ -270,7 +273,8 @@ def get_celonis_context_layer():
         context = cache.get_process_context()
         layer = context.get("celonis_context_layer", {})
         return {"success": True, "data": jsonable_encoder(layer)}
-    except CelonisConnectionError as e:
+    except (CelonisConnectionError, ValueError) as e:
+
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch Celonis context layer: {str(e)}")
@@ -446,7 +450,8 @@ def validate_wcm_context():
                 "coverage_snapshot": coverage,
             },
         }
-    except CelonisConnectionError as e:
+    except (CelonisConnectionError, ValueError) as e:
+
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to validate WCM context: {str(e)}")
@@ -480,7 +485,8 @@ def get_pending_exceptions():
         cache = get_data_cache_service()
         context = cache.get_process_context()
         return {"success": True, "data": jsonable_encoder(context.get("exception_patterns", []))}
-    except CelonisConnectionError as e:
+    except (CelonisConnectionError, ValueError) as e:
+
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch pending exceptions: {str(e)}")
@@ -514,7 +520,8 @@ def get_process_alerts():
             })
 
         return {"success": True, "data": jsonable_encoder(alerts)}
-    except CelonisConnectionError as e:
+    except (CelonisConnectionError, ValueError) as e:
+
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch process alerts: {str(e)}")
@@ -530,7 +537,13 @@ def cache_status():
 
 
 @router.post("/cache/refresh")
-def refresh_cache(background: bool = Query(True, description="Run refresh asynchronously")):
+def refresh_cache(
+    background: bool = Query(True, description="Run refresh asynchronously"),
+    full_reload: bool = Query(
+        False,
+        description="When true, clear Celonis runtime caches and reconnect before refresh.",
+    ),
+):
     try:
         cache = get_data_cache_service()
         if background:
@@ -538,15 +551,19 @@ def refresh_cache(background: bool = Query(True, description="Run refresh asynch
             if not status.get("refresh_in_progress", False):
                 threading.Thread(
                     target=cache.refresh_all_data,
+                    kwargs={"full_reload": full_reload},
                     daemon=True,
                     name="cache-refresh-api-bg",
                 ).start()
             return {
                 "success": True,
                 "data": jsonable_encoder(cache.get_cache_status()),
-                "message": "Cache refresh started in background",
+                "message": (
+                    "Cache refresh started in background"
+                    + (" with full Celonis reload" if full_reload else "")
+                ),
             }
-        data = cache.refresh_all_data()
+        data = cache.refresh_all_data(full_reload=full_reload)
         return {"success": True, "data": jsonable_encoder(data)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to refresh cache: {str(e)}")
@@ -615,9 +632,13 @@ def runtime_tuning():
                 "event_log_max_rows": settings.CELONIS_EVENT_LOG_MAX_ROWS,
                 "discovery_cache_ttl_seconds": settings.CELONIS_DISCOVERY_CACHE_TTL_SECONDS,
                 "discovery_max_tables": settings.CELONIS_DISCOVERY_MAX_TABLES,
+                "force_fresh_on_refresh": settings.CELONIS_FORCE_FRESH_ON_REFRESH,
+                "force_reconnect_on_refresh": settings.CELONIS_FORCE_RECONNECT_ON_REFRESH,
+                "include_full_model_context": settings.CELONIS_INCLUDE_FULL_MODEL_CONTEXT,
             },
             "wcm_grouped_extract": {
                 "enabled": settings.WCM_ENABLE_GROUPED_EXTRACT,
+                "include_all_tables": settings.WCM_GROUPED_INCLUDE_ALL_TABLES,
                 "max_tables": settings.WCM_GROUPED_MAX_TABLES,
                 "max_rows_per_table": settings.WCM_GROUPED_MAX_ROWS_PER_TABLE,
                 "sample_max_rows": settings.WCM_GROUPED_SAMPLE_MAX_ROWS,

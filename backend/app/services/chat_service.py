@@ -29,6 +29,7 @@ from app.services.azure_openai_service import AzureOpenAIService
 from app.services.celonis_service import CelonisService
 from app.services.process_insight_service import ProcessInsightService
 from app.services.suggestion_service import SuggestionService
+from app.services.data_cache_service import DataCacheService
 
 logger = logging.getLogger(__name__)
 
@@ -234,12 +235,14 @@ class ChatService:
         celonis: CelonisService,
         process_insight: ProcessInsightService,
         suggestion_service: SuggestionService,
+        data_cache_service: Optional[DataCacheService] = None,
         agent_recommendation=None,
     ):
         self.llm = llm
         self.celonis = celonis
         self.process_insight = process_insight
         self.suggestion_service = suggestion_service
+        self.data_cache = data_cache_service
 
     # -----------------------------------------------------------------------
     # Public entry point
@@ -263,15 +266,28 @@ class ChatService:
             if case_id:
                 logger.info("Auto-detected case_id=%s from message text", case_id)
 
-        # Fetch event log ONCE -- passed to all builders so no duplicate calls
-        event_log = self._fetch_event_log_once()
+        # Reuse the warmed analytics cache when available so PI chat stays aligned
+        # with the live Celonis snapshot shown elsewhere in the app.
+        runtime = self._get_runtime_snapshot()
+        event_log = runtime["event_log"]
+        enriched_event_log = runtime["enriched_event_log"]
+        cached_process_ctx = runtime["process_ctx"]
+        cached_vendor_ids = runtime["known_vendor_ids"]
 
         # Build all context
         pi_context, context_used, data_sources, process_ctx = self._build_context(
             case_id=case_id,
             vendor_id=vendor_id,
             event_log=event_log,
+            process_ctx=cached_process_ctx,
+            known_vendor_ids=cached_vendor_ids,
+            enriched_event_log=enriched_event_log,
         )
+
+        freshness = runtime.get("freshness") or {}
+        refreshed_at = freshness.get("last_refreshed")
+        if refreshed_at:
+            data_sources.append(f"Live cache snapshot -- refreshed {refreshed_at}")
 
         # Scope label and LLM instruction
         vendor_found = context_used.get("vendor") is not None
@@ -319,6 +335,12 @@ class ChatService:
 
         # LLM call
         try:
+            logger.info(
+                "PI chat request: prompt_context_chars=%d event_rows=%d cached=%s",
+                len(pi_context or ""),
+                len(event_log),
+                bool(refreshed_at),
+            )
             reply = self.llm.chat(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -327,7 +349,13 @@ class ChatService:
             )
         except Exception as exc:
             logger.error("LLM call failed: %s", str(exc))
-            return self._error_response(str(exc), scope_label, agent_used, data_sources, context_used)
+            return self._error_response(
+                error=str(exc),
+                scope_label=scope_label,
+                agent_used=agent_used,
+                data_sources=data_sources,
+                context_used=context_used,
+            )
 
         # Post-LLM enrichment
         suggested_questions: List[str] = []
@@ -369,6 +397,38 @@ class ChatService:
             "path_label": path_label,
         }
 
+    def _get_runtime_snapshot(self) -> Dict[str, Any]:
+        if self.data_cache is not None:
+            try:
+                snapshot = self.data_cache.get_chat_runtime_snapshot()
+                event_log = snapshot.get("event_log_df")
+                if isinstance(event_log, pd.DataFrame) and not event_log.empty:
+                    enriched = snapshot.get("enriched_event_log_df")
+                    process_ctx = snapshot.get("process_context") or {}
+                    known_vendor_ids = snapshot.get("available_vendors") or []
+                    logger.info(
+                        "Using cached chat snapshot: events=%d vendors=%d",
+                        len(event_log),
+                        len(known_vendor_ids),
+                    )
+                    return {
+                        "event_log": event_log,
+                        "enriched_event_log": enriched if isinstance(enriched, pd.DataFrame) else pd.DataFrame(),
+                        "process_ctx": process_ctx if isinstance(process_ctx, dict) else {},
+                        "known_vendor_ids": known_vendor_ids if isinstance(known_vendor_ids, list) else [],
+                        "freshness": snapshot.get("freshness") or {},
+                    }
+            except Exception as exc:
+                logger.warning("Falling back to direct Celonis chat context: %s", exc)
+
+        return {
+            "event_log": self._fetch_event_log_once(),
+            "enriched_event_log": pd.DataFrame(),
+            "process_ctx": {},
+            "known_vendor_ids": [],
+            "freshness": {},
+        }
+
     # -----------------------------------------------------------------------
     # Event log -- single fetch, return empty df on failure
     # -----------------------------------------------------------------------
@@ -398,16 +458,24 @@ class ChatService:
         case_id: Optional[str],
         vendor_id: Optional[str],
         event_log: pd.DataFrame,
+        process_ctx: Optional[Dict[str, Any]] = None,
+        known_vendor_ids: Optional[List[str]] = None,
+        enriched_event_log: Optional[pd.DataFrame] = None,
     ) -> Tuple[str, Dict[str, Any], List[str], Optional[Dict[str, Any]]]:
 
         context_used: Dict[str, Any] = {}
         sections: List[str] = []
         data_sources: List[str] = []
-        process_ctx: Optional[Dict] = None
+        process_ctx = process_ctx if isinstance(process_ctx, dict) else None
+        enriched_event_log = enriched_event_log if isinstance(enriched_event_log, pd.DataFrame) else pd.DataFrame()
 
         # 1. Global process statistics
         try:
-            process_ctx = self.process_insight.build_process_context()
+            if not process_ctx or process_ctx.get("degraded_mode"):
+                if not event_log.empty:
+                    process_ctx = self._build_lightweight_process_context(event_log)
+                else:
+                    process_ctx = self.process_insight.build_process_context()
             bottleneck = process_ctx.get("bottleneck", {})
             variants = process_ctx.get("variants", [])
             exc_patterns = process_ctx.get("exception_patterns", [])
@@ -503,7 +571,10 @@ class ChatService:
                 logger.warning("Exception case details failed: %s", exc)
 
         # 1c. Known vendor IDs (critical for vendor queries)
-        known_vendor_ids = self._get_known_vendor_ids(event_log)
+        known_vendor_ids = known_vendor_ids or self._get_known_vendor_ids(
+            event_log,
+            enriched_event_log=enriched_event_log,
+        )
         if known_vendor_ids:
             vendor_id_section = (
                 f"KNOWN VENDOR IDs IN DATA ({len(known_vendor_ids)} vendors):\n"
@@ -539,6 +610,7 @@ class ChatService:
                 event_log=event_log,
                 process_ctx=process_ctx,
                 known_vendor_ids=known_vendor_ids,
+                enriched_event_log=enriched_event_log,
             )
             sections.append(vendor_section)
             if vendor_snapshot:
@@ -549,6 +621,98 @@ class ChatService:
                 )
 
         return "\n\n".join(sections), context_used, data_sources, process_ctx
+
+    @staticmethod
+    def _build_lightweight_process_context(event_log: pd.DataFrame) -> Dict[str, Any]:
+        if event_log is None or event_log.empty:
+            return {
+                "total_cases": 0,
+                "total_events": 0,
+                "avg_end_to_end_days": 0.0,
+                "exception_rate": 0.0,
+                "bottleneck": {},
+                "golden_path": "N/A",
+                "golden_path_percentage": 0.0,
+                "variants": [],
+                "exception_patterns": [],
+                "conformance_violations": [],
+                "decision_rules": [],
+            }
+
+        df = event_log.copy()
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        df = df.sort_values(["case_id", "timestamp"], na_position="last").reset_index(drop=True)
+
+        total_cases = int(df["case_id"].nunique()) if "case_id" in df.columns else 0
+        total_events = int(len(df))
+        durations: List[float] = []
+        variants: Dict[str, int] = {}
+        exception_counts: Dict[str, int] = {}
+        activity_counts: Dict[str, int] = {}
+
+        for _, group in df.groupby("case_id", sort=False):
+            activities = group["activity"].dropna().astype(str).tolist()
+            if not activities:
+                continue
+            start_ts = group["timestamp"].min()
+            end_ts = group["timestamp"].max()
+            if pd.notnull(start_ts) and pd.notnull(end_ts):
+                durations.append(float((end_ts - start_ts).total_seconds() / 86400))
+            variant = " -> ".join(activities)
+            variants[variant] = variants.get(variant, 0) + 1
+            for activity in activities:
+                activity_counts[activity] = activity_counts.get(activity, 0) + 1
+            lowered = variant.lower()
+            if "exception" in lowered:
+                exception_counts["Invoices with Exception"] = exception_counts.get("Invoices with Exception", 0) + 1
+            if "due date passed" in lowered:
+                exception_counts["Due Date Passed"] = exception_counts.get("Due Date Passed", 0) + 1
+            if "block" in lowered:
+                exception_counts["Blocked Invoice or PO"] = exception_counts.get("Blocked Invoice or PO", 0) + 1
+            if "payment term" in lowered:
+                exception_counts["Payment Terms Mismatch"] = exception_counts.get("Payment Terms Mismatch", 0) + 1
+
+        avg_days = round(sum(durations) / len(durations), 2) if durations else 0.0
+        sorted_variants = sorted(variants.items(), key=lambda item: item[1], reverse=True)
+        sorted_activities = sorted(activity_counts.items(), key=lambda item: item[1], reverse=True)
+        top_variant, top_variant_count = sorted_variants[0] if sorted_variants else ("N/A", 0)
+        bottleneck_name, bottleneck_count = sorted_activities[0] if sorted_activities else ("N/A", 0)
+
+        return {
+            "total_cases": total_cases,
+            "total_events": total_events,
+            "avg_end_to_end_days": avg_days,
+            "exception_rate": round((sum(exception_counts.values()) / total_cases) * 100, 2) if total_cases else 0.0,
+            "bottleneck": {
+                "activity": bottleneck_name,
+                "duration_days": avg_days,
+                "case_count": bottleneck_count,
+            },
+            "golden_path": top_variant,
+            "golden_path_percentage": round((top_variant_count / total_cases) * 100, 2) if total_cases else 0.0,
+            "variants": [
+                {
+                    "variant": path,
+                    "frequency": count,
+                    "percentage": round((count / total_cases) * 100, 2) if total_cases else 0.0,
+                }
+                for path, count in sorted_variants[:5]
+            ],
+            "exception_patterns": [
+                {
+                    "exception_type": label,
+                    "frequency_percentage": round((count / total_cases) * 100, 2) if total_cases else 0.0,
+                    "case_count": count,
+                    "avg_resolution_time_days": avg_days,
+                    "trigger_condition": label,
+                    "typical_resolution": "Review in PI Workbench",
+                    "resolution_role": "AP Analyst",
+                }
+                for label, count in sorted(exception_counts.items(), key=lambda item: item[1], reverse=True)
+            ],
+            "conformance_violations": [],
+            "decision_rules": [],
+        }
 
     # -----------------------------------------------------------------------
     # Case context builder
@@ -681,8 +845,14 @@ class ChatService:
         event_log: pd.DataFrame,
         process_ctx: Optional[Dict],
         known_vendor_ids: List[str],
+        enriched_event_log: Optional[pd.DataFrame] = None,
     ) -> Tuple[str, Optional[Dict]]:
-        snapshot = self._build_vendor_snapshot(vendor_id, event_log, process_ctx)
+        snapshot = self._build_vendor_snapshot(
+            vendor_id,
+            event_log,
+            process_ctx,
+            enriched_event_log=enriched_event_log,
+        )
 
         if snapshot:
             global_exc = snapshot.get("overall_exception_rate_pct", 0) or 0
@@ -736,6 +906,7 @@ class ChatService:
         vendor_id: str,
         event_log: pd.DataFrame,
         process_ctx: Optional[Dict],
+        enriched_event_log: Optional[pd.DataFrame] = None,
     ) -> Optional[Dict]:
         lookup = vendor_id.strip().upper()
 
@@ -750,7 +921,11 @@ class ChatService:
             return self._enrich_vendor_row(dict(row), event_log, process_ctx)
 
         # L2 & L3: search event logs
-        vendor_df = self._find_vendor_in_logs(lookup, event_log)
+        vendor_df = self._find_vendor_in_logs(
+            lookup,
+            event_log,
+            enriched_event_log=enriched_event_log,
+        )
         if vendor_df is None or vendor_df.empty:
             logger.warning(
                 "Vendor %s not found in any event log. Known vendors (sample): %s",
@@ -823,12 +998,16 @@ class ChatService:
         self,
         lookup: str,
         event_log: pd.DataFrame,
+        enriched_event_log: Optional[pd.DataFrame] = None,
     ) -> Optional[pd.DataFrame]:
         enriched: Optional[pd.DataFrame] = None
+        if isinstance(enriched_event_log, pd.DataFrame) and not enriched_event_log.empty:
+            enriched = enriched_event_log
         try:
-            enriched = self.celonis.get_event_log_with_vendor()
             if enriched is None or enriched.empty:
-                enriched = None
+                enriched = self.celonis.get_event_log_with_vendor()
+                if enriched is None or enriched.empty:
+                    enriched = None
         except Exception as exc:
             logger.warning("get_event_log_with_vendor failed: %s", exc)
             enriched = None
@@ -888,8 +1067,16 @@ class ChatService:
                     return str(vals.iloc[0])
         return ""
 
-    def _get_known_vendor_ids(self, event_log: pd.DataFrame) -> List[str]:
-        for df in [event_log]:
+    def _get_known_vendor_ids(
+        self,
+        event_log: pd.DataFrame,
+        enriched_event_log: Optional[pd.DataFrame] = None,
+    ) -> List[str]:
+        candidates = []
+        if isinstance(enriched_event_log, pd.DataFrame) and not enriched_event_log.empty:
+            candidates.append(enriched_event_log)
+        candidates.append(event_log)
+        for df in candidates:
             if "vendor_id" in df.columns:
                 ids = (
                     _safe_str_col(df["vendor_id"])
@@ -1444,7 +1631,7 @@ class ChatService:
     ) -> Dict:
         return {
             "success": False,
-            "reply": "I'm unable to answer right now -- the AI service returned an error.",
+            "reply": f"PI Chat failed: {error}",
             "suggested_questions": [],
             "data_sources": data_sources,
             "next_steps": [],

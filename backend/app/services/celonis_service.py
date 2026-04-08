@@ -1,5 +1,8 @@
+import json
+from datetime import datetime, timezone
 import logging
 import math
+import os
 import threading
 import warnings
 import time
@@ -117,6 +120,47 @@ class CelonisService:
                 CelonisService._shared_data_model = self.data_model
                 CelonisService._shared_initialized = True
 
+    def force_fresh_state(self, reconnect: bool = False) -> None:
+        """Clears all in-memory caches and re-initializes shared state."""
+        with CelonisService._shared_lock:
+            if reconnect:
+                CelonisService._shared_initialized = False
+                CelonisService._shared_celonis = None
+                CelonisService._shared_data_pool = None
+                CelonisService._shared_data_model = None
+            CelonisService._shared_table_names = []
+            CelonisService._shared_table_columns = {}
+            CelonisService._shared_tables_loaded_at = 0
+        self._event_log_cache = None
+        self._case_attributes_cache = None
+        self._vendor_mapping_cache = None
+        self._event_with_vendor_cache = None
+        self.__init__()
+
+    def get_data_model_context(self) -> Dict[str, Any]:
+        """Provides schema and relationship metadata for the current data model."""
+        hints = []
+        if self.data_model:
+            try:
+                tables = self.data_model.get_tables()
+                for fk in self.data_model.get_foreign_keys():
+                    source_table_name = tables.find(fk.source_table_id).name if getattr(fk, 'source_table_id', None) else "unknown_source_table"
+                    target_table_name = tables.find(fk.target_table_id).name if getattr(fk, 'target_table_id', None) else "unknown_target_table"
+                    
+                    if hasattr(fk, 'columns') and fk.columns:
+                        for col in fk.columns:
+                            hints.append(f"{source_table_name}.[col_id: {col.source_column_id}] -> {target_table_name}.[col_id: {col.target_column_id}]")
+                    else:
+                        hints.append(f"{source_table_name} -> {target_table_name}")
+            except Exception as e:
+                logger.warning("Failed to extract relationship hints: %s", str(e))
+
+        return {
+            "model_name": self.data_model.name if self.data_model else "Unknown",
+            "relationship_hints": hints,
+            "tables": self._get_table_names()
+        }
+
     def _get_data_model(self):
         try:
             if not settings.CELONIS_DATA_POOL_ID:
@@ -216,12 +260,13 @@ class CelonisService:
                     return list(cached)
 
             timeout_seconds = max(int(getattr(settings, "CELONIS_CONNECT_TIMEOUT_SECONDS", 20) or 20), 5)
-            tables = self._run_with_timeout(
-                lambda: list(self.data_model.get_tables()),
+            # Use SDK's find() which handles IDs and Aliases correctly
+            match = self._run_with_timeout(
+                lambda: self.data_model.get_tables().find(table_name),
                 timeout_seconds=timeout_seconds,
-                label="Celonis table lookup for columns",
+                label=f"Celonis table lookup ({table_name})",
             )
-            match = next((table for table in tables if table.name == table_name), None)
+            
             if match is None:
                 return []
             cols = self._run_with_timeout(
@@ -573,51 +618,208 @@ class CelonisService:
         )
         return result
 
+    # Path for the persistent JSON cache
+    _JSON_CACHE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "event_log_cache.json")
+
     def get_event_log(self) -> pd.DataFrame:
         """
-        Extract event log from t_o_custom_VimHeader.
-        Output columns:
-        - case_id, activity, timestamp, resource, resource_role, document_number, transaction_code
+        OCEL Extraction with Triple-Bridge Vendor Resolution + JSON disk cache.
+        First call: extracts ALL rows from Celonis, saves to JSON.
+        Subsequent calls: loads instantly from JSON.
         """
+        expected_cols = ["case_id", "activity", "timestamp", "resource", "resource_role", "document_number", "transaction_code", "vendor_id", "net_value", "total_net_value_local", "currency"]
+
+        # 1. In-memory cache (fastest)
         if self._event_log_cache is not None:
             return self._event_log_cache.copy()
 
-        try:
-            source = self._discover_event_source()
-            source_table = source["table"]
-            mapping = source["mapping"]
-            source_columns = [col for col in mapping.values() if col]
-            raw_df = self._extract_table_rows_paginated(
-                table_name=source_table,
-                columns=source_columns,
-                operation_name="event log extraction",
-                max_rows=(settings.CELONIS_EVENT_LOG_MAX_ROWS if settings.CELONIS_EVENT_LOG_MAX_ROWS > 0 else None),
-            )
-            rename_map = {src: tgt for tgt, src in mapping.items() if src}
-            df = raw_df.rename(columns=rename_map)
+        # 2. JSON disk cache (sub-second)
+        if os.path.exists(self._JSON_CACHE_PATH):
+            try:
+                # Use a standard read_json (not lines=True if it's a regular JSON list) 
+                # or check the format. The warm_cache.py usually writes a single JSON array or a dict.
+                with open(self._JSON_CACHE_PATH, "r") as f:
+                    cache_data = json.load(f)
+                
+                if isinstance(cache_data, dict) and "events" in cache_data:
+                    cached_df = pd.DataFrame(cache_data["events"])
+                    self._vendor_stats_cache = cache_data.get("vendor_stats", [])
+                else:
+                    cached_df = pd.DataFrame(cache_data)
+                    self._vendor_stats_cache = []
 
-            expected_cols = [
-                "case_id",
-                "activity",
-                "timestamp",
-                "resource",
-                "resource_role",
-                "document_number",
-                "transaction_code",
+                if not cached_df.empty:
+                    cached_df["timestamp"] = pd.to_datetime(cached_df["timestamp"], errors="coerce")
+                    for col in expected_cols:
+                        if col not in cached_df.columns:
+                            cached_df[col] = None
+                    
+                    # Ensure vendor_id is string and cleaned
+                    if "vendor_id" in cached_df.columns:
+                        cached_df["vendor_id"] = cached_df["vendor_id"].fillna("UNKNOWN").astype(str).str.replace(r"\.0$", "", regex=True)
+                        
+                    self._event_log_cache = cached_df[expected_cols]
+                    logger.info("Loaded %d events from JSON cache", len(self._event_log_cache))
+                    return self._event_log_cache.copy()
+            except Exception as cache_err:
+                logger.warning("JSON cache load failed: %s. Re-extracting from Celonis.", cache_err)
+
+        # 3. Full Celonis extraction with Triple-Bridge
+        try:
+            from pycelonis.pql import PQL, PQLColumn
+
+            master_bridge_df = pd.DataFrame(columns=["bridge_key", "bridge_ebeln", "bridge_lifnr"])
+            bridge_queries = [
+                ("Accounting bridge", '"o_custom_AccountingDocumentHeader"."ID"'),
+                ("Item bridge", '"o_custom_PurchasingDocumentItem"."ID"'),
+                ("Header bridge", '"o_custom_PurchasingDocumentHeader"."ID"')
             ]
-            if df.empty:
+
+            for label, bridge_field in bridge_queries:
+                try:
+                    bq = PQL()
+                    bq += PQLColumn(query=bridge_field, name='bridge_key')
+                    bq += PQLColumn(query='"o_custom_PurchasingDocumentHeader"."EBELN"', name='bridge_ebeln')
+                    bq += PQLColumn(query='"o_custom_PurchasingDocumentHeader"."LIFNR"', name='bridge_lifnr')
+                    b_df = self._run_pql(bq, f"PQL {label}")
+                    if not b_df.empty:
+                        master_bridge_df = pd.concat([master_bridge_df, b_df], ignore_index=True)
+                        logger.info("%s: %d records", label, len(b_df))
+                except Exception as b_err:
+                    logger.warning("%s failed: %s", label, b_err)
+
+            if not master_bridge_df.empty:
+                master_bridge_df = master_bridge_df.dropna(subset=["bridge_key"]).drop_duplicates("bridge_key")
+                master_bridge_df["bridge_lifnr"] = master_bridge_df["bridge_lifnr"].fillna("UNKNOWN").astype(str).str.replace(r"\.0$", "", regex=True)
+                logger.info("Final master bridge: %d records, %d unique vendors", len(master_bridge_df), master_bridge_df["bridge_lifnr"].nunique())
+
+            frames = []
+            candidate_tables = list(self.activity_tables)
+
+            for table_name in candidate_tables:
+                try:
+                    table_obj = self.data_model.get_tables().find(table_name)
+                    if not table_obj:
+                        continue
+                    cols = [c.name for c in table_obj.get_columns()]
+
+                    aliases = {
+                        "timestamp": [self.timestamp_col, "EVENTTIME", "TIMESTAMP", "TIME", "CREATEDATE", "AEDAT", "BEDAT"],
+                        "activity": [self.activity_col, "ACTIVITYEN", "ACTIVITY_EN", "ACTIVITY"],
+                        "resource": [self.resource_col, "USERNAME", "USER_NAME", "USER", "RESOURCE"],
+                        "resource_role": [self.resource_role_col, "USERTYPE", "USER_TYPE", "ROLE", "RESOURCE_ROLE"],
+                        "case_link": [self.id_col, "AccountingDocumentHeader_ID", "PurchasingDocumentHeader_ID", "VimHeader_ID", "PurchasingDocumentItem_ID", "CASEKEY", "EBELN"]
+                    }
+                    mapping = {tgt: self._find_col_by_aliases(cols, a) for tgt, a in aliases.items()}
+
+                    if not mapping.get("timestamp"):
+                        continue
+
+                    source_columns = [col for col in mapping.values() if col]
+                    
+                    # Try to add financial columns if available
+                    net_val_col = self._find_col_by_aliases(cols, ["NETWR", "WRBTR", "DMBTR", "VALUE"])
+                    curr_col = self._find_col_by_aliases(cols, ["WAERS", "CURRENCY"])
+                    
+                    if net_val_col: source_columns.append(net_val_col)
+                    if curr_col: source_columns.append(curr_col)
+
+                    limit = settings.CELONIS_EVENT_LOG_MAX_ROWS if settings.CELONIS_EVENT_LOG_MAX_ROWS > 0 else None
+
+                    df = self._extract_table_rows_paginated(
+                        table_name=table_name,
+                        columns=source_columns,
+                        operation_name=f"event extraction ({table_name})",
+                        max_rows=limit
+                    )
+                    
+                    if df.empty:
+                        continue
+                        
+                    logger.info(f"Extracted {len(df)} raw rows from {table_name}")
+
+                    rename_map = {src: tgt for tgt, src in mapping.items() if src}
+                    if net_val_col: rename_map[net_val_col] = "net_value"
+                    if curr_col: rename_map[curr_col] = "currency"
+                    
+                    df = df.rename(columns=rename_map)
+
+                    # Join to Master Bridge for vendor resolution
+                    if "case_link" in df.columns and not master_bridge_df.empty:
+                        df = df.merge(master_bridge_df, left_on="case_link", right_on="bridge_key", how="left")
+                        df["case_id"] = df["bridge_ebeln"].fillna(df["case_link"])
+                        df["document_number"] = df["bridge_ebeln"].fillna(df["case_link"])
+                        df["vendor_id"] = df["bridge_lifnr"]
+                    else:
+                        df["case_id"] = df.get("case_link", "UNKNOWN")
+                        df["document_number"] = df.get("case_link", None)
+                        df["vendor_id"] = None
+
+                    if "activity" not in df.columns or df["activity"].isnull().all():
+                        df["activity"] = table_name.replace("t_e_custom_", "").replace("t_o_custom_", "")
+
+                    # Clean vendor_id
+                    df["vendor_id"] = df["vendor_id"].fillna("UNKNOWN").astype(str).str.replace(r"\.0$", "", regex=True)
+
+                    for col in expected_cols:
+                        if col not in df.columns:
+                            df[col] = None
+                    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+                    frames.append(df[expected_cols])
+                except Exception as ex:
+                    logger.warning("Error processing table %s: %s", table_name, ex)
+
+            if not frames:
                 return pd.DataFrame(columns=expected_cols)
 
-            for col in expected_cols:
-                if col not in df.columns:
-                    df[col] = None
+            final_df = pd.concat(frames, ignore_index=True)
+            final_df = final_df.sort_values(["case_id", "timestamp"], na_position="last").reset_index(drop=True)
+            
+            # Pre-calculate vendor stats
+            self._vendor_stats_cache = self._compute_internal_vendor_stats(final_df)
+            self._event_log_cache = final_df.copy()
 
-            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-            df = df.sort_values(["case_id", "timestamp"], na_position="last").reset_index(drop=True)
-            self._event_log_cache = df[expected_cols]
-            return self._event_log_cache.copy()
+            # Save to JSON cache
+            try:
+                cache_payload = {
+                    "events": final_df.to_dict(orient="records"),
+                    "vendor_stats": self._vendor_stats_cache,
+                    "extracted_at": datetime.now(timezone.utc).isoformat()
+                }
+                with open(self._JSON_CACHE_PATH, "w") as f:
+                    json.dump(cache_payload, f, default=str)
+                logger.info("Saved %d events to JSON cache", len(final_df))
+            except Exception as save_err:
+                logger.warning("Failed to save JSON cache: %s", save_err)
+
+            return final_df
         except Exception as e:
-            raise Exception(f"Event log extraction failed: {str(e)}")
+            logger.error("Full Celonis event log extraction failed: %s", e)
+            return pd.DataFrame(columns=expected_cols)
+
+    def _compute_internal_vendor_stats(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
+        """Compute vendor metrics from the event log for inclusion in process_context."""
+        if df.empty or "vendor_id" not in df.columns:
+            return []
+            
+        stats = []
+        vendor_groups = df.groupby("vendor_id")
+        for vid, group in vendor_groups:
+            if vid == "UNKNOWN":
+                continue
+            case_count = group["case_id"].nunique()
+            activities = group["activity"].unique().tolist()
+            stats.append({
+                "vendor_id": str(vid),
+                "case_count": int(case_count),
+                "activity_count": len(activities),
+                "last_active": group["timestamp"].max().isoformat() if not group["timestamp"].isnull().all() else None
+            })
+        return sorted(stats, key=lambda x: x["case_count"], reverse=True)
+
+    def get_event_log_with_vendor(self) -> pd.DataFrame:
+        """Standardized version that uses the enriched event log directly."""
+        return self.get_event_log()
 
     def get_case_attributes(self) -> pd.DataFrame:
         """
@@ -669,24 +871,6 @@ class CelonisService:
         except Exception as e:
             raise Exception(f"Vendor mapping extraction failed: {str(e)}")
 
-    def get_event_log_with_vendor(self) -> pd.DataFrame:
-        if self._event_with_vendor_cache is not None:
-            return self._event_with_vendor_cache.copy()
-
-        try:
-            events = self.get_event_log()
-            vendor_map = self.get_vendor_mapping()[["case_id", "document_number", "vendor_id", "payment_terms", "currency"]]
-
-            enriched = events.merge(
-                vendor_map,
-                on=["case_id", "document_number"],
-                how="left",
-            )
-            enriched["vendor_id"] = enriched["vendor_id"].fillna("UNKNOWN")
-            self._event_with_vendor_cache = enriched
-            return self._event_with_vendor_cache.copy()
-        except Exception as e:
-            raise Exception(f"Event log enrichment with vendor failed: {str(e)}")
 
     def get_vendor_stats_api(self) -> List[Dict[str, Any]]:
      try:

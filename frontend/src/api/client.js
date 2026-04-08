@@ -120,9 +120,9 @@ export const validateWcmContext = async () => {
   return res.data;
 };
 
-export const refreshCache = async () => {
+export const refreshCache = async ({ background = false, fullReload = false } = {}) => {
   const res = await api.post("/cache/refresh", null, {
-    params: { background: false },
+    params: { background, full_reload: fullReload },
   });
   return res.data;
 };

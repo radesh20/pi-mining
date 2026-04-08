@@ -804,12 +804,17 @@ export default function PIChat() {
             if (result.vendor_context) setVendorContext(result.vendor_context);
 
         } catch (err) {
+            const errorDetail =
+                err?.response?.data?.detail
+                || err?.response?.data?.error
+                || err?.message
+                || "Unknown PI chat error";
             setMessages(prev => [...prev, {
                 id: Date.now() + 1, role: "assistant",
-                content: `Unable to reach the PI backend: ${err.message}`,
+                content: `Unable to reach the PI backend: ${errorDetail}`,
                 ts: new Date(), isError: true,
             }]);
-            setError(err.message);
+            setError(errorDetail);
         } finally {
             setIsTyping(false);
         }

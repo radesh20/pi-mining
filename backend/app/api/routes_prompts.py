@@ -27,9 +27,8 @@ def get_agent_deep_dive(
             exception_records=exception_records,
         )
         return {"success": True, "data": result}
-    except CelonisConnectionError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    except ValueError as e:
+    except (CelonisConnectionError, ValueError) as e:
+
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -48,9 +47,8 @@ def get_prompt_comparison(
         context = cache.get_process_context()
         result = prompt_service.generate_comparison(agent_name, context)
         return {"success": True, "data": result}
-    except CelonisConnectionError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    except ValueError as e:
+    except (CelonisConnectionError, ValueError) as e:
+
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

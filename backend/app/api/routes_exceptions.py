@@ -38,15 +38,26 @@ def _trigger_background_refresh_if_needed(cache) -> None:
     ).start()
 
 
+def _live_exception_fallback(cache) -> dict:
+    snapshot = cache.build_live_exception_snapshot()
+    return {
+        "categories": snapshot.get("categories", []),
+        "records": snapshot.get("records", []),
+        "warning": "Serving live Celonis fallback data while full cache warmup is unavailable.",
+        "served_from_cache": False,
+        "refresh_in_background": False,
+    }
+
+
 @router.get("/exceptions/categories")
 def get_exception_categories():
     try:
         cache = get_data_cache_service()
         data = cache.get_exception_categories()
+        if not data:
+            data = cache.build_live_exception_snapshot().get("categories", [])
         return {"success": True, "data": data}
-    except CelonisConnectionError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    except ValueError as e:
+    except (CelonisConnectionError, ValueError) as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch exception categories: {str(e)}")
@@ -59,6 +70,18 @@ def get_exception_records(
     try:
         cache = get_data_cache_service()
         data = cache.get_all_exception_records() if str(type).strip() == "*" else cache.get_exception_records(type)
+        if not data:
+            snapshot = cache.build_live_exception_snapshot()
+            if str(type).strip() == "*":
+                data = snapshot.get("records", [])
+            else:
+                wanted = str(type).strip().lower()
+                data = [
+                    row for row in snapshot.get("records", [])
+                    if str(row.get("exception_type", "")).strip().lower() == wanted
+                    or str(row.get("category_label", "")).strip().lower() == wanted
+                    or str(row.get("category_id", "")).strip().lower() == wanted
+                ]
         return {"success": True, "data": data}
     except CelonisConnectionError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -98,6 +121,13 @@ async def get_exception_workbench_data():
                     "refresh_in_background": bool(snapshot.get("is_stale")),
                 },
             }
+
+        try:
+            fallback = await asyncio.to_thread(_live_exception_fallback, cache)
+            if fallback.get("categories") or fallback.get("records"):
+                return {"success": True, "data": fallback}
+        except Exception:
+            pass
 
         timeout_seconds = 10.0
 

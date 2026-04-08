@@ -24,6 +24,22 @@ def _load_env_files() -> None:
 _load_env_files()
 
 
+def _normalize_celonis_key_type(raw: str) -> str:
+    value = str(raw or "").strip().upper()
+    aliases = {
+        "CELONIS_API_TOKEN": "BEARER",
+        "API_TOKEN": "BEARER",
+        "APITOKEN": "BEARER",
+        "BEARER_TOKEN": "BEARER",
+        "USER_KEY": "USER_KEY",
+        "USERKEY": "USER_KEY",
+        "APP_KEY": "APP_KEY",
+        "APPKEY": "APP_KEY",
+        "BEARER": "BEARER",
+    }
+    return aliases.get(value, value or "BEARER")
+
+
 class Settings:
     # Azure OpenAI
     AZURE_OPENAI_API_KEY: str = os.getenv("AZURE_OPENAI_API_KEY", "")
@@ -32,17 +48,21 @@ class Settings:
     AZURE_OPENAI_API_VERSION: str = os.getenv(
         "AZURE_OPENAI_API_VERSION", "2024-02-15-preview"
     )
+    AZURE_OPENAI_TIMEOUT_SECONDS: int = int(os.getenv("AZURE_OPENAI_TIMEOUT_SECONDS", "30"))
+    AZURE_OPENAI_RETRY_COUNT: int = int(os.getenv("AZURE_OPENAI_RETRY_COUNT", "1"))
+    AZURE_OPENAI_RETRY_DELAY_SECONDS: float = float(os.getenv("AZURE_OPENAI_RETRY_DELAY_SECONDS", "1.0"))
 
     # Celonis
     CELONIS_BASE_URL: str = os.getenv("CELONIS_BASE_URL", os.getenv("CELONIS_URL", ""))
     CELONIS_API_TOKEN: str = os.getenv("CELONIS_API_TOKEN", os.getenv("CELONIS_API_KEY", ""))
-    CELONIS_KEY_TYPE: str = os.getenv("CELONIS_KEY_TYPE", "USER_KEY")
+    CELONIS_KEY_TYPE: str = _normalize_celonis_key_type(os.getenv("CELONIS_KEY_TYPE", "BEARER"))
     CELONIS_DATA_POOL_ID: str = os.getenv("CELONIS_DATA_POOL_ID", "")
     CELONIS_DATA_MODEL_ID: str = os.getenv("CELONIS_DATA_MODEL_ID", "")
 
     # Main event/activity table
     ACTIVITY_TABLE: str = os.getenv("ACTIVITY_TABLE", "t_o_custom_VimHeader").split(",")[0].strip()
     ACTIVITY_TABLES: list = [t.strip() for t in os.getenv("ACTIVITY_TABLE", "t_o_custom_VimHeader").split(",")]
+    CELONIS_INCLUDE_ALL_ACTIVITY_TABLES: bool = os.getenv("CELONIS_INCLUDE_ALL_ACTIVITY_TABLES", "true").lower() == "true"
     CASE_COLUMN: str = os.getenv("CASE_COLUMN", "CASEKEY")
     ACTIVITY_COLUMN: str = os.getenv("ACTIVITY_COLUMN", "ACTIVITYEN")
     TIMESTAMP_COLUMN: str = os.getenv("TIMESTAMP_COLUMN", "EVENTTIME")
@@ -66,8 +86,12 @@ class Settings:
     CELONIS_PQL_TIMEOUT_SECONDS: int = int(os.getenv("CELONIS_PQL_TIMEOUT_SECONDS", "90"))
     CELONIS_DISCOVERY_CACHE_TTL_SECONDS: int = int(os.getenv("CELONIS_DISCOVERY_CACHE_TTL_SECONDS", "900"))
     CELONIS_DISCOVERY_MAX_TABLES: int = int(os.getenv("CELONIS_DISCOVERY_MAX_TABLES", "80"))
+    CELONIS_FORCE_FRESH_ON_REFRESH: bool = os.getenv("CELONIS_FORCE_FRESH_ON_REFRESH", "true").lower() == "true"
+    CELONIS_FORCE_RECONNECT_ON_REFRESH: bool = os.getenv("CELONIS_FORCE_RECONNECT_ON_REFRESH", "true").lower() == "true"
+    CELONIS_INCLUDE_FULL_MODEL_CONTEXT: bool = os.getenv("CELONIS_INCLUDE_FULL_MODEL_CONTEXT", "true").lower() == "true"
     WCM_CONTEXT_MODE: str = os.getenv("WCM_CONTEXT_MODE", "full").lower()  # full | legacy
     WCM_ENABLE_GROUPED_EXTRACT: bool = os.getenv("WCM_ENABLE_GROUPED_EXTRACT", "false").lower() == "true"
+    WCM_GROUPED_INCLUDE_ALL_TABLES: bool = os.getenv("WCM_GROUPED_INCLUDE_ALL_TABLES", "false").lower() == "true"
     WCM_GROUPED_INCLUDE_ROWS: bool = os.getenv("WCM_GROUPED_INCLUDE_ROWS", "false").lower() == "true"
     WCM_GROUPED_MAX_ROWS_PER_TABLE: int = int(os.getenv("WCM_GROUPED_MAX_ROWS_PER_TABLE", "10000"))
     WCM_GROUPED_SAMPLE_MAX_ROWS: int = int(os.getenv("WCM_GROUPED_SAMPLE_MAX_ROWS", "200"))
