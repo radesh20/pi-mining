@@ -624,23 +624,36 @@ class CelonisService:
     def get_event_log(self) -> pd.DataFrame:
         """
         OCEL Extraction with Triple-Bridge Vendor Resolution + JSON disk cache.
+
+        OCEL-aware: iterates all tables in ACTIVITY_TABLES.
+        - Timestamp is the ONLY hard requirement to include a table.
+        - Activity name is derived from the table name if no activity column exists.
+        - case_link detection covers broad FK alias patterns across all 18 OCEL tables.
+        - source_table column added so the LLM knows which process step each row came from.
+
         First call: extracts ALL rows from Celonis, saves to JSON.
         Subsequent calls: loads instantly from JSON.
         """
-        expected_cols = ["case_id", "activity", "timestamp", "resource", "resource_role", "document_number", "transaction_code", "vendor_id", "net_value", "total_net_value_local", "currency"]
+        expected_cols = [
+            "case_id", "activity", "timestamp", "resource", "resource_role",
+            "document_number", "transaction_code", "vendor_id", "net_value",
+            "total_net_value_local", "currency", "source_table",
+        ]
 
+        # ------------------------------------------------------------------
         # 1. In-memory cache (fastest)
+        # ------------------------------------------------------------------
         if self._event_log_cache is not None:
             return self._event_log_cache.copy()
 
+        # ------------------------------------------------------------------
         # 2. JSON disk cache (sub-second)
+        # ------------------------------------------------------------------
         if os.path.exists(self._JSON_CACHE_PATH):
             try:
-                # Use a standard read_json (not lines=True if it's a regular JSON list) 
-                # or check the format. The warm_cache.py usually writes a single JSON array or a dict.
                 with open(self._JSON_CACHE_PATH, "r") as f:
                     cache_data = json.load(f)
-                
+
                 if isinstance(cache_data, dict) and "events" in cache_data:
                     cached_df = pd.DataFrame(cache_data["events"])
                     self._vendor_stats_cache = cache_data.get("vendor_stats", [])
@@ -653,34 +666,44 @@ class CelonisService:
                     for col in expected_cols:
                         if col not in cached_df.columns:
                             cached_df[col] = None
-                    
-                    # Ensure vendor_id is string and cleaned
                     if "vendor_id" in cached_df.columns:
-                        cached_df["vendor_id"] = cached_df["vendor_id"].fillna("UNKNOWN").astype(str).str.replace(r"\.0$", "", regex=True)
-                        
+                        cached_df["vendor_id"] = (
+                            cached_df["vendor_id"]
+                            .fillna("UNKNOWN")
+                            .astype(str)
+                            .str.replace(r"\.0$", "", regex=True)
+                        )
                     self._event_log_cache = cached_df[expected_cols]
-                    logger.info("Loaded %d events from JSON cache", len(self._event_log_cache))
+                    logger.info(
+                        "Loaded %d events from JSON cache (%d unique activities, %d unique cases)",
+                        len(self._event_log_cache),
+                        self._event_log_cache["activity"].nunique(),
+                        self._event_log_cache["case_id"].nunique(),
+                    )
                     return self._event_log_cache.copy()
             except Exception as cache_err:
                 logger.warning("JSON cache load failed: %s. Re-extracting from Celonis.", cache_err)
 
-        # 3. Full Celonis extraction with Triple-Bridge
+        # ------------------------------------------------------------------
+        # 3. Full Celonis extraction
+        # ------------------------------------------------------------------
         try:
             from pycelonis.pql import PQL, PQLColumn
 
+            # --- 3a. Build Triple-Bridge for vendor resolution (unchanged) ---
             master_bridge_df = pd.DataFrame(columns=["bridge_key", "bridge_ebeln", "bridge_lifnr"])
             bridge_queries = [
                 ("Accounting bridge", '"o_custom_AccountingDocumentHeader"."ID"'),
-                ("Item bridge", '"o_custom_PurchasingDocumentItem"."ID"'),
-                ("Header bridge", '"o_custom_PurchasingDocumentHeader"."ID"')
+                ("Item bridge",       '"o_custom_PurchasingDocumentItem"."ID"'),
+                ("Header bridge",     '"o_custom_PurchasingDocumentHeader"."ID"'),
             ]
 
             for label, bridge_field in bridge_queries:
                 try:
                     bq = PQL()
-                    bq += PQLColumn(query=bridge_field, name='bridge_key')
-                    bq += PQLColumn(query='"o_custom_PurchasingDocumentHeader"."EBELN"', name='bridge_ebeln')
-                    bq += PQLColumn(query='"o_custom_PurchasingDocumentHeader"."LIFNR"', name='bridge_lifnr')
+                    bq += PQLColumn(query=bridge_field, name="bridge_key")
+                    bq += PQLColumn(query='"o_custom_PurchasingDocumentHeader"."EBELN"', name="bridge_ebeln")
+                    bq += PQLColumn(query='"o_custom_PurchasingDocumentHeader"."LIFNR"', name="bridge_lifnr")
                     b_df = self._run_pql(bq, f"PQL {label}")
                     if not b_df.empty:
                         master_bridge_df = pd.concat([master_bridge_df, b_df], ignore_index=True)
@@ -689,110 +712,284 @@ class CelonisService:
                     logger.warning("%s failed: %s", label, b_err)
 
             if not master_bridge_df.empty:
-                master_bridge_df = master_bridge_df.dropna(subset=["bridge_key"]).drop_duplicates("bridge_key")
-                master_bridge_df["bridge_lifnr"] = master_bridge_df["bridge_lifnr"].fillna("UNKNOWN").astype(str).str.replace(r"\.0$", "", regex=True)
-                logger.info("Final master bridge: %d records, %d unique vendors", len(master_bridge_df), master_bridge_df["bridge_lifnr"].nunique())
+                master_bridge_df = (
+                    master_bridge_df
+                    .dropna(subset=["bridge_key"])
+                    .drop_duplicates("bridge_key")
+                )
+                master_bridge_df["bridge_lifnr"] = (
+                    master_bridge_df["bridge_lifnr"]
+                    .fillna("UNKNOWN")
+                    .astype(str)
+                    .str.replace(r"\.0$", "", regex=True)
+                )
+                logger.info(
+                    "Master bridge: %d records, %d unique vendors",
+                    len(master_bridge_df),
+                    master_bridge_df["bridge_lifnr"].nunique(),
+                )
 
+            # --- 3b. Broad alias lists for OCEL column detection ---
+            #
+            # These cover every column name pattern seen across SAP Celonis
+            # OCEL event tables (t_e_custom_*) and object tables (t_o_custom_*).
+            # Timestamp is the ONLY required column — everything else is optional.
+            #
+            TIMESTAMP_ALIASES = [
+                self.timestamp_col,
+                "EVENTTIME", "TIMESTAMP", "TIME", "CREATEDATE",
+                "AEDAT", "BEDAT", "BUDAT", "BLDAT", "CPUDT",
+                "PSTNG_DATE", "CREATED_AT", "CHANGED_AT",
+            ]
+            ACTIVITY_ALIASES = [
+                self.activity_col,
+                "ACTIVITYEN", "ACTIVITY_EN", "ACTIVITY", "ACTIVIT",
+                "STEP", "STEP_NAME", "PROCESS_STEP",
+            ]
+            RESOURCE_ALIASES = [
+                self.resource_col,
+                "USERNAME", "USER_NAME", "USER", "RESOURCE",
+                "ERNAM", "AENAM", "USNAM", "LAEDA",
+            ]
+            RESOURCE_ROLE_ALIASES = [
+                self.resource_role_col,
+                "USERTYPE", "USER_TYPE", "ROLE", "RESOURCE_ROLE",
+                "BUKRS",  # company code often doubles as org unit in some models
+            ]
+            # FK / case-link: covers _ID suffix patterns for ALL 18 OCEL object tables
+            CASE_LINK_ALIASES = [
+                self.id_col,
+                # Standard Celonis OCEL FK patterns (_ID suffix)
+                "AccountingDocumentHeader_ID",
+                "PurchasingDocumentHeader_ID",
+                "PurchasingDocumentItem_ID",
+                "VimHeader_ID",
+                "VimWorkitem_ID",
+                "GoodsReceiptHeader_ID",
+                "GoodsReceiptItem_ID",
+                "ServiceEntrySheet_ID",
+                "ServiceEntrySheetItem_ID",
+                "InvoiceVerificationDocument_ID",
+                "PaymentDocument_ID",
+                "BankTransactionDocument_ID",
+                "RequisitionHeader_ID",
+                "RequisitionItem_ID",
+                "OutlineAgreementHeader_ID",
+                "OutlineAgreementItem_ID",
+                "ContractHeader_ID",
+                "ContractItem_ID",
+                "POApprovalLevel01_ID",
+                "POApprovalLevel02_ID",
+                # SAP business key fallbacks
+                "CASEKEY", "EBELN", "BELNR", "MBLNR", "LIFNR",
+                "ID", "CASE_ID", "OBJECT_ID",
+            ]
+            NETVAL_ALIASES  = ["NETWR", "WRBTR", "DMBTR", "VALUE", "NET_VALUE", "AMOUNT"]
+            CURRENCY_ALIASES = ["WAERS", "CURRENCY", "CURR"]
+            TXCODE_ALIASES  = ["TCODE", "TRANSACTIONCODE", "TRANSACTION_CODE", "TRANSCODE"]
+            DOCNUM_ALIASES  = ["EBELN", "BELNR", "MBLNR", "DOCUMENT_NUMBER", "DOC_NUMBER"]
+
+            # --- 3c. Derive a clean human-readable activity label from a table name ---
+            def _activity_from_table(table_name: str) -> str:
+                """
+                'T_E_CUSTOM_PostInvoice'  -> 'Post Invoice'
+                't_e_custom_post_invoice' -> 'Post Invoice'
+                't_o_custom_VimHeader'    -> 'Vim Header'
+                """
+                stem = (
+                    table_name
+                    .replace("t_e_custom_", "")
+                    .replace("t_o_custom_", "")
+                    .replace("T_E_CUSTOM_", "")
+                    .replace("T_O_CUSTOM_", "")
+                )
+                # CamelCase -> "Camel Case"
+                import re as _re
+                stem = _re.sub(r"([a-z])([A-Z])", r"\1 \2", stem)
+                # snake_case -> "Snake Case"
+                stem = stem.replace("_", " ").title()
+                return stem.strip() or table_name
+
+            # --- 3d. Iterate all OCEL tables ---
             frames = []
+            skipped_tables = []
             candidate_tables = list(self.activity_tables)
 
             for table_name in candidate_tables:
                 try:
-                    table_obj = self.data_model.get_tables().find(table_name)
-                    if not table_obj:
-                        continue
-                    cols = [c.name for c in table_obj.get_columns()]
+                    # Celonis PQL uses the alias name (without t_ prefix) even though
+                    # get_tables() / _table_columns_safe() returns the full storage name.
+                    # Use pql_name for all PQL queries; table_name for SDK table lookups.
+                    pql_name = table_name[2:] if table_name.startswith("t_") else table_name
 
-                    aliases = {
-                        "timestamp": [self.timestamp_col, "EVENTTIME", "TIMESTAMP", "TIME", "CREATEDATE", "AEDAT", "BEDAT"],
-                        "activity": [self.activity_col, "ACTIVITYEN", "ACTIVITY_EN", "ACTIVITY"],
-                        "resource": [self.resource_col, "USERNAME", "USER_NAME", "USER", "RESOURCE"],
-                        "resource_role": [self.resource_role_col, "USERTYPE", "USER_TYPE", "ROLE", "RESOURCE_ROLE"],
-                        "case_link": [self.id_col, "AccountingDocumentHeader_ID", "PurchasingDocumentHeader_ID", "VimHeader_ID", "PurchasingDocumentItem_ID", "CASEKEY", "EBELN"]
-                    }
-                    mapping = {tgt: self._find_col_by_aliases(cols, a) for tgt, a in aliases.items()}
-
-                    if not mapping.get("timestamp"):
+                    # Get column names (uses shared cache, very fast after first call)
+                    cols = self._table_columns_safe(table_name)
+                    if not cols:
+                        logger.warning("Table %s: no columns found, skipping", table_name)
+                        skipped_tables.append((table_name, "no columns"))
                         continue
 
-                    source_columns = [col for col in mapping.values() if col]
-                    
-                    # Try to add financial columns if available
-                    net_val_col = self._find_col_by_aliases(cols, ["NETWR", "WRBTR", "DMBTR", "VALUE"])
-                    curr_col = self._find_col_by_aliases(cols, ["WAERS", "CURRENCY"])
-                    
-                    if net_val_col: source_columns.append(net_val_col)
-                    if curr_col: source_columns.append(curr_col)
+                    # -- Column detection --
+                    ts_col       = self._find_col_by_aliases(cols, TIMESTAMP_ALIASES)
+                    act_col      = self._find_col_by_aliases(cols, ACTIVITY_ALIASES)
+                    res_col      = self._find_col_by_aliases(cols, RESOURCE_ALIASES)
+                    role_col     = self._find_col_by_aliases(cols, RESOURCE_ROLE_ALIASES)
+                    case_lnk_col = self._find_col_by_aliases(cols, CASE_LINK_ALIASES)
+                    net_val_col  = self._find_col_by_aliases(cols, NETVAL_ALIASES)
+                    curr_col     = self._find_col_by_aliases(cols, CURRENCY_ALIASES)
+                    txcode_col   = self._find_col_by_aliases(cols, TXCODE_ALIASES)
+                    docnum_col   = self._find_col_by_aliases(cols, DOCNUM_ALIASES)
 
-                    limit = settings.CELONIS_EVENT_LOG_MAX_ROWS if settings.CELONIS_EVENT_LOG_MAX_ROWS > 0 else None
+                    # TIMESTAMP IS THE ONLY HARD REQUIREMENT
+                    if not ts_col:
+                        logger.debug("Table %s: no timestamp column, skipping", table_name)
+                        skipped_tables.append((table_name, "no timestamp"))
+                        continue
+
+                    # Build the column list to extract
+                    source_columns = [ts_col]
+                    for c in [act_col, res_col, role_col, case_lnk_col,
+                               net_val_col, curr_col, txcode_col, docnum_col]:
+                        if c and c not in source_columns:
+                            source_columns.append(c)
+
+                    limit = (
+                        settings.CELONIS_EVENT_LOG_MAX_ROWS
+                        if settings.CELONIS_EVENT_LOG_MAX_ROWS > 0
+                        else None
+                    )
 
                     df = self._extract_table_rows_paginated(
-                        table_name=table_name,
+                        table_name=pql_name,
                         columns=source_columns,
                         operation_name=f"event extraction ({table_name})",
-                        max_rows=limit
+                        max_rows=limit,
                     )
-                    
-                    if df.empty:
-                        continue
-                        
-                    logger.info(f"Extracted {len(df)} raw rows from {table_name}")
 
-                    rename_map = {src: tgt for tgt, src in mapping.items() if src}
-                    if net_val_col: rename_map[net_val_col] = "net_value"
-                    if curr_col: rename_map[curr_col] = "currency"
-                    
+                    if df.empty:
+                        logger.info("Table %s: 0 rows returned, skipping", table_name)
+                        skipped_tables.append((table_name, "empty result"))
+                        continue
+
+                    # -- Rename extracted columns to standard names --
+                    rename_map: dict = {}
+                    if ts_col:        rename_map[ts_col]       = "timestamp"
+                    if act_col:       rename_map[act_col]       = "activity"
+                    if res_col:       rename_map[res_col]       = "resource"
+                    if role_col:      rename_map[role_col]      = "resource_role"
+                    if case_lnk_col:  rename_map[case_lnk_col]  = "case_link"
+                    if net_val_col:   rename_map[net_val_col]   = "net_value"
+                    if curr_col:      rename_map[curr_col]      = "currency"
+                    if txcode_col:    rename_map[txcode_col]    = "transaction_code"
+                    if docnum_col:    rename_map[docnum_col]    = "document_number"
+
                     df = df.rename(columns=rename_map)
 
-                    # Join to Master Bridge for vendor resolution
-                    if "case_link" in df.columns and not master_bridge_df.empty:
-                        df = df.merge(master_bridge_df, left_on="case_link", right_on="bridge_key", how="left")
-                        df["case_id"] = df["bridge_ebeln"].fillna(df["case_link"])
-                        df["document_number"] = df["bridge_ebeln"].fillna(df["case_link"])
-                        df["vendor_id"] = df["bridge_lifnr"]
-                    else:
-                        df["case_id"] = df.get("case_link", "UNKNOWN")
-                        df["document_number"] = df.get("case_link", None)
-                        df["vendor_id"] = None
-
+                    # -- Derive activity from table name if column not present --
                     if "activity" not in df.columns or df["activity"].isnull().all():
-                        df["activity"] = table_name.replace("t_e_custom_", "").replace("t_o_custom_", "")
+                        df["activity"] = _activity_from_table(table_name)
 
-                    # Clean vendor_id
-                    df["vendor_id"] = df["vendor_id"].fillna("UNKNOWN").astype(str).str.replace(r"\.0$", "", regex=True)
+                    # -- Tag source table so LLM can reference process step origin --
+                    df["source_table"] = table_name
 
+                    # -- Vendor resolution via master bridge --
+                    if "case_link" in df.columns and not master_bridge_df.empty:
+                        df = df.merge(
+                            master_bridge_df,
+                            left_on="case_link",
+                            right_on="bridge_key",
+                            how="left",
+                        )
+                        df["case_id"]         = df["bridge_ebeln"].fillna(df["case_link"])
+                        df["document_number"] = df.get("document_number", df["bridge_ebeln"].fillna(df["case_link"]))
+                        df["vendor_id"]       = df["bridge_lifnr"]
+                    else:
+                        df["case_id"]         = df.get("case_link", "UNKNOWN")
+                        df["document_number"] = df.get("document_number", df.get("case_link"))
+                        df["vendor_id"]       = None
+
+                    # -- Clean vendor_id --
+                    df["vendor_id"] = (
+                        df["vendor_id"]
+                        .fillna("UNKNOWN")
+                        .astype(str)
+                        .str.replace(r"\.0$", "", regex=True)
+                    )
+
+                    # -- Ensure all expected columns exist --
+                    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
                     for col in expected_cols:
                         if col not in df.columns:
                             df[col] = None
-                    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+
                     frames.append(df[expected_cols])
+                    logger.info(
+                        "Table %-45s → %5d rows  activity='%s'  case_link_col=%s",
+                        table_name, len(df),
+                        _activity_from_table(table_name),
+                        case_lnk_col or "NONE",
+                    )
+
                 except Exception as ex:
                     logger.warning("Error processing table %s: %s", table_name, ex)
+                    skipped_tables.append((table_name, str(ex)))
+
+            # -- Summary log --
+            if skipped_tables:
+                logger.info(
+                    "Skipped %d tables: %s",
+                    len(skipped_tables),
+                    ", ".join(f"{t}({r})" for t, r in skipped_tables),
+                )
 
             if not frames:
+                logger.error(
+                    "No event data extracted from any of %d candidate tables. "
+                    "Check ACTIVITY_TABLES in .env and that tables have a timestamp column.",
+                    len(candidate_tables),
+                )
                 return pd.DataFrame(columns=expected_cols)
 
+            # -- Concatenate, sort, deduplicate --
             final_df = pd.concat(frames, ignore_index=True)
-            final_df = final_df.sort_values(["case_id", "timestamp"], na_position="last").reset_index(drop=True)
-            
-            # Pre-calculate vendor stats
+            final_df = (
+                final_df
+                .sort_values(["case_id", "timestamp"], na_position="last")
+                .reset_index(drop=True)
+            )
+
+            logger.info(
+                "OCEL union complete: %d total events | %d unique activities | "
+                "%d unique cases | %d unique vendors | tables contributed: %d/%d",
+                len(final_df),
+                final_df["activity"].nunique(),
+                final_df["case_id"].nunique(),
+                (final_df["vendor_id"] != "UNKNOWN").sum() and final_df["vendor_id"].nunique(),
+                len(frames),
+                len(candidate_tables),
+            )
+
+            # -- Pre-calculate vendor stats --
             self._vendor_stats_cache = self._compute_internal_vendor_stats(final_df)
             self._event_log_cache = final_df.copy()
 
-            # Save to JSON cache
+            # -- Save to JSON disk cache --
             try:
                 cache_payload = {
                     "events": final_df.to_dict(orient="records"),
                     "vendor_stats": self._vendor_stats_cache,
-                    "extracted_at": datetime.now(timezone.utc).isoformat()
+                    "extracted_at": datetime.now(timezone.utc).isoformat(),
+                    "table_count": len(frames),
+                    "activity_count": int(final_df["activity"].nunique()),
                 }
                 with open(self._JSON_CACHE_PATH, "w") as f:
                     json.dump(cache_payload, f, default=str)
-                logger.info("Saved %d events to JSON cache", len(final_df))
+                logger.info("Saved %d events to JSON cache (%s)", len(final_df), self._JSON_CACHE_PATH)
             except Exception as save_err:
                 logger.warning("Failed to save JSON cache: %s", save_err)
 
             return final_df
+
         except Exception as e:
             logger.error("Full Celonis event log extraction failed: %s", e)
             return pd.DataFrame(columns=expected_cols)

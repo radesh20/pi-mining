@@ -60,8 +60,8 @@ class Settings:
     CELONIS_DATA_MODEL_ID: str = os.getenv("CELONIS_DATA_MODEL_ID", "")
 
     # Main event/activity table
-    ACTIVITY_TABLE: str = os.getenv("ACTIVITY_TABLE", "t_o_custom_VimHeader").split(",")[0].strip()
-    ACTIVITY_TABLES: list = [t.strip() for t in os.getenv("ACTIVITY_TABLE", "t_o_custom_VimHeader").split(",")]
+    ACTIVITY_TABLE: str = os.getenv("ACTIVITY_TABLE", "").split(",")[0].strip()
+    ACTIVITY_TABLES: list = [t.strip() for t in os.getenv("ACTIVITY_TABLE", "").split(",") if t.strip()]
     CELONIS_INCLUDE_ALL_ACTIVITY_TABLES: bool = os.getenv("CELONIS_INCLUDE_ALL_ACTIVITY_TABLES", "true").lower() == "true"
     CASE_COLUMN: str = os.getenv("CASE_COLUMN", "CASEKEY")
     ACTIVITY_COLUMN: str = os.getenv("ACTIVITY_COLUMN", "ACTIVITYEN")
