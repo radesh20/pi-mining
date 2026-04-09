@@ -8,6 +8,9 @@ import warnings
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from typing import Any, Dict, List, Optional, Tuple
+import json
+import re as _re
+from pathlib import Path
 
 import pandas as pd
 
@@ -758,7 +761,7 @@ class CelonisService:
             ]
             # FK / case-link: covers _ID suffix patterns for ALL 18 OCEL object tables
             CASE_LINK_ALIASES = [
-                self.id_col,
+
                 # Standard Celonis OCEL FK patterns (_ID suffix)
                 "AccountingDocumentHeader_ID",
                 "PurchasingDocumentHeader_ID",
@@ -860,7 +863,7 @@ class CelonisService:
                     )
 
                     df = self._extract_table_rows_paginated(
-                        table_name=pql_name,
+                        table_name=table_name,
                         columns=source_columns,
                         operation_name=f"event extraction ({table_name})",
                         max_rows=limit,
@@ -1068,95 +1071,6 @@ class CelonisService:
         except Exception as e:
             raise Exception(f"Vendor mapping extraction failed: {str(e)}")
 
-
-    def get_vendor_stats_api(self) -> List[Dict[str, Any]]:
-     try:
-        stats_df = self.get_vendor_statistics()
-        case_durations = self.get_case_durations()
-        vendor_map = self.get_vendor_mapping()[["case_id", "vendor_id"]].drop_duplicates()
-
-        case_table_df = self.get_table_data(self.case_table)
-        total_value_by_vendor: Dict[str, float] = {}
-        vendor_lifnr_by_vendor: Dict[str, str] = {}
-        if not case_table_df.empty:
-            renamed = case_table_df.rename(columns={self.vendor_col: "vendor_id"})
-            if "vendor_id" in renamed.columns:
-                renamed["vendor_id"] = renamed["vendor_id"].astype(str).str.strip()
-                vendor_lifnr_by_vendor = (
-                    renamed.groupby("vendor_id")["vendor_id"]
-                    .first().astype(str).to_dict()
-                )
-                amount_col = self._pick_best_amount_column(renamed)
-                if amount_col:
-                    work = renamed[["vendor_id", amount_col]].copy()
-                    work[amount_col] = pd.to_numeric(work[amount_col], errors="coerce").fillna(0.0)
-                    total_value_by_vendor = (
-                        work.groupby("vendor_id")[amount_col].sum().round(2).to_dict()
-                    )
-
-        avg_dpo_by_vendor = {}
-        if not case_durations.empty and not vendor_map.empty:
-            duration_map = case_durations.merge(vendor_map, on="case_id", how="left")
-            avg_dpo_by_vendor = (
-                duration_map.groupby("vendor_id")["duration_days"].mean().round(2).to_dict()
-            )
-
-        # ── NEW: derive payment behavior from case-level event log ──────────
-        try:
-            from app.services.data_cache_service import DataCacheService
-            event_log = self.get_event_log_with_vendor()
-            payment_behavior_by_vendor = (
-                DataCacheService._derive_payment_behavior_from_case_level(event_log)
-                if not event_log.empty else {}
-            )
-        except Exception as pb_err:
-            logger.warning("Payment behavior derivation failed: %s", pb_err)
-            payment_behavior_by_vendor = {}
-        # ────────────────────────────────────────────────────────────────────
-
-        rows: List[Dict[str, Any]] = []
-        if not stats_df.empty:
-            for _, row in stats_df.iterrows():
-                vendor_id = str(row.get("vendor_id", "UNKNOWN"))
-                exception_rate = float(row.get("exception_rate_pct", 0) or 0)
-                avg_dpo = float(avg_dpo_by_vendor.get(vendor_id, 0) or 0)
-
-                risk = "LOW"
-                if exception_rate >= 60 or avg_dpo >= 60:
-                    risk = "CRITICAL"
-                elif exception_rate >= 40 or avg_dpo >= 40:
-                    risk = "HIGH"
-                elif exception_rate >= 20 or avg_dpo >= 20:
-                    risk = "MEDIUM"
-
-                # Real payment behavior from case-level data, or explicit null fallback
-                pb = payment_behavior_by_vendor.get(vendor_id)
-                if pb:
-                    payment_behavior = {**pb, "_source": "celonis"}
-                else:
-                    payment_behavior = {
-                        "on_time_pct": None,
-                        "early_pct": None,
-                        "late_pct": None,
-                        "open_pct": None,
-                        "_source": "unavailable",
-                    }
-
-                rows.append({
-                    "vendor_id": vendor_id,
-                    "vendor_lifnr": vendor_lifnr_by_vendor.get(vendor_id, vendor_id),
-                    "total_cases": int(row.get("case_count", 0) or 0),
-                    "total_value": float(total_value_by_vendor.get(vendor_id, 0.0)),
-                    "exception_rate": round(exception_rate, 2),
-                    "avg_dpo": round(avg_dpo, 2),
-                    "payment_behavior": payment_behavior,
-                    "risk_score": risk,
-                })
-
-        rows.sort(key=lambda x: (x["total_value"], x["total_cases"]), reverse=True)
-        return rows
-     except Exception as e:
-        raise Exception(f"Vendor stats API payload generation failed: {str(e)}")
 
     def get_table_data(
         self,
@@ -1892,11 +1806,37 @@ class CelonisService:
     def get_vendor_stats_api(self) -> List[Dict[str, Any]]:
         """
         API-ready vendor stats used by /process/vendor-stats.
+        Derives statistics directly from the OCEL event log (Phase 0 data).
         """
         try:
-            stats_df = self.get_vendor_statistics()
+            # Derive vendor stats from the OCEL event log directly
+            # (get_vendor_statistics() was removed — vendor_id is now in the event log)
+            event_log = self.get_event_log()
+            if event_log.empty or "vendor_id" not in event_log.columns:
+                return []
+
+            exc_pattern = r"exception|block|due date|parked|stuck|overdue"
+            known_vendors = event_log[event_log["vendor_id"] != "UNKNOWN"]
+            if known_vendors.empty:
+                return []
+
+            stats_df = (
+                known_vendors
+                .groupby("vendor_id")
+                .agg(
+                    case_count=("case_id", "nunique"),
+                    exception_rate_pct=(
+                        "activity",
+                        lambda x: round(
+                            x.str.contains(exc_pattern, case=False, na=False).mean() * 100, 2
+                        ),
+                    ),
+                )
+                .reset_index()
+            )
+
             case_durations = self.get_case_durations()
-            vendor_map = self.get_vendor_mapping()[["case_id", "vendor_id"]].drop_duplicates()
+            vendor_map = event_log[["case_id", "vendor_id"]].drop_duplicates()
 
             case_table_df = self.get_table_data(self.case_table)
             total_value_by_vendor: Dict[str, float] = {}
@@ -2309,3 +2249,157 @@ class CelonisService:
             "case_table": self.case_table,
             "vendor_column": self.vendor_col,
         }
+
+    _ENTITY_GRAPH_PATH = Path(__file__).resolve().parent.parent.parent / "entity_graph.json"
+    _ENTITY_GRAPH_TTL_SECONDS = 86400  # 24 hours
+
+    _ENTITY_CONFIG = {
+        "PurchasingDocumentHeader": {
+            "table_hint": "t_o_custom_PurchasingDocumentHeader",
+            "id_column": "EBELN",
+            "pattern": r"\b\d{10}\b",
+        },
+        "AccountingDocumentHeader": {
+            "table_hint": "t_o_custom_AccountingDocumentHeader",
+            "id_column": "BELNR",
+            "pattern": r"\b\d{10}\b",
+        },
+        "VendorMaster": {
+            "table_hint": "t_o_custom_VendorMaster",
+            "id_column": "LIFNR",
+            "pattern": r"\b\d{7,12}\b",
+        },
+        "PurchasingDocumentItem": {
+            "table_hint": "t_o_custom_PurchasingDocumentItem",
+            "id_column": "EBELP",
+            "pattern": r"\b\d{5,10}\b",
+        },
+        "VimHeader": {
+            "table_hint": "t_o_custom_VimHeader",
+            "id_column": "ID",
+            "pattern": r"\b[A-Z0-9]{5,20}\b",
+        },
+        "ApVimHeader": {
+            "table_hint": "t_o_custom_ApVimHeader",
+            "id_column": "ID",
+            "pattern": r"\b[A-Z0-9]{5,20}\b",
+        },
+        "AccountingDocumentSegment": {
+            "table_hint": "t_o_custom_AccountingDocumentSegment",
+            "id_column": "BELNR",
+            "pattern": r"\b\d{10}\b",
+        },
+    }
+
+    def build_entity_fingerprints(self) -> dict:
+        """
+        Build (or load from cache) an entity fingerprint index from Celonis data.
+        Saves result to entity_graph.json next to the backend/ root.
+        Returns the fingerprints dict.
+
+        Schema of the returned dict:
+          {
+            "PurchasingDocumentHeader": {
+              "id_column": "EBELN",
+              "table_name": "t_o_custom_PurchasingDocumentHeader",
+              "pql_name": "o_custom_PurchasingDocumentHeader",
+              "samples": ["4500012345", ...],
+              "pattern": "\\b\\d{10}\\b"
+            },
+            ...
+          }
+        """
+        import json as _json
+        from pathlib import Path as _Path
+
+        graph_path = self._ENTITY_GRAPH_PATH
+
+        # Load from disk if fresh enough
+        if graph_path.exists():
+            try:
+                age = time.time() - graph_path.stat().st_mtime
+                if age < self._ENTITY_GRAPH_TTL_SECONDS:
+                    with graph_path.open("r", encoding="utf-8") as fh:
+                        fingerprints = _json.load(fh)
+                    logger.info(
+                        "Loaded entity fingerprints from cache (%s, age=%.0fs)",
+                        graph_path,
+                        age,
+                    )
+                    return fingerprints
+            except Exception as e:
+                logger.warning("Failed to load entity_graph.json, rebuilding: %s", e)
+
+        logger.info("Building entity fingerprint index from Celonis data...")
+        known_tables = set(self._get_table_names())
+        fingerprints: dict = {}
+
+        for entity_type, cfg in self._ENTITY_CONFIG.items():
+            hint = cfg["table_hint"]
+            id_col = cfg["id_column"]
+
+            # Resolve actual table name (hint may differ slightly)
+            table_name = None
+            if hint in known_tables:
+                table_name = hint
+            else:
+                suffix = hint.split("_custom_")[-1].lower()
+                for name in known_tables:
+                    if name.lower().endswith(suffix):
+                        table_name = name
+                        break
+
+            if table_name is None:
+                logger.debug(
+                    "Entity %s: table hint '%s' not found in data model, skipping.",
+                    entity_type, hint,
+                )
+                continue
+
+            cols = self._table_columns_safe(table_name)
+            if id_col not in cols:
+                logger.debug(
+                    "Entity %s: id column '%s' not in table '%s', skipping.",
+                    entity_type, id_col, table_name,
+                )
+                continue
+
+            # PQL name: strip leading t_ (Celonis PQL engine requirement)
+            pql_name = table_name[2:] if table_name.startswith("t_") else table_name
+
+            samples: list = []
+            try:
+                from pycelonis.pql import PQL, PQLColumn
+                query = PQL(limit=300, offset=0)
+                query += PQLColumn(name=id_col, query=f'"{pql_name}"."{id_col}"')
+                df = self._run_pql(query, f"entity_fingerprint({entity_type})")
+                if df is not None and not df.empty:
+                    raw = df.iloc[:, 0].dropna().astype(str).str.strip()
+                    samples = [v for v in raw.unique().tolist() if v][:300]
+            except Exception as e:
+                logger.warning("Failed to fetch samples for entity %s: %s", entity_type, e)
+
+            fingerprints[entity_type] = {
+                "id_column": id_col,
+                "table_name": table_name,
+                "pql_name": pql_name,
+                "samples": samples,
+                "pattern": cfg["pattern"],
+            }
+            logger.info(
+                "Entity %s: %d sample IDs collected from %s",
+                entity_type, len(samples), table_name,
+            )
+
+        # Persist to disk
+        try:
+            graph_path.parent.mkdir(parents=True, exist_ok=True)
+            with graph_path.open("w", encoding="utf-8") as fh:
+                _json.dump(fingerprints, fh, indent=2, default=str)
+            logger.info(
+                "Entity fingerprints saved to %s (%d entities)", graph_path, len(fingerprints)
+            )
+        except Exception as e:
+            logger.warning("Could not save entity_graph.json: %s", e)
+
+        return fingerprints

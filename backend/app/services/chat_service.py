@@ -1,22 +1,5 @@
 """
 app/services/chat_service.py
-
-Key features:
-  1. Event log fetched ONCE per request, reused everywhere (no duplicate Celonis calls)
-  2. Vendor ID auto-extracted from message text (handles "vendor 7003196321", "LIFNR 1234" etc.)
-  3. Vendor snapshot has 4 fallback layers with proper logging at each step
-  4. Vendor exception stats computed from ACTUAL vendor events, not global patterns
-  5. Known vendor IDs injected into context so LLM can answer "what vendors exist"
-  6. When vendor/case not found, context explains WHY with diagnostics
-  7. scope_label corrected when entity not found (avoids misleading the LLM)
-  8. process_ctx event_log timespan computed from the cached df (no extra API call)
-  9. Exception keyword pattern broadened (block, hold, park, reject, etc.)
- 10. Case matching adds pure-numeric fuzzy match
- 11. Vendor duration_vs_overall_days computed correctly (was hardcoded 0.0)
- 12. System prompt gets a DIAGNOSTICS section when data is missing
- 13. next_steps / suggestions skipped on error path (saves compute)
- 14. All DataFrame operations guard against NaN before str ops
- 15. _build_context returns cached event_log so _extract_pi_evidence reuses it
 """
 
 import logging
@@ -29,7 +12,6 @@ from app.services.azure_openai_service import AzureOpenAIService
 from app.services.celonis_service import CelonisService
 from app.services.process_insight_service import ProcessInsightService
 from app.services.suggestion_service import SuggestionService
-from app.services.data_cache_service import DataCacheService
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +26,6 @@ GRAPH_TRIGGER_KEYWORDS = [
     "display path", "process flow",
 ]
 
-# Broad exception keyword set -- covers SAP AP terminology
 EXCEPTION_KEYWORDS = [
     "exception", "due date passed", "block", "blocked", "hold",
     "parked", "park", "reject", "returned", "moved out", "stuck",
@@ -54,35 +35,70 @@ _EXCEPTION_PATTERN = re.compile(
     "|".join(re.escape(k) for k in EXCEPTION_KEYWORDS), re.IGNORECASE
 )
 
-# SAP LIFNR-style vendor IDs: 7-12 digit numbers
+# Matches any identifier: INV-123, PO4567, DOC-89012, bare long numbers
+_ANY_ID_RE = re.compile(
+    r'\b([A-Z]{1,6}[-_]?\d{4,15})\b'
+    r'|(?<!\d)(\d{7,15})(?!\d)',
+    re.IGNORECASE,
+)
+
+# SAP LIFNR-style vendor IDs
 _VENDOR_ID_RE = re.compile(
     r'(?:vendor(?:\s+id)?|lifnr|supplier(?:\s+id)?|vendor\s+number)\s*[:\-]?\s*(\d{5,12})'
     r'|(?<!\d)(\d{7,12})(?!\d)',
     re.IGNORECASE,
 )
 
-# Invoice / case ID patterns
+# CHANGE 1: Added |\d{10} to catch bare 10-digit SAP PO numbers (e.g. 4500012345)
 _CASE_ID_RE = re.compile(
-    r'\b(INV[-_]?\d+|CASE[-_]?\d+|[A-Z]{1,4}\d{6,12})\b',
+    r'\b(INV[-_]?\d+|CASE[-_]?\d+|[A-Z]{1,4}\d{6,12}|\d{10})\b',
     re.IGNORECASE,
 )
 
+# CHANGE 2: Broad ID pattern used by fingerprint detector
+_BROAD_ID_RE = re.compile(r'\b([A-Z]{0,4}\d{5,15})\b', re.IGNORECASE)
+
 # ---------------------------------------------------------------------------
-# Scope instruction templates (referenced in chat() method)
+# Scope instruction templates
 # ---------------------------------------------------------------------------
 
 _VENDOR_SCOPE_INSTRUCTION = """
 VENDOR SCOPE ACTIVE: {vendor_id}
-Your ENTIRE answer must be about this vendor only.
-If the vendor snapshot says NOT FOUND, say so clearly and list which vendor IDs DO exist in the data.
-Do not discuss other vendors or global averages except as comparison benchmarks.
+Answer only about this vendor. If not found, state clearly and list known vendor IDs.
 """
 
 _CASE_SCOPE_INSTRUCTION = """
-CASE SCOPE ACTIVE: {case_id}
-Your ENTIRE answer must be about this specific case only.
-If the case was not found, say so clearly and show the sample IDs from the data.
-Do not discuss other cases except as similar-case comparisons.
+ENTITY SCOPE ACTIVE: {case_id}
+Answer only about this entity. If not found, state clearly and show sample IDs from data.
+"""
+
+# ---------------------------------------------------------------------------
+# System prompt
+# ---------------------------------------------------------------------------
+
+_BASE_SYSTEM_PROMPT = """\
+You are a Process Intelligence Analyst with direct access to live Celonis event log data.
+You answer questions about any process entity — invoices, cases, vendors, POs, documents,
+batches, or any identifier found in the data.
+
+ANSWER STYLE
+- Match length to the question. Short question = short answer.
+- Lead with the answer, follow with the number that proves it.
+- Use headers and sections only when the user asks for analysis or a report.
+- Never pad with N/A fields. If a section has nothing useful, skip it.
+- Speak like a sharp ops colleague. No consulting fluff.
+
+DATA RULES
+- Any identifier mentioned by the user — look it up in the event log first, then answer.
+- Compare to global averages whenever a number needs context.
+- If something is not found, say what IS there and why it might not match.
+- Never invent numbers. Every claim needs a value from the data below.
+
+LIVE CELONIS DATA
+{pi_context}
+
+SCOPE: {scope_label}
+{scope_instruction}
 """
 
 # ---------------------------------------------------------------------------
@@ -94,15 +110,20 @@ def _user_wants_graph(message: str) -> bool:
     return any(kw in q for kw in GRAPH_TRIGGER_KEYWORDS)
 
 
+def _extract_any_id(message: str) -> Optional[str]:
+    """
+    Extract any process entity identifier from free-form text.
+    Handles invoice IDs, PO numbers, document numbers, case IDs,
+    vendor IDs, batch IDs, or any alphanumeric identifier.
+    Explicit vendor/case keyword hints take priority.
+    """
+    m = _ANY_ID_RE.search(message)
+    if m:
+        return (m.group(1) or m.group(2)).upper().strip()
+    return None
+
+
 def _extract_vendor_id(message: str) -> Optional[str]:
-    """
-    Extract a vendor ID from free-form text.
-    Handles:
-      - "vendor 7003196321"
-      - "LIFNR: 7003196321"
-      - "it's vendor id 7003196321"
-      - bare 7-12 digit number: "7003196321"
-    """
     for m in _VENDOR_ID_RE.finditer(message):
         val = m.group(1) or m.group(2)
         if val:
@@ -115,112 +136,125 @@ def _extract_case_id(message: str) -> Optional[str]:
     return m.group(1).upper() if m else None
 
 
+# CHANGE 2: Fingerprint-based deterministic entity detector
+def detect_entity_from_fingerprints(
+    message: str,
+    fingerprints: Optional[Dict[str, Any]],
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Deterministic entity detection using the fingerprint index built from
+    Celonis data.
+
+    Returns (entity_type, entity_id) or (None, None) when no match is found.
+    The LLM is NEVER used here — lookup is a pure set membership check.
+    """
+    if not fingerprints:
+        return None, None
+
+    candidates = []
+    for m in _BROAD_ID_RE.finditer(message):
+        val = m.group(1).strip()
+        if val:
+            candidates.append(val)
+
+    if not candidates:
+        return None, None
+
+    # Priority order: PurchasingDocumentHeader first (most common in P2P)
+    priority_order = [
+        "PurchasingDocumentHeader",
+        "AccountingDocumentHeader",
+        "VendorMaster",
+        "PurchasingDocumentItem",
+        "VimHeader",
+        "ApVimHeader",
+        "AccountingDocumentSegment",
+    ]
+
+    for entity_type in priority_order:
+        info = fingerprints.get(entity_type)
+        if not info:
+            continue
+        sample_set = set(str(s).strip() for s in info.get("samples", []))
+        for val in candidates:
+            if val in sample_set:
+                logger.debug(
+                    "Fingerprint match: %s -> %s (%s)",
+                    val, entity_type, info["id_column"],
+                )
+                return entity_type, val
+
+    return None, None
+
+
 def _normalise_id(val: Any) -> str:
-    """Strip, uppercase, remove leading zeros for fuzzy matching."""
     return str(val).strip().upper()
 
 
 def _safe_str_col(series: pd.Series) -> pd.Series:
-    """Convert a Series to str, replacing NaN with empty string."""
     return series.fillna("").astype(str)
 
 
+def _is_short_question(message: str) -> bool:
+    return len(message.split()) <= 12
+
+
+def _is_operational_question(message: str) -> bool:
+    triggers = [
+        "should i", "when should", "can i close", "is this", "what's next",
+        "what next", "what should", "do i need", "ready to", "safe to",
+        "how long", "is it", "will it", "when will", "why is", "what is",
+        "who should", "which", "how many", "any issues", "any exceptions",
+    ]
+    q = message.lower()
+    return any(t in q for t in triggers)
+
+
 # ---------------------------------------------------------------------------
-# Agent router
+# CHANGE 3: Agent router — accepts entity_type for data-driven routing
 # ---------------------------------------------------------------------------
 
 def _pick_agent(
     message: str,
     vendor_id: Optional[str],
     case_id: Optional[str],
+    entity_type: Optional[str] = None,
 ) -> str:
     q = message.lower()
-    if vendor_id:
+
+    # Entity-type-aware routing (highest priority — data-driven)
+    if entity_type == "VendorMaster" or vendor_id:
         return "Vendor Intelligence Agent"
-    if case_id:
+    if entity_type in ("PurchasingDocumentHeader", "AccountingDocumentHeader") or case_id:
         return "Invoice Processing Agent"
-    if any(x in q for x in ["exception", "error", "block", "stuck", "issue", "overdue", "due date"]):
-        return "Exception Detection Agent"
-    if any(x in q for x in ["vendor", "supplier", "lifnr"]):
-        return "Vendor Intelligence Agent"
-    if any(x in q for x in ["conform", "violation", "rule", "breach", "compliance"]):
-        return "Conformance Checker Agent"
-    if any(x in q for x in ["bottleneck", "delay", "slow", "cycle", "time", "duration", "wait"]):
-        return "Process Insight Agent"
-    if any(x in q for x in ["recommend", "next", "action", "what should", "suggest", "how to fix"]):
-        return "Case Resolution Agent"
+
+    # Intent-based routing
+    intent_map = [
+        (
+            ["exception", "error", "block", "stuck", "overdue", "due date", "parked"],
+            "Exception Detection Agent",
+        ),
+        (["vendor", "supplier", "lifnr"], "Vendor Intelligence Agent"),
+        (
+            ["conform", "violation", "rule", "breach", "compliance"],
+            "Conformance Checker Agent",
+        ),
+        (
+            ["bottleneck", "delay", "slow", "cycle time", "duration", "wait"],
+            "Process Insight Agent",
+        ),
+        (
+            ["recommend", "next step", "action", "what should", "suggest",
+             "how to fix", "resolve"],
+            "Case Resolution Agent",
+        ),
+        (["variant", "path", "route", "flow", "process map"], "Process Intelligence Agent"),
+    ]
+    for keywords, agent in intent_map:
+        if any(k in q for k in keywords):
+            return agent
+
     return "Process Intelligence Agent"
-
-
-# ---------------------------------------------------------------------------
-# System prompt template
-# ---------------------------------------------------------------------------
-
-_BASE_SYSTEM_PROMPT = """\
-You are a Process Intelligence Analyst embedded in an AP invoice operations platform.
-You have direct access to the live Celonis event log data shown below.
-Speak to operations managers. Every answer is a process investigation -- never a generic chatbot reply.
-
-======================================================
-RESPONSE FORMAT  (follow this EXACT structure -- every section is required)
-======================================================
-
-**Summary:** [1-2 sentences: what happened, with the single most critical number.]
-
-**PI Context Used:**
-- Process step: [the current or most relevant activity name from the event log]
-- Deviation point: [where this case/process diverged from the expected/golden path -- or "None" if on golden path]
-- Variant path: [the actual process path taken, e.g. "Received -> Approved -> Exception -> Resolved"]
-- Cycle time: [X days vs benchmark Y days -- always compare to global average]
-- Vendor behavior: [vendor-specific history or pattern if a vendor is in scope -- otherwise "N/A"]
-
-**Metrics:**
-- Top exceptions: [list each type with % and case count, e.g. "Due Date Passed: 35% (12 cases)"]
-- Delays: [specific bottleneck transition and days, e.g. "Approval -> Posting: 8.3 days avg"]
-- Cases affected: [exact count and % of total]
-
-**Risk & Impact:**
-- Payment delay risk: [specific -- e.g. "Net 30 breach on 8 cases if not resolved by Friday"]
-- SLA breach: [Yes/No and exactly why -- cite the threshold]
-- Manual effort: [estimated rework impact -- e.g. "~4h per AP clerk based on 3-step resolution path"]
-
-**Next Best Action:**
-- [Specific action -- not generic. E.g. "Release block on Case INV-4421 in SAP VIM"]
-- [Who should do it -- e.g. "AP Supervisor (role: APSUPR)"]
-- [By when -- e.g. "Within 24h to avoid SLA breach on 6 cases"]
-
-**Similar Cases:**
-- [List case IDs that had the same issue, how they resolved, and how long it took. If none found: "No similar resolved cases in current dataset."]
-
-======================================================
-RULES
-======================================================
-1.  Use exact numbers. Write "23.94 days" not "about 24 days". Write "35 cases (100%)" not "all cases".
-2.  Bold the 2-3 most critical metrics inline within their sections.
-3.  Every claim must cite a specific number from the PI data. No unsupported statements.
-4.  If data is missing for a field: write "[Data unavailable -- reason]" but complete all other fields.
-5.  Compare to global averages whenever possible ("this vendor's 33% vs global 5.7%").
-6.  Reference specific activity names and process paths from the event log.
-7.  For "active" / "current" / "today" exceptions: use the INDIVIDUAL EXCEPTION CASES section.
-    An exception is "active" if the case's last recorded activity is still an exception step.
-8.  Answer ONLY from the data below. Never invent numbers.
-9.  When VENDOR SCOPE is active: your ENTIRE answer must be about that vendor.
-    If the vendor snapshot says "NOT FOUND" -- say so clearly and list which vendor IDs DO exist.
-10. When CASE SCOPE is active: your ENTIRE answer must be about that case.
-    If the case was not found -- say so and show the sample IDs from the data.
-11. When NO scope is active: answer from global process data.
-12. Do not rename or reorder the sections above. Follow the format exactly.
-
-======================================================
-LIVE CELONIS EVENT LOG DATA
-======================================================
-{pi_context}
-
-======================================================
-ACTIVE SCOPE: {scope_label}
-{scope_instruction}
-======================================================
-"""
 
 
 # ---------------------------------------------------------------------------
@@ -235,14 +269,12 @@ class ChatService:
         celonis: CelonisService,
         process_insight: ProcessInsightService,
         suggestion_service: SuggestionService,
-        data_cache_service: Optional[DataCacheService] = None,
         agent_recommendation=None,
     ):
         self.llm = llm
         self.celonis = celonis
         self.process_insight = process_insight
         self.suggestion_service = suggestion_service
-        self.data_cache = data_cache_service
 
     # -----------------------------------------------------------------------
     # Public entry point
@@ -256,45 +288,68 @@ class ChatService:
         vendor_id: Optional[str] = None,
     ) -> Dict[str, Any]:
 
-        # Auto-detect IDs from message if not supplied explicitly
-        if not vendor_id:
-            vendor_id = _extract_vendor_id(message)
-            if vendor_id:
-                logger.info("Auto-detected vendor_id=%s from message text", vendor_id)
+        # CHANGE 4: Fingerprint-first detection, then regex fallback.
+        # Case is detected BEFORE vendor to prevent 10-digit PO misclassification.
+        entity_type: Optional[str] = None
+
+        # Step 1 — deterministic fingerprint lookup (data-driven, no LLM)
+        _fingerprints = None
+        try:
+            from app.services.data_cache_service import get_data_cache_service as _get_cache
+            _fingerprints = getattr(_get_cache(), "entity_fingerprints", None)
+        except Exception:
+            pass
+
+        if not case_id and not vendor_id and _fingerprints:
+            entity_type, _fp_id = detect_entity_from_fingerprints(message, _fingerprints)
+            if entity_type and _fp_id:
+                if entity_type == "VendorMaster":
+                    vendor_id = _fp_id
+                    logger.info(
+                        "Fingerprint-detected vendor_id=%s (entity=%s)",
+                        vendor_id, entity_type,
+                    )
+                else:
+                    case_id = _fp_id
+                    logger.info(
+                        "Fingerprint-detected case_id=%s (entity=%s)",
+                        case_id, entity_type,
+                    )
+
+        # Step 2 — regex fallback (case BEFORE vendor)
         if not case_id:
             case_id = _extract_case_id(message)
             if case_id:
-                logger.info("Auto-detected case_id=%s from message text", case_id)
+                logger.info("Regex-detected case_id=%s from message text", case_id)
 
-        # Reuse the warmed analytics cache when available so PI chat stays aligned
-        # with the live Celonis snapshot shown elsewhere in the app.
-        runtime = self._get_runtime_snapshot()
-        event_log = runtime["event_log"]
-        enriched_event_log = runtime["enriched_event_log"]
-        cached_process_ctx = runtime["process_ctx"]
-        cached_vendor_ids = runtime["known_vendor_ids"]
+        if not vendor_id:
+            vendor_id = _extract_vendor_id(message)
+            if vendor_id:
+                logger.info("Regex-detected vendor_id=%s from message text", vendor_id)
+
+        # Step 3 — last-resort generic ID extraction
+        if not case_id and not vendor_id:
+            detected_id = _extract_any_id(message)
+            if detected_id:
+                logger.info("Generic-detected entity_id=%s from message text", detected_id)
+                case_id = detected_id
+
+        # Fetch event log once — reused everywhere
+        event_log = self._fetch_event_log_once()
 
         # Build all context
         pi_context, context_used, data_sources, process_ctx = self._build_context(
             case_id=case_id,
             vendor_id=vendor_id,
             event_log=event_log,
-            process_ctx=cached_process_ctx,
-            known_vendor_ids=cached_vendor_ids,
-            enriched_event_log=enriched_event_log,
         )
 
-        freshness = runtime.get("freshness") or {}
-        refreshed_at = freshness.get("last_refreshed")
-        if refreshed_at:
-            data_sources.append(f"Live cache snapshot -- refreshed {refreshed_at}")
-
-        # Scope label and LLM instruction
+        # Scope label
         vendor_found = context_used.get("vendor") is not None
         case_found = context_used.get("case") is not None
 
         if vendor_id and case_id:
-            scope_label = f"Vendor {vendor_id} + Case {case_id}"
+            scope_label = f"Vendor {vendor_id} + Entity {case_id}"
             scope_instruction = (
                 _VENDOR_SCOPE_INSTRUCTION.format(vendor_id=vendor_id)
                 + _CASE_SCOPE_INSTRUCTION.format(case_id=case_id)
@@ -305,13 +360,14 @@ class ChatService:
             scope_instruction = _VENDOR_SCOPE_INSTRUCTION.format(vendor_id=vendor_id)
         elif case_id:
             found_str = "" if case_found else " [NOT FOUND IN DATA]"
-            scope_label = f"Case {case_id}{found_str}"
+            scope_label = f"Entity {case_id}{found_str}"
             scope_instruction = _CASE_SCOPE_INSTRUCTION.format(case_id=case_id)
         else:
-            scope_label = "Global -- all cases and vendors"
+            scope_label = "Global — all cases and vendors"
             scope_instruction = ""
 
-        agent_used = _pick_agent(message, vendor_id, case_id)
+        # CHANGE 5: Pass entity_type so the router can use data-driven signals
+        agent_used = _pick_agent(message, vendor_id, case_id, entity_type=entity_type)
 
         # Graph gate
         wants_graph = _user_wants_graph(message)
@@ -327,7 +383,7 @@ class ChatService:
 
         # Build prompts
         system_prompt = _BASE_SYSTEM_PROMPT.format(
-            pi_context=pi_context or "[No event log data available -- check Celonis connection]",
+            pi_context=pi_context or "[No event log data available — check Celonis connection]",
             scope_label=scope_label,
             scope_instruction=scope_instruction,
         )
@@ -335,12 +391,6 @@ class ChatService:
 
         # LLM call
         try:
-            logger.info(
-                "PI chat request: prompt_context_chars=%d event_rows=%d cached=%s",
-                len(pi_context or ""),
-                len(event_log),
-                bool(refreshed_at),
-            )
             reply = self.llm.chat(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -350,11 +400,7 @@ class ChatService:
         except Exception as exc:
             logger.error("LLM call failed: %s", str(exc))
             return self._error_response(
-                error=str(exc),
-                scope_label=scope_label,
-                agent_used=agent_used,
-                data_sources=data_sources,
-                context_used=context_used,
+                str(exc), scope_label, agent_used, data_sources, context_used
             )
 
         # Post-LLM enrichment
@@ -397,40 +443,8 @@ class ChatService:
             "path_label": path_label,
         }
 
-    def _get_runtime_snapshot(self) -> Dict[str, Any]:
-        if self.data_cache is not None:
-            try:
-                snapshot = self.data_cache.get_chat_runtime_snapshot()
-                event_log = snapshot.get("event_log_df")
-                if isinstance(event_log, pd.DataFrame) and not event_log.empty:
-                    enriched = snapshot.get("enriched_event_log_df")
-                    process_ctx = snapshot.get("process_context") or {}
-                    known_vendor_ids = snapshot.get("available_vendors") or []
-                    logger.info(
-                        "Using cached chat snapshot: events=%d vendors=%d",
-                        len(event_log),
-                        len(known_vendor_ids),
-                    )
-                    return {
-                        "event_log": event_log,
-                        "enriched_event_log": enriched if isinstance(enriched, pd.DataFrame) else pd.DataFrame(),
-                        "process_ctx": process_ctx if isinstance(process_ctx, dict) else {},
-                        "known_vendor_ids": known_vendor_ids if isinstance(known_vendor_ids, list) else [],
-                        "freshness": snapshot.get("freshness") or {},
-                    }
-            except Exception as exc:
-                logger.warning("Falling back to direct Celonis chat context: %s", exc)
-
-        return {
-            "event_log": self._fetch_event_log_once(),
-            "enriched_event_log": pd.DataFrame(),
-            "process_ctx": {},
-            "known_vendor_ids": [],
-            "freshness": {},
-        }
-
     # -----------------------------------------------------------------------
-    # Event log -- single fetch, return empty df on failure
+    # Event log — single fetch
     # -----------------------------------------------------------------------
 
     def _fetch_event_log_once(self) -> pd.DataFrame:
@@ -458,24 +472,16 @@ class ChatService:
         case_id: Optional[str],
         vendor_id: Optional[str],
         event_log: pd.DataFrame,
-        process_ctx: Optional[Dict[str, Any]] = None,
-        known_vendor_ids: Optional[List[str]] = None,
-        enriched_event_log: Optional[pd.DataFrame] = None,
     ) -> Tuple[str, Dict[str, Any], List[str], Optional[Dict[str, Any]]]:
 
         context_used: Dict[str, Any] = {}
         sections: List[str] = []
         data_sources: List[str] = []
-        process_ctx = process_ctx if isinstance(process_ctx, dict) else None
-        enriched_event_log = enriched_event_log if isinstance(enriched_event_log, pd.DataFrame) else pd.DataFrame()
+        process_ctx: Optional[Dict] = None
 
         # 1. Global process statistics
         try:
-            if not process_ctx or process_ctx.get("degraded_mode"):
-                if not event_log.empty:
-                    process_ctx = self._build_lightweight_process_context(event_log)
-                else:
-                    process_ctx = self.process_insight.build_process_context()
+            process_ctx = self.process_insight.build_process_context()
             bottleneck = process_ctx.get("bottleneck", {})
             variants = process_ctx.get("variants", [])
             exc_patterns = process_ctx.get("exception_patterns", [])
@@ -485,7 +491,7 @@ class ChatService:
             total_events = process_ctx.get("total_events", 0)
 
             global_section = (
-                f"GLOBAL PROCESS STATS  [Celonis Event Log -- {total_events} events, {total_cases} cases]\n"
+                f"GLOBAL PROCESS STATS  [Celonis Event Log — {total_events} events, {total_cases} cases]\n"
                 f"  Avg end-to-end (days)    : {process_ctx.get('avg_end_to_end_days', 'N/A')}\n"
                 f"  Exception rate           : {process_ctx.get('exception_rate', 'N/A')}%\n"
                 f"  Main bottleneck          : {bottleneck.get('activity', 'N/A')} "
@@ -521,7 +527,7 @@ class ChatService:
                 for v in conformance:
                     global_section += (
                         f"    - {v['rule']}: {v['violation_rate']}% "
-                        f"({v['affected_cases']} / {v['total_cases']} cases) -- {v['violation_description']}\n"
+                        f"({v['affected_cases']} / {v['total_cases']} cases) — {v['violation_description']}\n"
                     )
             else:
                 global_section += "  Conformance violations: None\n"
@@ -547,34 +553,37 @@ class ChatService:
                 "variants": variants[:5],
             }
 
-            data_sources.append(f"Celonis Event Log -- {total_cases} cases, {total_events} events")
+            data_sources.append(
+                f"Celonis Event Log — {total_cases} cases, {total_events} events"
+            )
             if variants:
-                data_sources.append(f"Process Variants -- {len(variants)} paths mined")
+                data_sources.append(f"Process Variants — {len(variants)} paths mined")
             if exc_patterns:
-                data_sources.append(f"Exception Patterns -- {len(exc_patterns)} types")
+                data_sources.append(f"Exception Patterns — {len(exc_patterns)} types")
             if conformance:
-                data_sources.append(f"Conformance -- {len(conformance)} violations")
+                data_sources.append(f"Conformance — {len(conformance)} violations")
 
         except Exception as exc:
             logger.warning("Global process context failed: %s", exc)
-            sections.append("GLOBAL PROCESS STATS\n  [Unavailable -- check ProcessInsightService]\n")
+            sections.append(
+                "GLOBAL PROCESS STATS\n  [Unavailable — check ProcessInsightService]\n"
+            )
 
-        # 1b. Individual exception cases (from cached event log)
+        # 1b. Individual exception cases
         if not event_log.empty:
             try:
                 exc_section, exc_list = self._build_exception_case_details(event_log)
                 if exc_section:
                     sections.append(exc_section)
                     context_used["exception_cases"] = exc_list
-                    data_sources.append(f"Exception Case Details -- {len(exc_list)} individual cases")
+                    data_sources.append(
+                        f"Exception Case Details — {len(exc_list)} individual cases"
+                    )
             except Exception as exc:
                 logger.warning("Exception case details failed: %s", exc)
 
-        # 1c. Known vendor IDs (critical for vendor queries)
-        known_vendor_ids = known_vendor_ids or self._get_known_vendor_ids(
-            event_log,
-            enriched_event_log=enriched_event_log,
-        )
+        # 1c. Known vendor IDs (Phase 0 join — no extra Celonis call needed)
+        known_vendor_ids = self._get_known_vendor_ids(event_log)
         if known_vendor_ids:
             vendor_id_section = (
                 f"KNOWN VENDOR IDs IN DATA ({len(known_vendor_ids)} vendors):\n"
@@ -585,7 +594,7 @@ class ChatService:
             sections.append(vendor_id_section)
             context_used["known_vendor_ids"] = known_vendor_ids
 
-        # 2. Case-specific context
+        # 2. Entity/case-specific context (handles any ID type)
         if case_id and not event_log.empty:
             case_section, case_ctx, similar = self._build_case_context(
                 case_id=case_id,
@@ -597,11 +606,13 @@ class ChatService:
                 context_used["case"] = case_ctx
                 context_used["similar_cases"] = similar
                 data_sources.append(
-                    f"Case {case_id} -- {case_ctx['activity_count']} activities, "
+                    f"Entity {case_id} — {case_ctx['activity_count']} activities, "
                     f"current: {case_ctx['current_stage']}"
                 )
                 if similar:
-                    data_sources.append(f"Similar Cases -- {len(similar)} cases with matching path")
+                    data_sources.append(
+                        f"Similar Cases — {len(similar)} cases with matching path"
+                    )
 
         # 3. Vendor-specific context
         if vendor_id:
@@ -610,112 +621,19 @@ class ChatService:
                 event_log=event_log,
                 process_ctx=process_ctx,
                 known_vendor_ids=known_vendor_ids,
-                enriched_event_log=enriched_event_log,
             )
             sections.append(vendor_section)
             if vendor_snapshot:
                 context_used["vendor"] = vendor_snapshot
                 data_sources.append(
-                    f"Vendor {vendor_id} -- {vendor_snapshot.get('total_cases', 0)} cases, "
+                    f"Vendor {vendor_id} — {vendor_snapshot.get('total_cases', 0)} cases, "
                     f"{vendor_snapshot.get('exception_rate_pct', 0)}% exception rate"
                 )
 
         return "\n\n".join(sections), context_used, data_sources, process_ctx
 
-    @staticmethod
-    def _build_lightweight_process_context(event_log: pd.DataFrame) -> Dict[str, Any]:
-        if event_log is None or event_log.empty:
-            return {
-                "total_cases": 0,
-                "total_events": 0,
-                "avg_end_to_end_days": 0.0,
-                "exception_rate": 0.0,
-                "bottleneck": {},
-                "golden_path": "N/A",
-                "golden_path_percentage": 0.0,
-                "variants": [],
-                "exception_patterns": [],
-                "conformance_violations": [],
-                "decision_rules": [],
-            }
-
-        df = event_log.copy()
-        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-        df = df.sort_values(["case_id", "timestamp"], na_position="last").reset_index(drop=True)
-
-        total_cases = int(df["case_id"].nunique()) if "case_id" in df.columns else 0
-        total_events = int(len(df))
-        durations: List[float] = []
-        variants: Dict[str, int] = {}
-        exception_counts: Dict[str, int] = {}
-        activity_counts: Dict[str, int] = {}
-
-        for _, group in df.groupby("case_id", sort=False):
-            activities = group["activity"].dropna().astype(str).tolist()
-            if not activities:
-                continue
-            start_ts = group["timestamp"].min()
-            end_ts = group["timestamp"].max()
-            if pd.notnull(start_ts) and pd.notnull(end_ts):
-                durations.append(float((end_ts - start_ts).total_seconds() / 86400))
-            variant = " -> ".join(activities)
-            variants[variant] = variants.get(variant, 0) + 1
-            for activity in activities:
-                activity_counts[activity] = activity_counts.get(activity, 0) + 1
-            lowered = variant.lower()
-            if "exception" in lowered:
-                exception_counts["Invoices with Exception"] = exception_counts.get("Invoices with Exception", 0) + 1
-            if "due date passed" in lowered:
-                exception_counts["Due Date Passed"] = exception_counts.get("Due Date Passed", 0) + 1
-            if "block" in lowered:
-                exception_counts["Blocked Invoice or PO"] = exception_counts.get("Blocked Invoice or PO", 0) + 1
-            if "payment term" in lowered:
-                exception_counts["Payment Terms Mismatch"] = exception_counts.get("Payment Terms Mismatch", 0) + 1
-
-        avg_days = round(sum(durations) / len(durations), 2) if durations else 0.0
-        sorted_variants = sorted(variants.items(), key=lambda item: item[1], reverse=True)
-        sorted_activities = sorted(activity_counts.items(), key=lambda item: item[1], reverse=True)
-        top_variant, top_variant_count = sorted_variants[0] if sorted_variants else ("N/A", 0)
-        bottleneck_name, bottleneck_count = sorted_activities[0] if sorted_activities else ("N/A", 0)
-
-        return {
-            "total_cases": total_cases,
-            "total_events": total_events,
-            "avg_end_to_end_days": avg_days,
-            "exception_rate": round((sum(exception_counts.values()) / total_cases) * 100, 2) if total_cases else 0.0,
-            "bottleneck": {
-                "activity": bottleneck_name,
-                "duration_days": avg_days,
-                "case_count": bottleneck_count,
-            },
-            "golden_path": top_variant,
-            "golden_path_percentage": round((top_variant_count / total_cases) * 100, 2) if total_cases else 0.0,
-            "variants": [
-                {
-                    "variant": path,
-                    "frequency": count,
-                    "percentage": round((count / total_cases) * 100, 2) if total_cases else 0.0,
-                }
-                for path, count in sorted_variants[:5]
-            ],
-            "exception_patterns": [
-                {
-                    "exception_type": label,
-                    "frequency_percentage": round((count / total_cases) * 100, 2) if total_cases else 0.0,
-                    "case_count": count,
-                    "avg_resolution_time_days": avg_days,
-                    "trigger_condition": label,
-                    "typical_resolution": "Review in PI Workbench",
-                    "resolution_role": "AP Analyst",
-                }
-                for label, count in sorted(exception_counts.items(), key=lambda item: item[1], reverse=True)
-            ],
-            "conformance_violations": [],
-            "decision_rules": [],
-        }
-
     # -----------------------------------------------------------------------
-    # Case context builder
+    # Case / entity context builder
     # -----------------------------------------------------------------------
 
     def _build_case_context(
@@ -748,7 +666,9 @@ class ChatService:
             if core_m:
                 core = core_m.group(0)
                 norm_core = norm_col.apply(
-                    lambda v: (re.search(r'V\d+', v) or type('', (), {'group': lambda *_: v})()).group(0)
+                    lambda v: (
+                        re.search(r'V\d+', v) or type('', (), {'group': lambda *_: v})()
+                    ).group(0)
                 )
                 mask = norm_core == core
                 if mask.any():
@@ -785,12 +705,12 @@ class ChatService:
 
         if case_events.empty:
             section = (
-                f"CASE DETAIL: {case_id}\n"
+                f"ENTITY DETAIL: {case_id}\n"
                 f"  NOT FOUND in the Celonis event log.\n"
-                f"  Total distinct cases in log : {event_log['case_id'].nunique()}\n"
-                f"  Sample case IDs             : {sample_ids}\n"
-                f"  Strategies attempted        : exact, contains, core_V, strip_V, suffix, numeric\n"
-                f"  Tip: check case ID format -- leading zeros, prefix letters, or spaces can cause mismatches.\n"
+                f"  Total distinct entities in log : {event_log['case_id'].nunique()}\n"
+                f"  Sample entity IDs              : {sample_ids}\n"
+                f"  Strategies attempted           : exact, contains, core_V, strip_V, suffix, numeric\n"
+                f"  Tip: check ID format — leading zeros, prefix letters, or spaces can cause mismatches.\n"
             )
             return section, None, []
 
@@ -804,7 +724,9 @@ class ChatService:
             if pd.notnull(start_ts) and pd.notnull(end_ts) else None
         )
         case_variant = " -> ".join(activities)
-        global_avg = float(process_ctx.get("avg_end_to_end_days", 0) or 0) if process_ctx else 0
+        global_avg = (
+            float(process_ctx.get("avg_end_to_end_days", 0) or 0) if process_ctx else 0
+        )
         comparison = ""
         if days_in is not None and global_avg:
             diff = round(days_in - global_avg, 1)
@@ -816,13 +738,20 @@ class ChatService:
         similar = self._find_similar_cases(event_log, case_id, case_variant)
 
         section = (
-            f"CASE DETAIL: {case_id}  [match: {match_strategy}]\n"
+            f"ENTITY DETAIL: {case_id}  [match: {match_strategy}]\n"
             f"  Current stage      : {current}{exc_flag}\n"
             f"  Days in process    : {round(days_in, 2) if days_in is not None else 'N/A'}{comparison}\n"
             f"  Total activities   : {len(activities)}\n"
             f"  Full process path  : {case_variant}\n"
             f"  Similar cases      : {len(similar)} cases follow the same path\n"
         )
+
+        # CHANGE 6: Surface source_table so the LLM knows which Celonis
+        # tables contributed to this entity's trace.
+        if "source_table" in sorted_ev.columns:
+            sources = sorted_ev["source_table"].dropna().unique().tolist()
+            if sources:
+                section += f"  Source tables      : {', '.join(str(t) for t in sources)}\n"
 
         case_ctx = {
             "case_id": case_id,
@@ -845,14 +774,8 @@ class ChatService:
         event_log: pd.DataFrame,
         process_ctx: Optional[Dict],
         known_vendor_ids: List[str],
-        enriched_event_log: Optional[pd.DataFrame] = None,
     ) -> Tuple[str, Optional[Dict]]:
-        snapshot = self._build_vendor_snapshot(
-            vendor_id,
-            event_log,
-            process_ctx,
-            enriched_event_log=enriched_event_log,
-        )
+        snapshot = self._build_vendor_snapshot(vendor_id, event_log, process_ctx)
 
         if snapshot:
             global_exc = snapshot.get("overall_exception_rate_pct", 0) or 0
@@ -906,11 +829,10 @@ class ChatService:
         vendor_id: str,
         event_log: pd.DataFrame,
         process_ctx: Optional[Dict],
-        enriched_event_log: Optional[pd.DataFrame] = None,
     ) -> Optional[Dict]:
         lookup = vendor_id.strip().upper()
 
-        # L1: pre-built stats
+        # L1: pre-built stats from ProcessInsightService
         vendor_stats = process_ctx.get("vendor_stats", []) if process_ctx else []
         row = next(
             (v for v in vendor_stats if _normalise_id(v.get("vendor_id", "")) == lookup),
@@ -920,21 +842,17 @@ class ChatService:
             logger.info("Vendor %s found in process_ctx.vendor_stats", vendor_id)
             return self._enrich_vendor_row(dict(row), event_log, process_ctx)
 
-        # L2 & L3: search event logs
-        vendor_df = self._find_vendor_in_logs(
-            lookup,
-            event_log,
-            enriched_event_log=enriched_event_log,
-        )
+        # L2: search directly in the main event log (Phase 0 join)
+        vendor_df = self._find_vendor_in_logs(lookup, event_log)
         if vendor_df is None or vendor_df.empty:
             logger.warning(
-                "Vendor %s not found in any event log. Known vendors (sample): %s",
+                "Vendor %s not found in event log. Known vendors (sample): %s",
                 vendor_id,
                 self._get_known_vendor_ids(event_log)[:5],
             )
             return None
 
-        logger.info("Vendor %s found -- %d rows", vendor_id, len(vendor_df))
+        logger.info("Vendor %s found — %d rows", vendor_id, len(vendor_df))
 
         total_cases = int(vendor_df["case_id"].nunique())
 
@@ -994,48 +912,39 @@ class ChatService:
         }
         return self._enrich_vendor_row(row, event_log, process_ctx)
 
+    # CHANGE 9: Operates only on the main event log — no Celonis fallback call
     def _find_vendor_in_logs(
         self,
         lookup: str,
         event_log: pd.DataFrame,
-        enriched_event_log: Optional[pd.DataFrame] = None,
     ) -> Optional[pd.DataFrame]:
-        enriched: Optional[pd.DataFrame] = None
-        if isinstance(enriched_event_log, pd.DataFrame) and not enriched_event_log.empty:
-            enriched = enriched_event_log
-        try:
-            if enriched is None or enriched.empty:
-                enriched = self.celonis.get_event_log_with_vendor()
-                if enriched is None or enriched.empty:
-                    enriched = None
-        except Exception as exc:
-            logger.warning("get_event_log_with_vendor failed: %s", exc)
-            enriched = None
+        """
+        Find vendor rows directly from the OCEL event log.
+        vendor_id is already joined in Phase 0 — no extra Celonis calls needed.
+        """
+        if "vendor_id" not in event_log.columns or event_log.empty:
+            return None
 
-        candidates = []
-        if enriched is not None and "vendor_id" in enriched.columns:
-            candidates.append(enriched)
-        if "vendor_id" in event_log.columns:
-            candidates.append(event_log)
+        norm = _safe_str_col(event_log["vendor_id"]).str.strip().str.upper()
 
-        for df in candidates:
-            norm = _safe_str_col(df["vendor_id"]).str.strip().str.upper()
+        # Attempt 1: exact
+        mask = norm == lookup
+        if mask.any():
+            return event_log[mask].copy()
 
-            mask = norm == lookup
+        # Attempt 2: strip leading zeros
+        stripped = lookup.lstrip("0")
+        if stripped and stripped != lookup:
+            mask = norm == stripped
             if mask.any():
-                return df[mask].copy()
+                return event_log[mask].copy()
 
-            stripped = lookup.lstrip("0")
-            if stripped and stripped != lookup:
-                mask = norm == stripped
-                if mask.any():
-                    return df[mask].copy()
-
-            padded = lookup.zfill(10)
-            if padded != lookup:
-                mask = norm == padded
-                if mask.any():
-                    return df[mask].copy()
+        # Attempt 3: zero-pad to 10 digits
+        padded = lookup.zfill(10)
+        if padded != lookup:
+            mask = norm == padded
+            if mask.any():
+                return event_log[mask].copy()
 
         return None
 
@@ -1067,46 +976,24 @@ class ChatService:
                     return str(vals.iloc[0])
         return ""
 
-    def _get_known_vendor_ids(
-        self,
-        event_log: pd.DataFrame,
-        enriched_event_log: Optional[pd.DataFrame] = None,
-    ) -> List[str]:
-        candidates = []
-        if isinstance(enriched_event_log, pd.DataFrame) and not enriched_event_log.empty:
-            candidates.append(enriched_event_log)
-        candidates.append(event_log)
-        for df in candidates:
-            if "vendor_id" in df.columns:
-                ids = (
-                    _safe_str_col(df["vendor_id"])
-                    .str.strip()
-                    .replace("", pd.NA)
-                    .dropna()
-                    .unique()
-                    .tolist()
-                )
-                ids = [v for v in ids if v.lower() not in ("nan", "none", "")]
-                if ids:
-                    return sorted(ids)
-        try:
-            enriched = self.celonis.get_event_log_with_vendor()
-            if enriched is not None and not enriched.empty and "vendor_id" in enriched.columns:
-                ids = (
-                    _safe_str_col(enriched["vendor_id"])
-                    .str.strip()
-                    .replace("", pd.NA)
-                    .dropna()
-                    .unique()
-                    .tolist()
-                )
-                return sorted(v for v in ids if v.lower() not in ("nan", "none", ""))
-        except Exception:
-            pass
-        return []
+    # CHANGE 8: Reads only from event_log — Phase 0 already populated vendor_id
+    def _get_known_vendor_ids(self, event_log: pd.DataFrame) -> List[str]:
+        """Return sorted list of known vendor IDs directly from the event log (Phase 0 join)."""
+        if "vendor_id" not in event_log.columns or event_log.empty:
+            return []
+
+        ids = (
+            _safe_str_col(event_log["vendor_id"])
+            .str.strip()
+            .replace("", pd.NA)
+            .dropna()
+            .unique()
+            .tolist()
+        )
+        return sorted(v for v in ids if v.lower() not in ("nan", "none", ""))
 
     # -----------------------------------------------------------------------
-    # Exception case details
+    # CHANGE 7: Exception case details — source_table captured and propagated
     # -----------------------------------------------------------------------
 
     def _build_exception_case_details(
@@ -1118,7 +1005,9 @@ class ChatService:
             return "", []
 
         act_col = _safe_str_col(event_log["activity"])
-        exc_mask = act_col.str.contains(_EXCEPTION_PATTERN.pattern, case=False, na=False, regex=True)
+        exc_mask = act_col.str.contains(
+            _EXCEPTION_PATTERN.pattern, case=False, na=False, regex=True
+        )
         exc_events = event_log[exc_mask]
 
         if exc_events.empty:
@@ -1136,6 +1025,14 @@ class ChatService:
             exc_row = case_exc.iloc[-1]
             last_row = case_ev.iloc[-1]
             is_active = bool(_EXCEPTION_PATTERN.search(str(last_row["activity"])))
+
+            # CHANGE 7a: capture source_table from the exception row
+            source_table = (
+                str(exc_row["source_table"])
+                if "source_table" in exc_row.index and pd.notnull(exc_row.get("source_table"))
+                else None
+            )
+
             details.append({
                 "case_id": str(cid),
                 "exception_type": str(exc_row["activity"]),
@@ -1144,6 +1041,7 @@ class ChatService:
                 "last_activity_time": last_row["timestamp"],
                 "is_active": is_active,
                 "event_count": len(case_ev),
+                "source_table": source_table,
             })
 
         details.sort(
@@ -1162,21 +1060,34 @@ class ChatService:
         )
         for d in show:
             status = "ACTIVE" if d["is_active"] else "Resolved"
-            exc_ts = d["exception_time"].strftime("%Y-%m-%d %H:%M") if pd.notnull(d["exception_time"]) else "N/A"
-            last_ts = d["last_activity_time"].strftime("%Y-%m-%d %H:%M") if pd.notnull(d["last_activity_time"]) else "N/A"
+            exc_ts = (
+                d["exception_time"].strftime("%Y-%m-%d %H:%M")
+                if pd.notnull(d["exception_time"]) else "N/A"
+            )
+            last_ts = (
+                d["last_activity_time"].strftime("%Y-%m-%d %H:%M")
+                if pd.notnull(d["last_activity_time"]) else "N/A"
+            )
+            src = f" [{d['source_table']}]" if d.get("source_table") else ""
             section += (
-                f"  - {d['case_id']}: {d['exception_type']} "
+                f"  - {d['case_id']}: {d['exception_type']}{src} "
                 f"(at {exc_ts}) -> now: {d['current_stage']} ({last_ts}) [{status}]\n"
             )
 
+        # CHANGE 7b: source_table forwarded into the ctx_list
         ctx_list = [
             {
                 "case_id": d["case_id"],
                 "exception_type": d["exception_type"],
-                "exception_time": str(d["exception_time"]) if pd.notnull(d["exception_time"]) else None,
+                "exception_time": (
+                    str(d["exception_time"]) if pd.notnull(d["exception_time"]) else None
+                ),
                 "current_stage": d["current_stage"],
-                "last_activity_time": str(d["last_activity_time"]) if pd.notnull(d["last_activity_time"]) else None,
+                "last_activity_time": (
+                    str(d["last_activity_time"]) if pd.notnull(d["last_activity_time"]) else None
+                ),
                 "is_active": d["is_active"],
+                "source_table": d.get("source_table"),
             }
             for d in show
         ]
@@ -1216,8 +1127,13 @@ class ChatService:
             result = []
             for cid in same.index[:max_results]:
                 last_act = event_log[event_log["case_id"] == cid].sort_values("timestamp")
-                last_activity = str(last_act.iloc[-1]["activity"]) if not last_act.empty else "Unknown"
-                dur = round(float(dur_map.loc[cid, "dur"]), 2) if cid in dur_map.index else None
+                last_activity = (
+                    str(last_act.iloc[-1]["activity"]) if not last_act.empty else "Unknown"
+                )
+                dur = (
+                    round(float(dur_map.loc[cid, "dur"]), 2)
+                    if cid in dur_map.index else None
+                )
                 result.append({
                     "case_id": str(cid),
                     "duration_days": dur,
@@ -1251,7 +1167,7 @@ class ChatService:
         bottleneck = process_ctx.get("bottleneck", {})
         bn_activity = bottleneck.get("activity", "")
 
-        # PRIORITY 1: Case-specific path
+        # PRIORITY 1: Entity-specific path
         c_ctx = context_used.get("case", {})
         if c_ctx and c_ctx.get("variant"):
             case_id = c_ctx.get("case_id", "")
@@ -1261,7 +1177,7 @@ class ChatService:
             exc_flag = " EXCEPTION" if c_ctx.get("is_exception") else ""
             return (
                 c_ctx["variant"],
-                f"Case {case_id}{days_str} - {stage}{exc_flag}",
+                f"Entity {case_id}{days_str} - {stage}{exc_flag}",
             )
 
         # PRIORITY 2: Vendor-specific path
@@ -1279,9 +1195,16 @@ class ChatService:
             for v in variants:
                 path = v.get("variant", "")
                 if _EXCEPTION_PATTERN.search(path):
-                    return path, f"Exception path - {v.get('frequency', '?')} cases ({v.get('percentage', '?')}%)"
+                    return (
+                        path,
+                        f"Exception path - {v.get('frequency', '?')} cases "
+                        f"({v.get('percentage', '?')}%)",
+                    )
             if golden:
-                return golden, f"Golden path - {golden_pct}% of cases (no exception variant in top 5)"
+                return (
+                    golden,
+                    f"Golden path - {golden_pct}% of cases (no exception variant in top 5)",
+                )
             return None, None
 
         # PRIORITY 4: Bottleneck / delay path
@@ -1289,9 +1212,16 @@ class ChatService:
             if bn_activity:
                 for v in variants:
                     if bn_activity.lower() in v.get("variant", "").lower():
-                        return v["variant"], f"Bottleneck path through '{bn_activity}' - {v.get('frequency', '?')} cases"
+                        return (
+                            v["variant"],
+                            f"Bottleneck path through '{bn_activity}' - "
+                            f"{v.get('frequency', '?')} cases",
+                        )
             if golden:
-                return golden, f"Most common path - {golden_pct}% of cases (bottleneck: {bn_activity})"
+                return (
+                    golden,
+                    f"Most common path - {golden_pct}% of cases (bottleneck: {bn_activity})",
+                )
             return None, None
 
         # PRIORITY 5: Conformance path
@@ -1304,7 +1234,7 @@ class ChatService:
                 return golden, f"Standard conformant path - {golden_pct}% of cases"
             return None, None
 
-        # PRIORITY 6: Default -- golden path
+        # PRIORITY 6: Default — golden path
         if golden:
             return golden, f"Golden path - {golden_pct}% of cases"
         return None, None
@@ -1332,30 +1262,57 @@ class ChatService:
         exc_rate = glob.get("exception_rate")
         bottleneck = glob.get("bottleneck", {})
 
-        # Global metrics (default)
         metrics = []
         if avg_e2e is not None:
-            status = "critical" if float(avg_e2e) > 20 else "above_benchmark" if float(avg_e2e) > 15 else "normal"
-            metrics.append({"label": "Avg Cycle Time", "value": f"{avg_e2e} days", "benchmark": "<15 days", "status": status})
+            status = (
+                "critical" if float(avg_e2e) > 20
+                else "above_benchmark" if float(avg_e2e) > 15
+                else "normal"
+            )
+            metrics.append({
+                "label": "Avg Cycle Time",
+                "value": f"{avg_e2e} days",
+                "benchmark": "<15 days",
+                "status": status,
+            })
 
         if exc_rate is not None:
-            status = "critical" if float(exc_rate) > 15 else "above_target" if float(exc_rate) > 5 else "normal"
-            metrics.append({"label": "Exception Rate", "value": f"{exc_rate}%", "benchmark": "<3%", "status": status})
+            status = (
+                "critical" if float(exc_rate) > 15
+                else "above_target" if float(exc_rate) > 5
+                else "normal"
+            )
+            metrics.append({
+                "label": "Exception Rate",
+                "value": f"{exc_rate}%",
+                "benchmark": "<3%",
+                "status": status,
+            })
 
         if bottleneck and bottleneck.get("activity"):
             bn_days = bottleneck.get("duration_days", 0)
-            status = "critical" if float(bn_days) > 10 else "above_benchmark" if float(bn_days) > 5 else "normal"
-            metrics.append({"label": "Bottleneck Duration", "value": f"{bn_days} days", "activity": bottleneck.get("activity", "N/A"), "status": status})
+            status = (
+                "critical" if float(bn_days) > 10
+                else "above_benchmark" if float(bn_days) > 5
+                else "normal"
+            )
+            metrics.append({
+                "label": "Bottleneck Duration",
+                "value": f"{bn_days} days",
+                "activity": bottleneck.get("activity", "N/A"),
+                "status": status,
+            })
 
         metrics.append({"label": "Cases Analyzed", "value": str(total_cases), "status": "normal"})
         metrics.append({"label": "Events Processed", "value": str(total_events), "status": "normal"})
         evidence["metrics_used"] = metrics
 
-        # Bottleneck
         if bottleneck and bottleneck.get("activity"):
             pct_of_total = ""
             if avg_e2e and float(avg_e2e) > 0:
-                pct_of_total = f"{round(float(bottleneck.get('duration_days', 0)) / float(avg_e2e) * 100)}%"
+                pct_of_total = (
+                    f"{round(float(bottleneck.get('duration_days', 0)) / float(avg_e2e) * 100)}%"
+                )
             evidence["bottleneck_stage"] = {
                 "activity": bottleneck.get("activity", "N/A"),
                 "avg_days": bottleneck.get("duration_days", 0),
@@ -1363,14 +1320,12 @@ class ChatService:
                 "pct_of_total": pct_of_total,
             }
 
-        # Graph path
         if graph_path:
             evidence["process_path_detected"] = graph_path
             evidence["path_label"] = path_label
             if process_ctx:
                 evidence["golden_path_percentage"] = process_ctx.get("golden_path_percentage", 0)
 
-        # Exception patterns
         exc_patterns = glob.get("exception_patterns", [])
         if exc_patterns:
             evidence["exception_patterns"] = [
@@ -1383,20 +1338,28 @@ class ChatService:
                 for p in exc_patterns[:5]
             ]
 
-        # Top variants
         variants = glob.get("variants", [])
         if variants:
             evidence["top_variants"] = [
-                {"path": v.get("variant", "N/A"), "frequency": v.get("frequency", 0), "percentage": v.get("percentage", 0)}
+                {
+                    "path": v.get("variant", "N/A"),
+                    "frequency": v.get("frequency", 0),
+                    "percentage": v.get("percentage", 0),
+                }
                 for v in variants[:3]
             ]
 
-        # Global data completeness
-        confidence = "high" if total_cases >= 100 else "medium" if total_cases >= 20 else "low"
+        confidence = (
+            "high" if total_cases >= 100
+            else "medium" if total_cases >= 20
+            else "low"
+        )
         note = (
-            f"Small sample ({total_cases} cases) -- patterns may shift with more data" if total_cases < 20
-            else f"Moderate sample ({total_cases} cases) -- directionally reliable" if total_cases < 100
-            else f"Strong sample ({total_cases} cases) -- statistically significant"
+            f"Small sample ({total_cases} cases) — patterns may shift with more data"
+            if total_cases < 20
+            else f"Moderate sample ({total_cases} cases) — directionally reliable"
+            if total_cases < 100
+            else f"Strong sample ({total_cases} cases) — statistically significant"
         )
         evidence["data_completeness"] = {
             "cases_analyzed": total_cases,
@@ -1405,20 +1368,22 @@ class ChatService:
             "note": note,
         }
 
-        # Event log timespan
         if event_log is not None and not event_log.empty and "timestamp" in event_log.columns:
             try:
                 min_ts = event_log["timestamp"].min()
                 max_ts = event_log["timestamp"].max()
                 if pd.notnull(min_ts) and pd.notnull(max_ts):
                     evidence["event_log_timespan"] = {
-                        "from": str(min_ts.date()) if hasattr(min_ts, "date") else str(min_ts)[:10],
-                        "to": str(max_ts.date()) if hasattr(max_ts, "date") else str(max_ts)[:10],
+                        "from": (
+                            str(min_ts.date()) if hasattr(min_ts, "date") else str(min_ts)[:10]
+                        ),
+                        "to": (
+                            str(max_ts.date()) if hasattr(max_ts, "date") else str(max_ts)[:10]
+                        ),
                     }
             except Exception:
                 pass
 
-        # Case detail
         case_ctx_global = context_used.get("case")
         if case_ctx_global:
             evidence["case_detail"] = {
@@ -1429,11 +1394,9 @@ class ChatService:
                 "variant": case_ctx_global.get("variant", "N/A"),
             }
 
-        # Conformance
         if glob.get("conformance_count"):
             evidence["conformance_violations_count"] = glob["conformance_count"]
 
-        # Scope-specific metric override
         vendor_ctx = context_used.get("vendor")
         case_ctx = context_used.get("case")
 
@@ -1446,7 +1409,11 @@ class ChatService:
 
             vendor_metrics = []
             if vendor_avg is not None:
-                status = "critical" if float(vendor_avg) > 20 else "above_benchmark" if float(vendor_avg) > 15 else "normal"
+                status = (
+                    "critical" if float(vendor_avg) > 20
+                    else "above_benchmark" if float(vendor_avg) > 15
+                    else "normal"
+                )
                 vendor_metrics.append({
                     "label": "Avg Cycle Time",
                     "value": f"{vendor_avg} days",
@@ -1454,7 +1421,11 @@ class ChatService:
                     "status": status,
                 })
             if vendor_exc is not None:
-                status = "critical" if float(vendor_exc) > 15 else "above_target" if float(vendor_exc) > 5 else "normal"
+                status = (
+                    "critical" if float(vendor_exc) > 15
+                    else "above_target" if float(vendor_exc) > 5
+                    else "normal"
+                )
                 vendor_metrics.append({
                     "label": "Exception Rate",
                     "value": f"{vendor_exc}%",
@@ -1471,7 +1442,11 @@ class ChatService:
                 evidence["metrics_used"] = vendor_metrics
 
             if vendor_cases is not None:
-                confidence = "high" if vendor_cases >= 100 else "medium" if vendor_cases >= 20 else "low"
+                confidence = (
+                    "high" if vendor_cases >= 100
+                    else "medium" if vendor_cases >= 20
+                    else "low"
+                )
                 evidence["data_completeness"] = {
                     "cases_analyzed": vendor_cases,
                     "events_analyzed": vendor_cases,
@@ -1526,45 +1501,54 @@ class ChatService:
                 "cases_analyzed": 1,
                 "events_analyzed": case_ctx.get("activity_count", 0),
                 "confidence": "high",
-                "note": f"Single case trace -- {case_ctx.get('activity_count', 0)} activities",
+                "note": (
+                    f"Single entity trace — {case_ctx.get('activity_count', 0)} activities"
+                ),
             }
 
         return evidence
 
     # -----------------------------------------------------------------------
-    # Prompt helpers
+    # Prompt builder
     # -----------------------------------------------------------------------
 
     @staticmethod
     def _build_user_prompt(message: str, history: List[Dict[str, str]]) -> str:
         LIST_TRIGGERS = [
             "list them", "list it", "show them", "show me", "list all",
-            "show all", "give me the list", "what are they", "name them"
+            "show all", "give me the list", "what are they", "name them",
         ]
 
         is_list_followup = (
-            any(t in message.lower() for t in LIST_TRIGGERS) and len(message.split()) <= 4
+            any(t in message.lower() for t in LIST_TRIGGERS)
+            and len(message.split()) <= 4
         )
+        is_short = _is_short_question(message)
+        is_operational = _is_operational_question(message)
 
-        if not history:
-            return message
-
-        history_text = "\n".join(
-            f"[{turn['role'].upper()}]: {turn['content']}"
-            for turn in history[-8:]
-        )
-
+        prefix = ""
         if is_list_followup:
-            return (
-                f"CONVERSATION HISTORY:\n{history_text}\n\n"
-                f"[USER]: {message}\n\n"
-                f"INSTRUCTION: The user wants you to list the individual items from your previous answer. "
-                f"Use the INDIVIDUAL EXCEPTION CASES section in the data to list each case ID, "
-                f"its exception type, current stage, and whether it is ACTIVE or Resolved. "
-                f"Do NOT summarize -- list every case individually with its details."
+            prefix = (
+                "LIST REQUEST: User wants individual items listed. "
+                "Use the INDIVIDUAL EXCEPTION CASES section. "
+                "List each case ID, exception type, current stage, and ACTIVE/Resolved status. "
+                "No summaries — list every case.\n\n"
+            )
+        elif is_short or is_operational:
+            prefix = (
+                "DIRECT ANSWER: Respond in 1-3 sentences. "
+                "Lead with the answer, one supporting number. No headers.\n\n"
             )
 
-        return f"CONVERSATION HISTORY:\n{history_text}\n\n[USER]: {message}"
+        history_text = "\n".join(
+            f"[{t['role'].upper()}]: {t['content']}" for t in history[-6:]
+        ) if history else ""
+
+        return (
+            f"{prefix}"
+            f"{'HISTORY:' + history_text + chr(10) * 2 if history_text else ''}"
+            f"{message}"
+        )
 
     # -----------------------------------------------------------------------
     # Next steps
@@ -1594,19 +1578,19 @@ class ChatService:
             steps.append("Open the Celonis Conformance Checker for affected cases")
 
         if case_id:
-            steps.append(f"Pull the full event trace for Case {case_id} in Celonis")
+            steps.append(f"Pull the full event trace for Entity {case_id} in Celonis")
             case_ctx = context_used.get("case", {})
             days_in = case_ctx.get("days_in_process")
             global_avg = context_used.get("global", {}).get("avg_end_to_end_days", 0) or 0
             if isinstance(days_in, float) and days_in > float(global_avg) * 1.5:
-                steps.append("Case is significantly overdue -- escalate to stage owner")
+                steps.append("Entity is significantly overdue — escalate to stage owner")
 
         if vendor_id:
             vendor_ctx = context_used.get("vendor", {})
             exc_rate = vendor_ctx.get("exception_rate_pct", 0)
             if isinstance(exc_rate, (int, float)) and exc_rate > 30:
                 steps.append(
-                    f"Vendor {vendor_id} exception rate {exc_rate}% is very high -- "
+                    f"Vendor {vendor_id} exception rate {exc_rate}% is very high — "
                     "review their invoice submission process"
                 )
 
@@ -1618,7 +1602,7 @@ class ChatService:
         return steps[:4]
 
     # -----------------------------------------------------------------------
-    # Error response helper
+    # Error response
     # -----------------------------------------------------------------------
 
     @staticmethod
@@ -1631,7 +1615,7 @@ class ChatService:
     ) -> Dict:
         return {
             "success": False,
-            "reply": f"PI Chat failed: {error}",
+            "reply": "Unable to answer right now — the AI service returned an error.",
             "suggested_questions": [],
             "data_sources": data_sources,
             "next_steps": [],

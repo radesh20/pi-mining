@@ -495,10 +495,27 @@ class ProcessInsightService:
                 most_common_variant = str(mode_df.iloc[0]["variant"])
                 most_common_variant_case_count = int(mode_df.iloc[0]["case_count"])
 
-            attrs = enriched[enriched["vendor_id"] == vendor_id][["payment_terms", "currency"]].dropna(how="all")
-            payment_terms = str(attrs["payment_terms"].dropna().iloc[0]) if not attrs.empty and not attrs["payment_terms"].dropna().empty else ""
-            currency = str(attrs["currency"].dropna().iloc[0]) if not attrs.empty and not attrs["currency"].dropna().empty else ""
+            subset = enriched[enriched["vendor_id"] == vendor_id]
 
+            # Dynamically check available columns
+            available_cols = [col for col in ["payment_terms", "currency"] if col in subset.columns]
+
+            attrs = subset[available_cols].dropna(how="all") if available_cols else None
+
+            # Safe extraction
+            payment_terms = ""
+            currency = ""
+
+            if attrs is not None and not attrs.empty:
+                if "payment_terms" in attrs.columns:
+                    pt_series = attrs["payment_terms"].dropna()
+                    if not pt_series.empty:
+                        payment_terms = str(pt_series.iloc[0])
+
+                if "currency" in attrs.columns:
+                    cur_series = attrs["currency"].dropna()
+                    if not cur_series.empty:
+                        currency = str(cur_series.iloc[0])
             rows.append(
                 {
                     "vendor_id": vendor_id,

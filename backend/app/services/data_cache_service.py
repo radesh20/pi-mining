@@ -57,6 +57,7 @@ class DataCacheService:
         self.exception_categories: List[Dict[str, Any]] = []
         self.available_vendors: List[str] = []
         self.cache_meta: Dict[str, Any] = {}
+        self.entity_fingerprints: dict = {}
 
     def ensure_loaded(self) -> None:
         wait_seconds = max(int(getattr(settings, "CACHE_REFRESH_WAIT_SECONDS", 30) or 30), 1)
@@ -197,6 +198,19 @@ class DataCacheService:
             event_log = celonis.get_event_log().copy()
             case_attrs = celonis.get_case_attributes().copy()
             case_table_full = celonis.get_table_data(celonis.case_table, use_cache=False).copy()
+
+            # Phase 1 — build entity fingerprint index (cached to disk for 24 h)
+            try:
+                entity_fingerprints = celonis.build_entity_fingerprints()
+                logger.info(
+                    "Entity fingerprints ready (%d entity types).", len(entity_fingerprints)
+                )
+            except Exception as _fp_err:
+                logger.warning(
+                    "Entity fingerprint build failed (non-fatal, fingerprint detection disabled): %s",
+                    _fp_err,
+                )
+                entity_fingerprints: Dict[str, Any] = {}
 
             process_context = insight_service.build_process_context()
             if bool(getattr(settings, "CELONIS_INCLUDE_FULL_MODEL_CONTEXT", True)):
@@ -382,6 +396,7 @@ class DataCacheService:
 
         with self._lock:
             self.event_log_df = event_log
+            self.entity_fingerprints = entity_fingerprints
             self.purchasing_header_df = case_attrs
             self.case_table_full_df = case_table_full
             self.enriched_event_log_df = enriched
@@ -518,28 +533,6 @@ class DataCacheService:
             fallback["degraded_mode"] = True
             fallback["degraded_reason"] = self.last_error or "Cache not loaded yet"
             return fallback
-
-    def get_chat_runtime_snapshot(self) -> Dict[str, Any]:
-        """
-        Provide a chat-friendly live snapshot so PI chat can reuse the same
-        refreshed Celonis context as the rest of the app without recomputing it.
-        """
-        with self._lock:
-            if not self._is_loaded:
-                return {
-                    "event_log_df": pd.DataFrame(),
-                    "enriched_event_log_df": pd.DataFrame(),
-                    "process_context": self._empty_process_context(),
-                    "available_vendors": [],
-                    "freshness": self.get_data_freshness(),
-                }
-            return {
-                "event_log_df": self.event_log_df.copy(),
-                "enriched_event_log_df": self.enriched_event_log_df.copy(),
-                "process_context": dict(self.process_context) if self.process_context else self._empty_process_context(),
-                "available_vendors": list(self.available_vendors),
-                "freshness": self.get_data_freshness(),
-            }
 
     def get_chat_runtime_snapshot(self) -> Dict[str, Any]:
         """Provides a safe checkout of the current global data frames for LLM agent use."""
@@ -870,36 +863,6 @@ class DataCacheService:
                 normalized, {"vendor_id": vendor_id, "happy_paths": [], "exception_paths": []}
             )
 
-    def _build_vendor_records_map(
-            self,
-            case_level: pd.DataFrame,
-            exception_records_map: Dict[str, List[Dict[str, Any]]],
-    ) -> Dict[str, List[Dict[str, Any]]]:
-        """Build a map of vendor_id -> list of case records for fast vendor lookup."""
-        vendor_map: Dict[str, List[Dict[str, Any]]] = {}
-
-        # Add case level records per vendor
-        for _, row in case_level.iterrows():
-            vid = str(row.get("vendor_id", "UNKNOWN") or "UNKNOWN").strip().upper()
-            if not vid:
-                vid = "UNKNOWN"
-            vendor_map.setdefault(vid, []).append(self._to_jsonable(row.to_dict()))
-
-        # Also add exception records per vendor
-        for records in exception_records_map.values():
-            for rec in records:
-                vid = str(rec.get("vendor_id", "UNKNOWN") or "UNKNOWN").strip().upper()
-                if not vid:
-                    vid = "UNKNOWN"
-                # Avoid duplicates — only add if not already present by case_id
-                existing_case_ids = {
-                    str(r.get("case_id", "")) for r in vendor_map.get(vid, [])
-                }
-                if str(rec.get("case_id", "")) not in existing_case_ids:
-                    vendor_map.setdefault(vid, []).append(rec)
-
-        return vendor_map
-
     def get_vendors(self) -> List[Dict[str, Any]]:
         try:
             self.ensure_loaded()
@@ -913,6 +876,26 @@ class DataCacheService:
                 }
                 for vid in self.available_vendors
             ]
+
+    def get_entity_fingerprints(self) -> Dict[str, Any]:
+        """
+        Return the entity fingerprint index built at warm-up time.
+
+        Used by detect_entity_from_fingerprints() in chat_service.py for
+        deterministic, data-driven entity detection (Phase 1b).
+
+        Returns an empty dict if the cache has not been loaded yet or if
+        fingerprint discovery failed — callers must handle this gracefully
+        and fall back to regex detection.
+        """
+        try:
+            self.ensure_loaded()
+        except Exception as e:
+            logger.warning(
+                "Serving empty entity fingerprints due to load error: %s", str(e)
+            )
+        with self._lock:
+            return self.entity_fingerprints
 
     def get_context_coverage(self) -> Dict[str, Any]:
         try:

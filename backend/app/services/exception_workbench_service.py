@@ -1,7 +1,10 @@
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
+
+import pandas as pd
 
 from app.services.azure_openai_service import AzureOpenAIService
 from app.guardrails.exceptions import GuardrailViolation
@@ -127,11 +130,29 @@ class ExceptionWorkbenchService:
 
         return categories
 
-    def get_exception_records(self, exception_type: str, process_context: dict) -> list:
+    def get_exception_records(
+            self,
+            exception_type: str,
+            process_context: dict,
+            data_cache_service=None,
+    ) -> list:
         """
         Returns exception records for a selected category.
-        Records are derived from real process_context (no mock rows).
+
+        When `data_cache_service` is provided, records come from the real OCEL event log
+        stored in DataCacheService.event_log_df (Phase 0 data).
+
+        Falls back to process_context pattern/variant derivation when the cache is unavailable.
         """
+        if data_cache_service is not None:
+            try:
+                return self._get_exception_records_from_event_log(
+                    exception_type, data_cache_service
+                )
+            except Exception as e:
+                logger.warning("OCEL-based exception record build failed, falling back: %s", e)
+
+        # ---- legacy fallback ----
         cfg = self._resolve_category(exception_type)
         patterns = process_context.get("exception_patterns", []) or []
         variants = process_context.get("variants", []) or []
@@ -142,7 +163,6 @@ class ExceptionWorkbenchService:
             p_text = json.dumps(pattern, default=str).lower()
             if not self._has_keyword_match(p_text, cfg["keywords"]):
                 continue
-
             recurring_vendor = self._top_recurring_vendor(vendor_stats)
             records.append(
                 {
@@ -151,7 +171,9 @@ class ExceptionWorkbenchService:
                     "summary": pattern.get("exception_type", cfg["label"]),
                     "case_count": int(pattern.get("case_count", 0) or 0),
                     "frequency_percentage": float(pattern.get("frequency_percentage", 0) or 0),
-                    "avg_resolution_time_days": float(pattern.get("avg_resolution_time_days", 0) or 0),
+                    "avg_resolution_time_days": float(
+                        pattern.get("avg_resolution_time_days", 0) or 0
+                    ),
                     "resolution_role": pattern.get("resolution_role", "N/A"),
                     "typical_resolution": pattern.get("typical_resolution", "N/A"),
                     "trigger_condition": pattern.get("trigger_condition", "N/A"),
@@ -159,7 +181,6 @@ class ExceptionWorkbenchService:
                     "source": "Celonis exception_patterns",
                 }
             )
-
         for v in variants:
             v_text = str(v.get("variant", "")).lower()
             if self._has_keyword_match(v_text, cfg["keywords"]):
@@ -174,6 +195,112 @@ class ExceptionWorkbenchService:
                         "source": "Celonis variants",
                     }
                 )
+        return records
+
+    # -----------------------------------------------------------------------
+    # Phase 2d — OCEL-backed exception records
+    # -----------------------------------------------------------------------
+
+    _OCEL_EXCEPTION_ACTIVITIES = [
+        "Set Payment Block",
+        "Invoice Exception End",
+        "Due Date Passed",
+        "Block Purchase Order Item",
+        "Invoice Exception Start",
+        # broad fallbacks so common SAP terms are also caught
+        "exception", "block", "overdue", "parked", "stuck",
+    ]
+
+    def _get_exception_records_from_event_log(
+        self,
+        exception_type: str,
+        data_cache_service,
+    ) -> List[Dict[str, Any]]:
+        """
+        Build exception records directly from the OCEL event log in DataCacheService.
+        Filters rows whose activity matches exception keywords, then returns per-case records
+        with full timeline attached.
+        """
+        import pandas as pd
+
+        event_log: pd.DataFrame = getattr(data_cache_service, "event_log_df", pd.DataFrame())
+        if event_log.empty:
+            return []
+
+        cfg = self._resolve_category(exception_type)
+
+        # Build a combined keyword pattern: OCEL activity names + category keywords
+        all_keywords = self._OCEL_EXCEPTION_ACTIVITIES + list(cfg.get("keywords", []))
+        pattern = "|".join(re.escape(k) for k in all_keywords)
+
+        # Filter event log to exception rows
+        act_series = event_log["activity"].fillna("").astype(str)
+        exc_mask = act_series.str.contains(pattern, case=False, na=False, regex=True)
+
+        # Further narrow by category keywords if we have a specific type
+        if cfg["keywords"]:
+            cat_pattern = "|".join(re.escape(k) for k in cfg["keywords"])
+            cat_mask = act_series.str.contains(cat_pattern, case=False, na=False, regex=True)
+            exc_mask = exc_mask & cat_mask
+
+        exc_df = event_log[exc_mask].copy()
+
+        if exc_df.empty:
+            # Fall back to any exception activity
+            exc_df = event_log[
+                act_series.str.contains(pattern, case=False, na=False, regex=True)
+            ].copy()
+
+        if exc_df.empty:
+            return []
+
+        records: List[Dict[str, Any]] = []
+        seen_cases: set = set()
+
+        for _, row in exc_df.iterrows():
+            case_id = str(row.get("case_id", "") or "")
+            if not case_id or case_id in seen_cases:
+                continue
+            seen_cases.add(case_id)
+
+            # Build timeline for this case
+            case_events = event_log[
+                event_log["case_id"].astype(str) == case_id
+            ].sort_values("timestamp")
+
+            timeline = []
+            for _, ev in case_events.iterrows():
+                ts = ev.get("timestamp")
+                timeline.append({
+                    "activity": str(ev.get("activity", "") or ""),
+                    "timestamp": ts.isoformat() if pd.notna(ts) else None,
+                    "source_table": str(ev.get("source_table", "") or ""),
+                    "resource": str(ev.get("resource", "") or ""),
+                })
+
+            records.append({
+                "exception_id": f"{cfg['id']}-{case_id}",
+                "exception_type": cfg["id"],
+                "summary": str(row.get("activity", cfg["label"])),
+                "case_id": case_id,
+                "vendor_id": str(row.get("vendor_id", "") or ""),
+                "timestamp": row["timestamp"].isoformat() if pd.notna(row.get("timestamp")) else None,
+                "source_table": str(row.get("source_table", "") or ""),
+                "case_count": 1,
+                "frequency_percentage": 0.0,
+                "avg_resolution_time_days": 0.0,
+                "resolution_role": "N/A",
+                "typical_resolution": "N/A",
+                "trigger_condition": "N/A",
+                "source": "OCEL event log",
+                "timeline": timeline,
+            })
+
+        # Compute frequency_percentage now that we know total
+        total = max(len(records), 1)
+        all_exc_cases = exc_df["case_id"].nunique()
+        for r in records:
+            r["frequency_percentage"] = round(100.0 / max(all_exc_cases, 1), 2)
 
         return records
 
@@ -1122,6 +1249,70 @@ F) Open Invoices at Risk:
             return normalized
         logger.warning("Invalid guardrail status '%s' for rule '%s'; defaulting to 'fail'.", status, rule_id)
         return "fail"
+
+    def _get_exception_records_from_event_log(
+        self,
+        exception_type: str,
+        data_cache_service,
+    ) -> List[Dict[str, Any]]:
+        """
+        Build exception records from the real OCEL event log in DataCacheService.
+        Filters for exception-related activities and returns one record per case.
+        """
+        cfg = self._resolve_category(exception_type)
+
+        # Exception activity names derived from the 18 OCEL tables (Phase 0)
+        EXCEPTION_ACTIVITIES = {
+            "Set Payment Block", "Invoice Exception End", "Due Date Passed",
+            "Block Purchase Order Item", "Invoice Exception Start",
+            "Exception", "Block", "Parked", "Reject", "Overdue",
+        }
+
+        event_log = getattr(data_cache_service, "event_log_df", None)
+        if event_log is None or event_log.empty:
+            return []
+
+        # Match by category keywords against activity names
+        act_series = event_log["activity"].fillna("").astype(str)
+        keyword_mask = act_series.str.contains(
+            "|".join(cfg["keywords"]), case=False, na=False
+        )
+        # Also match the canonical exception activities
+        exc_act_mask = act_series.isin(EXCEPTION_ACTIVITIES)
+        filtered = event_log[keyword_mask | exc_act_mask].copy()
+
+        if filtered.empty:
+            return []
+
+        records: List[Dict[str, Any]] = []
+        for case_id, group in filtered.groupby("case_id"):
+            # Full timeline for this case
+            timeline = (
+                event_log[event_log["case_id"] == case_id]
+                .sort_values("timestamp")
+                [["activity", "timestamp", "source_table"]]
+                .where(lambda df: df.notna(), None)
+                .to_dict(orient="records")
+            ) if "source_table" in event_log.columns else []
+
+            first_row = group.iloc[0]
+            records.append({
+                "exception_id": f"{cfg['id']}-{str(case_id)[:12]}",
+                "exception_type": cfg["id"],
+                "summary": str(first_row.get("activity", cfg["label"])),
+                "case_id": str(case_id),
+                "vendor_id": str(first_row.get("vendor_id", "UNKNOWN")),
+                "timestamp": (
+                    first_row["timestamp"].isoformat()
+                    if pd.notna(first_row.get("timestamp")) else None
+                ),
+                "source_table": str(first_row.get("source_table", "")) if "source_table" in first_row else "",
+                "case_event_count": int(len(group)),
+                "case_timeline": timeline[:20],  # cap to avoid huge payloads
+                "source": "OCEL event log",
+            })
+
+        return records
 
     def _resolve_category(self, exception_type: str) -> Dict[str, Any]:
         normalized = (exception_type or "").strip().lower()

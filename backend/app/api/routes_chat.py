@@ -42,7 +42,6 @@ def _get_chat_service() -> ChatService:
             process_insight=process_insight,
             agent_recommendation=agent_rec,
             suggestion_service=suggestion,
-            data_cache_service=get_data_cache_service(),
         )
         logger.info("ChatService singleton created")
     return _chat_service
