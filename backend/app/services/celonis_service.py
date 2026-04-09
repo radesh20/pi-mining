@@ -3,6 +3,7 @@ import math
 import threading
 import warnings
 import time
+import re
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -53,6 +54,20 @@ class CelonisService:
             cls._warned_missing_case_table = False
         logger.info("CelonisService shared connection and schema caches have been reset.")
 
+    def clear_instance_caches(self) -> None:
+        self._event_log_cache = None
+        self._case_attributes_cache = None
+        self._vendor_mapping_cache = None
+        self._event_with_vendor_cache = None
+        self._variants_cache = None
+        self._throughput_cache = None
+        self._activity_freq_cache = None
+        self._resource_mapping_cache = None
+        self._case_durations_cache = None
+        self._vendor_stats_cache = None
+        self._table_data_cache = {}
+        logger.info("CelonisService instance caches cleared.")
+
     def __init__(self):
         self.celonis = None
         self.data_pool = None
@@ -102,19 +117,19 @@ class CelonisService:
 
         activity_aliases = [
             self.activity_col,
-            "ACTIVITYEN", "ACTIVITY_EN",
-            "ACTIVITY", "ACTIVITY_NAME", "ACTIVITYNAME",
-            "VORGN", "TASKNAME", "TASK_NAME", "STEP", "STEPNAME",
-            "EVENT", "EVENTNAME", "EVENT_NAME", "ACTION",
+            "ACTIVITYEN", "ACTIVITY", "ACTIVITY_NAME",
+            "STEP", "STATUS", "TYPE",
+            "EVENTTYPE", "PROCESSSTEP"
         ]
         timestamp_aliases = [
             self.timestamp_col,
             "EVENTTIME", "EVENT_TIME",
             "TIMESTAMP", "TIME", "DATETIME",
-            "STARTTIME", "START_TIME",
-            "ENDTIME", "END_TIME",
             "CREATEDAT", "CREATED_AT",
-            "ERDAT", "ERZEIT", "BUDAT", "BLDAT", "ZFBDT", "DATE",
+            "POSTINGDATE", "POSTING_DATE",
+            "DOCUMENTDATE", "DOCUMENT_DATE",
+            "ERDAT", "BUDAT", "BLDAT",
+            "ZFBDT"
         ]
         case_aliases = [
             self.case_col,
@@ -155,10 +170,26 @@ class CelonisService:
             if not cols:
                 continue
 
+            if table_name.startswith("t_e_custom_"):
+                candidate_tables.append({
+                    "table": table_name,
+                    "columns": cols,
+                    "activity": table_name,
+                    "timestamp": self._find_col_by_aliases(cols, timestamp_aliases),
+                    "case_id": self._find_col_by_aliases(cols, case_aliases),
+                    "resource": self._find_col_by_aliases(cols, resource_aliases),
+                    "resource_role": self._find_col_by_aliases(cols, role_aliases),
+                    "document_number": self._find_col_by_aliases(cols, document_aliases),
+                    "transaction_code": self._find_col_by_aliases(cols, tcode_aliases),
+                })
+                continue
+
             activity_col = self._find_col_by_aliases(cols, activity_aliases)
             timestamp_col = self._find_col_by_aliases(cols, timestamp_aliases)
 
-            if activity_col and timestamp_col:
+            if timestamp_col:
+                if not activity_col:
+                    activity_col = "UNKNOWN_ACTIVITY"
                 candidate_tables.append({
                     "table": table_name,
                     "columns": cols,
@@ -171,23 +202,24 @@ class CelonisService:
                     "transaction_code": self._find_col_by_aliases(cols, tcode_aliases),
                 })
 
-        logger.info(
-            "OCPM event log build — found %d activity-like tables: %s",
-            len(candidate_tables),
-            [c["table"] for c in candidate_tables],
-        )
+        logger.info("🔥 USING RELAXED OCPM MULTI-TABLE LOGIC")
+        logger.info(f"Tables scanned: {table_names}")
+        logger.info(f"Activity-like tables found: {[c['table'] for c in candidate_tables]}")
+        logger.info(f"🔥 USING EVENT TABLES: {[t['table'] for t in candidate_tables]}")
 
         if not candidate_tables:
             raise Exception("No activity-like tables found across the OCPM model.")
 
         frames = []
+        tables_used = []
+        per_table_row_counts = {}
         for candidate in candidate_tables:
             table_name = candidate["table"]
 
             selected_cols = []
             for key in ["case_id", "activity", "timestamp", "resource", "resource_role", "document_number", "transaction_code"]:
                 col = candidate.get(key)
-                if col and col not in selected_cols:
+                if col and col not in selected_cols and col not in [table_name, "UNKNOWN_ACTIVITY"]:
                     selected_cols.append(col)
 
             # fallback: if case_id not found, try the first *_ID column
@@ -201,13 +233,13 @@ class CelonisService:
             if not selected_cols:
                 continue
 
-            logger.info("Extracting OCPM events from %s with columns=%s", table_name, selected_cols)
-
             raw_df = self.get_table_data(
                 table_name=table_name,
                 columns=selected_cols,
                 use_cache=False,
             )
+
+            logger.info(f"Extracting from {table_name}, rows={len(raw_df)}")
 
             if raw_df.empty:
                 continue
@@ -224,6 +256,11 @@ class CelonisService:
                 if col not in df.columns:
                     df[col] = None
 
+            if candidate.get("activity") == "UNKNOWN_ACTIVITY":
+                df["activity"] = "UNKNOWN_ACTIVITY"
+            elif candidate.get("activity") == table_name:
+                df["activity"] = table_name.replace("t_e_custom_", "").replace("_", " ")
+
             df["source_table"] = table_name
             df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
 
@@ -231,12 +268,15 @@ class CelonisService:
             df = df[df["activity"].notna() & df["timestamp"].notna()].copy()
 
             if not df.empty:
-                frames.append(df[[
+                valid_df = df[[
                     "case_id", "activity", "timestamp",
                     "resource", "resource_role",
                     "document_number", "transaction_code",
                     "source_table"
-                ]])
+                ]]
+                frames.append(valid_df)
+                tables_used.append(table_name)
+                per_table_row_counts[table_name] = len(valid_df)
 
         if not frames:
             raise Exception("No event rows could be built from activity-like OCPM tables.")
@@ -252,12 +292,9 @@ class CelonisService:
             na_position="last"
         ).reset_index(drop=True)
 
-        logger.info(
-            "OCPM event log built successfully: %d rows, %d unique cases, %d unique activities",
-            len(event_log),
-            event_log["case_id"].nunique(),
-            event_log["activity"].nunique(),
-        )
+        logger.info(f"Final merged rows: {len(event_log)}")
+        logger.info(f"Unique cases: {event_log['case_id'].nunique()}")
+        logger.info(f"Source distribution:\n{event_log['source_table'].value_counts()}")
 
         return event_log
     def _validate_and_log_connection_config(self):
@@ -988,6 +1025,19 @@ class CelonisService:
                     "document_number": self._find_col_by_aliases(cols, document_aliases),
                     "transaction_code": self._find_col_by_aliases(cols, tcode_aliases),
                 })
+            elif table_name.startswith("t_e_custom_"):
+                logger.info("🔥 USING EVENT TABLE: %s", table_name)
+                candidate_tables.append({
+                    "table": table_name,
+                    "columns": cols,
+                    "activity": None,
+                    "timestamp": timestamp_col or self._find_col_by_aliases(cols, ["EVENTTIME", "CREATEDAT", "DATE", "TIME"]),
+                    "case_id": self._find_col_by_aliases(cols, case_aliases),
+                    "resource": self._find_col_by_aliases(cols, resource_aliases),
+                    "resource_role": self._find_col_by_aliases(cols, role_aliases),
+                    "document_number": self._find_col_by_aliases(cols, document_aliases),
+                    "transaction_code": self._find_col_by_aliases(cols, tcode_aliases),
+                })
 
         logger.info(
             "OCPM event log build — found %d activity-like tables: %s",
@@ -1041,6 +1091,11 @@ class CelonisService:
             for col in ["case_id", "activity", "timestamp", "resource", "resource_role", "document_number", "transaction_code"]:
                 if col not in df.columns:
                     df[col] = None
+
+            if candidate.get("activity") is None:
+                base_name = table_name.replace("t_e_custom_", "")
+                readable_name = re.sub(r'([a-z])([A-Z])', r'\1 \2', base_name)
+                df["activity"] = readable_name
 
             df["source_table"] = table_name
             df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")

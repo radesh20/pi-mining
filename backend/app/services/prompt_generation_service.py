@@ -504,7 +504,7 @@ Exception Rate: {safe_context["exception_rate"]}%
         if matching_exceptions:
             deviations.append(f"{len(matching_exceptions)} exception flags detected")
         if "moved out" in activity_trace.lower():
-            deviations.append("Moved out of VIM (indicates processing complication)")
+            deviations.append("Moved out to manual resolution (indicates processing complication)")
 
         return {
             "case_id": case_id,

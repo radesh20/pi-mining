@@ -18,7 +18,7 @@ class ProcessInsightService:
         "Invoice Exception": ["exception"],
         "Late Processing / Past Due": ["due date passed"],
         "Blocked PO/Invoice": ["block"],
-        "Invoice Moved Out of VIM": ["moved out"],
+        "Escalated / Out of System": ["moved out", "escalated"],
     }
 
     def __init__(self, celonis_service: CelonisService):
@@ -303,7 +303,6 @@ class ProcessInsightService:
             invoice_received_idx = self._first_idx(
                 acts,
                 [
-                    "invoice received in vim",
                     "invoice received",
                     "record invoice receipt",
                     "document item incoming invoice",
@@ -388,7 +387,6 @@ class ProcessInsightService:
             invoice_received_idx = self._first_idx(
                 acts,
                 [
-                    "invoice received in vim",
                     "invoice received",
                     "record invoice receipt",
                     "document item incoming invoice",

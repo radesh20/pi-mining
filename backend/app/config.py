@@ -44,10 +44,10 @@ class Settings:
     # Main event/activity tables
     ACTIVITY_TABLES: list = [
         t.strip()
-        for t in os.getenv("ACTIVITY_TABLE", "t_o_custom_VimHeader").split(",")
+        for t in os.getenv("ACTIVITY_TABLE", "Activities").split(",")
         if t.strip()
     ]
-    ACTIVITY_TABLE: str = ACTIVITY_TABLES[0] if ACTIVITY_TABLES else "t_o_custom_VimHeader"
+    ACTIVITY_TABLE: str = ACTIVITY_TABLES[0] if ACTIVITY_TABLES else "Activities"
     CASE_COLUMN: str = os.getenv("CASE_COLUMN", "CASEKEY")
     ACTIVITY_COLUMN: str = os.getenv("ACTIVITY_COLUMN", "ACTIVITYEN")
     TIMESTAMP_COLUMN: str = os.getenv("TIMESTAMP_COLUMN", "EVENTTIME")
@@ -124,8 +124,8 @@ class Settings:
     CACHE_ENABLE_STARTUP_WARMUP: bool = os.getenv("CACHE_ENABLE_STARTUP_WARMUP", "true").lower() == "true"
     CACHE_STALE_WHILE_REFRESH: bool = os.getenv("CACHE_STALE_WHILE_REFRESH", "true").lower() == "true"
     CACHE_REFRESH_WAIT_SECONDS: int = int(os.getenv("CACHE_REFRESH_WAIT_SECONDS", "30"))
-    CACHE_INITIAL_LOAD_WAIT_SECONDS: int = int(os.getenv("CACHE_INITIAL_LOAD_WAIT_SECONDS", "180"))
-    CACHE_REFRESH_HARD_TIMEOUT_SECONDS: int = int(os.getenv("CACHE_REFRESH_HARD_TIMEOUT_SECONDS", "180"))
+    CACHE_INITIAL_LOAD_WAIT_SECONDS: int = int(os.getenv("CACHE_INITIAL_LOAD_WAIT_SECONDS", "600"))
+    CACHE_REFRESH_HARD_TIMEOUT_SECONDS: int = int(os.getenv("CACHE_REFRESH_HARD_TIMEOUT_SECONDS", "900"))
 
     # LLM response cache
     LLM_CACHE_ENABLED: bool = os.getenv("LLM_CACHE_ENABLED", "true").lower() == "true"

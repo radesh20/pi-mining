@@ -571,11 +571,12 @@ F) Open Invoices at Risk:
             )
 
         if not happy_path.get("path"):
-            analysis["happy_path"] = {
-                **happy_path,
-                "path": process_context.get("golden_path") or "Invoice received in VIM -> Validate invoice -> Clear invoice",
-                "avg_duration_days": float(happy_path.get("avg_duration_days", 0) or avg_e2e),
-            }
+            if not happy_path:
+                happy_path = {
+                    "path": process_context.get("golden_path") or "Invoice received -> Validate invoice -> Clear invoice",
+                    "avg_duration_days": process_context.get("avg_end_to_end_days", 0.0),
+                }
+            analysis["happy_path"] = happy_path
 
         fallback_exception_path = (
             extra_context.get("variant_path")
@@ -646,11 +647,12 @@ F) Open Invoices at Risk:
     @staticmethod
     def _infer_exception_stage(label: str, path: str) -> str:
         text = f"{label} {path}".lower()
+        summary = text
         if "invoice exception start" in text:
             return "Invoice Exception Start"
-        if "moved out" in text:
-            return "Moved Out of VIM"
-        if "payment" in text:
+        elif "moved out" in summary:
+            return "Escalated to Manual Handling"
+        elif "price" in summary:
             return "Payment Handling"
         if "approve" in text:
             return "Approval Routing"

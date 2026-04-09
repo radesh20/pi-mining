@@ -228,16 +228,20 @@ const pollUntilCacheReady = ({ timeoutMs = 120000, pollMs = CACHE_STATUS_MIN_POL
 };
 
 export const waitForCacheReady = async ({ timeoutMs = 120000, pollMs = CACHE_STATUS_MIN_POLL_MS, signal } = {}) => {
-  if (!waitForCacheReadyPromise) {
+  if (!waitForCacheReadyPromise || (waitForCacheReadyController && waitForCacheReadyController.signal.aborted)) {
     waitForCacheReadyController = new AbortController();
-    waitForCacheReadyPromise = pollUntilCacheReady({
+    const currentPromise = pollUntilCacheReady({
       timeoutMs,
       pollMs,
       signal: waitForCacheReadyController.signal,
-    }).finally(() => {
-      waitForCacheReadyPromise = null;
-      waitForCacheReadyController = null;
-      waitForCacheReadyConsumers = 0;
+    });
+    waitForCacheReadyPromise = currentPromise;
+    currentPromise.finally(() => {
+      if (waitForCacheReadyPromise === currentPromise) {
+        waitForCacheReadyPromise = null;
+        waitForCacheReadyController = null;
+        waitForCacheReadyConsumers = 0;
+      }
     });
   }
 
