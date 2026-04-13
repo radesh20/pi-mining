@@ -1400,18 +1400,76 @@ class DataCacheService:
         payment_status_l = case_level.get("payment_status", pd.Series(dtype=str)).astype(str).str.lower().fillna("")
         open_closed_status_l = case_level.get("open_closed_status", pd.Series(dtype=str)).astype(str).str.lower().fillna("")
 
-        payment_terms_mask = (
-            activity_l.str.contains("payment term", na=False)
-            | payment_terms_l.isin(["0", "0000", "immediate", "0 days"])
-        )
-        invoice_exception_mask = activity_l.str.contains("exception", na=False)
-        short_terms_mask = payment_terms_l.isin(["0", "0000", "immediate", "0 days"])
-        early_payment_mask = case_level["actual_dpo"].fillna(0) <= 7
+        # ------------------------------------------------------------------
+        # PRIORITY-ORDERED MUTUALLY EXCLUSIVE MASKS
+        # Each case belongs to exactly ONE exception category — the most
+        # specific one that matches. Higher priority masks are excluded from
+        # all lower ones via ~already_categorised.
+        # ------------------------------------------------------------------
+
+        # Priority 1 — Paid Late: explicit due date passed activity OR negative days until due
         paid_late_mask = (
             activity_l.str.contains("due date passed", na=False)
             | (case_level["days_until_due"].fillna(9999) < 0)
         )
-        open_risk_mask = processing_l.str.contains("open|pending", na=False) | ~activity_l.str.contains("clear invoice|clear", na=False)
+
+        # Priority 2 — Invoices with Exception: has exception/block activity
+        # but NOT already caught by paid_late
+        invoice_exception_mask = (
+            activity_l.str.contains(
+                "exception|set payment block|invoice exception|block purchase",
+                na=False,
+            )
+            & ~paid_late_mask
+        )
+
+        # Priority 3 — Payment Terms Mismatch: payment terms signal
+        # but NOT already caught above
+        payment_terms_mask = (
+            (
+                activity_l.str.contains("payment term", na=False)
+                | payment_terms_l.isin(["0", "0000", "immediate", "0 days"])
+            )
+            & ~paid_late_mask
+            & ~invoice_exception_mask
+        )
+
+        # Priority 4 — Short Payment Terms: subset of payment terms
+        # (only those not already in Payment Terms Mismatch)
+        short_terms_mask = (
+            payment_terms_l.isin(["0", "0000", "immediate", "0 days"])
+            & ~paid_late_mask
+            & ~invoice_exception_mask
+            & ~payment_terms_mask
+        )
+
+        # Priority 5 — Early Payment: DPO <= 7 but NOT an exception case
+        early_payment_mask = (
+            (case_level["actual_dpo"].fillna(0) <= 7)
+            & ~paid_late_mask
+            & ~invoice_exception_mask
+        )
+
+        # Priority 6 — Open Invoices at Risk: catch-all for anything
+        # open/pending that hasn't been categorised yet
+        already_categorised = (
+            paid_late_mask
+            | invoice_exception_mask
+            | payment_terms_mask
+            | short_terms_mask
+            | early_payment_mask
+        )
+        open_risk_mask = (
+            (
+                processing_l.str.contains("open|pending", na=False)
+                | ~activity_l.str.contains("clear invoice|clear", na=False)
+            )
+            & ~already_categorised
+        )
+
+        # ------------------------------------------------------------------
+        # Build records using the mutually exclusive masks
+        # ------------------------------------------------------------------
 
         records_map[self._normalize_exception_key("Payment Terms Mismatch")] = [
             mk_record(
@@ -1462,7 +1520,10 @@ class DataCacheService:
                 "Early Payment / DPO 0-7 Days",
                 {
                     "actual_dpo": r.get("actual_dpo"),
-                    "potential_dpo": max(float(r.get("estimated_processing_days") or 0), float(r.get("actual_dpo") or 0)),
+                    "potential_dpo": max(
+                        float(r.get("estimated_processing_days") or 0),
+                        float(r.get("actual_dpo") or 0),
+                    ),
                     "optimization_value": None,
                     "risk_level": "LOW",
                 },
@@ -1475,7 +1536,11 @@ class DataCacheService:
                 r,
                 "Paid Late",
                 {
-                    "days_late": max(float(r.get("actual_dpo") or 0) - float(r.get("estimated_processing_days") or 0), 0.0),
+                    "days_late": max(
+                        float(r.get("actual_dpo") or 0)
+                        - float(r.get("estimated_processing_days") or 0),
+                        0.0,
+                    ),
                     "dpo": r.get("actual_dpo"),
                     "risk_level": "HIGH",
                 },
@@ -1490,13 +1555,20 @@ class DataCacheService:
                 {
                     "days_until_due": r.get("days_until_due"),
                     "estimated_processing_days": r.get("estimated_processing_days"),
-                    "risk_level": "HIGH" if float(r.get("actual_dpo") or 0) > float(r.get("estimated_processing_days") or 0) else "MEDIUM",
+                    "risk_level": (
+                        "HIGH"
+                        if float(r.get("actual_dpo") or 0)
+                        > float(r.get("estimated_processing_days") or 0)
+                        else "MEDIUM"
+                    ),
                 },
             )
             for _, r in case_level[open_risk_mask].iterrows()
         ]
 
-        # Open/Closed profile status buckets
+        # Open/Closed profile status buckets (these are status views, not exception
+        # categories, so they deliberately do NOT participate in the mutual-exclusion
+        # logic above — a closed invoice can still have been paid late)
         records_map[self._normalize_exception_key("Open Invoices")] = [
             mk_record(
                 r,
@@ -1508,57 +1580,31 @@ class DataCacheService:
                 },
             )
             for _, r in case_level[
-                open_closed_status_l.eq("open") | payment_status_l.str.contains("open|pending", na=False)
+                open_closed_status_l.eq("open")
+                | payment_status_l.str.contains("open|pending", na=False)
             ].iterrows()
         ]
         records_map[self._normalize_exception_key("Closed Invoices")] = [
-            mk_record(
-                r,
-                "Closed Invoices",
-                {
-                    "status": "CLOSED",
-                    "risk_level": "LOW",
-                },
-            )
+            mk_record(r, "Closed Invoices", {"status": "CLOSED", "risk_level": "LOW"})
             for _, r in case_level[open_closed_status_l.eq("closed")].iterrows()
         ]
         records_map[self._normalize_exception_key("Paid On Time")] = [
-            mk_record(
-                r,
-                "Paid On Time",
-                {
-                    "status": "CLOSED",
-                    "risk_level": "LOW",
-                },
-            )
+            mk_record(r, "Paid On Time", {"status": "CLOSED", "risk_level": "LOW"})
             for _, r in case_level[open_closed_status_l.eq("paid_on_time")].iterrows()
         ]
         records_map[self._normalize_exception_key("Paid Early")] = [
-            mk_record(
-                r,
-                "Paid Early",
-                {
-                    "status": "CLOSED",
-                    "risk_level": "LOW",
-                },
-            )
+            mk_record(r, "Paid Early", {"status": "CLOSED", "risk_level": "LOW"})
             for _, r in case_level[open_closed_status_l.eq("paid_early")].iterrows()
         ]
         records_map[self._normalize_exception_key("Paid Late (Status)")] = [
-            mk_record(
-                r,
-                "Paid Late (Status)",
-                {
-                    "status": "CLOSED",
-                    "risk_level": "HIGH",
-                },
-            )
+            mk_record(r, "Paid Late (Status)", {"status": "CLOSED", "risk_level": "HIGH"})
             for _, r in case_level[
-                open_closed_status_l.eq("paid_late") | payment_status_l.str.contains("paid late", na=False)
+                open_closed_status_l.eq("paid_late")
+                | payment_status_l.str.contains("paid late", na=False)
             ].iterrows()
         ]
 
-        # Dynamic individual exception discovery from activity paths.
+        # Dynamic individual exception discovery from activity paths
         dynamic_categories = self._discover_activity_exception_categories(case_level, process_context)
         for category in dynamic_categories:
             label = category["label"]

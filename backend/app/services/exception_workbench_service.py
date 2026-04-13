@@ -1251,66 +1251,152 @@ F) Open Invoices at Risk:
         return "fail"
 
     def _get_exception_records_from_event_log(
-        self,
-        exception_type: str,
-        data_cache_service,
+            self,
+            exception_type: str,
+            data_cache_service,
     ) -> List[Dict[str, Any]]:
         """
         Build exception records from the real OCEL event log in DataCacheService.
-        Filters for exception-related activities and returns one record per case.
+
+        Key fixes vs previous version:
+        - Category keyword filter is applied FIRST (not OR'd with broad activity set)
+          so only cases relevant to the selected category are returned.
+        - Timeline is deduplicated (consecutive repeated activities collapsed) and
+          capped at 25 steps to avoid huge payloads.
+        - One record per case guaranteed via seen_cases set.
+        - frequency_percentage computed correctly as % of total cases in log.
         """
         cfg = self._resolve_category(exception_type)
 
-        # Exception activity names derived from the 18 OCEL tables (Phase 0)
-        EXCEPTION_ACTIVITIES = {
-            "Set Payment Block", "Invoice Exception End", "Due Date Passed",
-            "Block Purchase Order Item", "Invoice Exception Start",
-            "Exception", "Block", "Parked", "Reject", "Overdue",
+        # The 5 canonical OCEL exception activity names from Phase 0 tables
+        OCEL_EXCEPTION_ACTIVITIES = {
+            "Set Payment Block",
+            "Invoice Exception End",
+            "Due Date Passed",
+            "Block Purchase Order Item",
+            "Invoice Exception Start",
         }
 
         event_log = getattr(data_cache_service, "event_log_df", None)
         if event_log is None or event_log.empty:
             return []
 
-        # Match by category keywords against activity names
         act_series = event_log["activity"].fillna("").astype(str)
-        keyword_mask = act_series.str.contains(
-            "|".join(cfg["keywords"]), case=False, na=False
-        )
-        # Also match the canonical exception activities
-        exc_act_mask = act_series.isin(EXCEPTION_ACTIVITIES)
-        filtered = event_log[keyword_mask | exc_act_mask].copy()
+        total_cases_in_log = int(event_log["case_id"].nunique())
 
-        if filtered.empty:
+        # ------------------------------------------------------------------
+        # Step 1 — Find cases that contain at least one exception activity.
+        # We match against BOTH the canonical OCEL activity names AND the
+        # category keywords, but require at least one OCEL exception activity
+        # to be present in the case's event trace (not just any keyword match).
+        # This prevents non-exception cases from leaking into results.
+        # ------------------------------------------------------------------
+        ocel_exc_mask = act_series.isin(OCEL_EXCEPTION_ACTIVITIES)
+        exc_case_ids = set(event_log.loc[ocel_exc_mask, "case_id"].astype(str).unique())
+
+        if not exc_case_ids:
+            # Fallback: if no OCEL exception activities found at all,
+            # use category keywords alone so the UI isn't empty
+            if cfg.get("keywords"):
+                cat_pattern = "|".join(cfg["keywords"])
+                fallback_mask = act_series.str.contains(cat_pattern, case=False, na=False)
+                exc_case_ids = set(event_log.loc[fallback_mask, "case_id"].astype(str).unique())
+            if not exc_case_ids:
+                return []
+
+        # ------------------------------------------------------------------
+        # Step 2 — Further narrow to cases matching THIS category's keywords.
+        # If the category has keywords, only keep cases where at least one
+        # of the case's activities matches. This is the fix for "same case
+        # appears in every category" — we scope by category intent.
+        # ------------------------------------------------------------------
+        if cfg.get("keywords"):
+            cat_pattern = "|".join(cfg["keywords"])
+            cat_mask = act_series.str.contains(cat_pattern, case=False, na=False)
+            cat_case_ids = set(event_log.loc[cat_mask, "case_id"].astype(str).unique())
+            # Intersection: must be an exception case AND match this category
+            exc_case_ids = exc_case_ids & cat_case_ids
+
+        if not exc_case_ids:
             return []
 
+        # ------------------------------------------------------------------
+        # Step 3 — Build one record per case
+        # ------------------------------------------------------------------
         records: List[Dict[str, Any]] = []
-        for case_id, group in filtered.groupby("case_id"):
-            # Full timeline for this case
-            timeline = (
-                event_log[event_log["case_id"] == case_id]
-                .sort_values("timestamp")
-                [["activity", "timestamp", "source_table"]]
-                .where(lambda df: df.notna(), None)
-                .to_dict(orient="records")
-            ) if "source_table" in event_log.columns else []
+        event_log_str_cid = event_log.copy()
+        event_log_str_cid["_cid_str"] = event_log_str_cid["case_id"].astype(str)
 
-            first_row = group.iloc[0]
+        for case_id in sorted(exc_case_ids):
+            case_events = (
+                event_log_str_cid[event_log_str_cid["_cid_str"] == case_id]
+                .sort_values("timestamp")
+                .reset_index(drop=True)
+            )
+            if case_events.empty:
+                continue
+
+            # Find the first exception-type event for this case
+            exc_rows = case_events[case_events["activity"].isin(OCEL_EXCEPTION_ACTIVITIES)]
+            first_exc_row = exc_rows.iloc[0] if not exc_rows.empty else case_events.iloc[0]
+            last_row = case_events.iloc[-1]
+
+            # ------------------------------------------------------------------
+            # Build timeline — deduplicate consecutive repeated activities
+            # so "Post Invoice → Post Invoice → Post Invoice → ..." becomes
+            # a single "Post Invoice" entry. Cap at 25 steps.
+            # ------------------------------------------------------------------
+            raw_timeline = case_events[
+                ["activity", "timestamp", "source_table"]
+            ].to_dict(orient="records") if "source_table" in case_events.columns else \
+                case_events[["activity", "timestamp"]].to_dict(orient="records")
+
+            deduped_timeline = []
+            for step in raw_timeline:
+                act = str(step.get("activity") or "")
+                ts = step.get("timestamp")
+                src = str(step.get("source_table") or "")
+                if not deduped_timeline or deduped_timeline[-1]["activity"] != act:
+                    deduped_timeline.append({
+                        "activity": act,
+                        "timestamp": ts.isoformat() if pd.notna(ts) else None,
+                        "source_table": src,
+                    })
+                # else: skip consecutive duplicate activity
+
+            timeline = deduped_timeline[:25]  # cap — frontend can't render 200+ steps
+
             records.append({
-                "exception_id": f"{cfg['id']}-{str(case_id)[:12]}",
+                "exception_id": f"{cfg['id']}-{case_id[:12]}",
                 "exception_type": cfg["id"],
-                "summary": str(first_row.get("activity", cfg["label"])),
-                "case_id": str(case_id),
-                "vendor_id": str(first_row.get("vendor_id", "UNKNOWN")),
+                "summary": str(first_exc_row.get("activity", cfg["label"])),
+                "case_id": case_id,
+                "vendor_id": str(first_exc_row.get("vendor_id", "UNKNOWN") or "UNKNOWN"),
+                "current_stage": str(last_row.get("activity", "")),
                 "timestamp": (
-                    first_row["timestamp"].isoformat()
-                    if pd.notna(first_row.get("timestamp")) else None
+                    first_exc_row["timestamp"].isoformat()
+                    if pd.notna(first_exc_row.get("timestamp")) else None
                 ),
-                "source_table": str(first_row.get("source_table", "")) if "source_table" in first_row else "",
-                "case_event_count": int(len(group)),
-                "case_timeline": timeline[:20],  # cap to avoid huge payloads
+                "source_table": str(first_exc_row.get("source_table", ""))
+                if "source_table" in first_exc_row.index else "",
+                "case_event_count": len(case_events),
+                "case_timeline": timeline,
+                "case_count": 1,
+                "frequency_percentage": round(1 / max(total_cases_in_log, 1) * 100, 2),
+                "avg_resolution_time_days": 0.0,
+                "resolution_role": "N/A",
+                "typical_resolution": "N/A",
+                "trigger_condition": "N/A",
                 "source": "OCEL event log",
             })
+
+        # Recompute frequency_percentage now that we know the actual record count
+        # (what % of all cases in the log are in THIS exception category)
+        exc_case_count = len(records)
+        for r in records:
+            r["frequency_percentage"] = round(
+                exc_case_count / max(total_cases_in_log, 1) * 100, 2
+            )
 
         return records
 
