@@ -1,0 +1,60 @@
+Traceback (most recent call last):
+  File "C:\Users\LENOVO\Desktop\New folder (2)\pi-mining\backend\app\services\celonis_service.py", line 88, in _connect
+    from pycelonis import get_celonis
+  File "C:\Users\LENOVO\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pycelonis\__init__.py", line 18, in <module>
+    from pycelonis.celonis import Celonis
+  File "C:\Users\LENOVO\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pycelonis\celonis.py", line 16, in <module>
+    from pycelonis.ems.apps import Apps
+  File "C:\Users\LENOVO\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pycelonis\ems\__init__.py", line 7, in <module>
+    from pycelonis.ems.data_integration.data_model import DataModel
+  File "C:\Users\LENOVO\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pycelonis\ems\data_integration\__init__.py", line 18, in <module>
+    from pycelonis.ems.data_integration.data_pool import DataPool
+  File "C:\Users\LENOVO\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pycelonis\ems\data_integration\data_pool.py", line 23, in <module>
+    from pycelonis.ems.data_integration.data_connection import DataConnection
+  File "C:\Users\LENOVO\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pycelonis\ems\data_integration\data_connection.py", line 20, in <module>
+    from pycelonis.ems.data_integration.replication import Replication
+  File "C:\Users\LENOVO\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pycelonis\ems\data_integration\replication.py", line 43, in <module>
+    class Replication(ReplicationTransport):
+    ...<79 lines>...
+            return ["id", "name", "data_pool_id", "table_name", "status"]
+  File "C:\Users\LENOVO\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pydantic\v1\main.py", line 221, in __new__
+    inferred = ModelField.infer(
+        name=var_name,
+    ...<3 lines>...
+        config=config,
+    )
+  File "C:\Users\LENOVO\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pydantic\v1\fields.py", line 504, in infer
+    return cls(
+        name=name,
+    ...<7 lines>...
+        field_info=field_info,
+    )
+  File "C:\Users\LENOVO\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pydantic\v1\fields.py", line 434, in __init__
+    self.prepare()
+    ~~~~~~~~~~~~^^
+  File "C:\Users\LENOVO\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pydantic\v1\fields.py", line 544, in prepare
+    self._set_default_and_type()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\LENOVO\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pydantic\v1\fields.py", line 576, in _set_default_and_type
+    raise errors_.ConfigError(f'unable to infer type for attribute "{self.name}"')
+pydantic.v1.errors.ConfigError: unable to infer type for attribute "client"
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<string>", line 8, in <module>
+    c.ensure_loaded()
+    ~~~~~~~~~~~~~~~^^
+  File "C:\Users\LENOVO\Desktop\New folder (2)\pi-mining\backend\app\services\data_cache_service.py", line 125, in ensure_loaded
+    self._refresh_all_data_impl()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\LENOVO\Desktop\New folder (2)\pi-mining\backend\app\services\data_cache_service.py", line 189, in _refresh_all_data_impl
+    celonis = CelonisService()
+  File "C:\Users\LENOVO\Desktop\New folder (2)\pi-mining\backend\app\services\celonis_service.py", line 70, in __init__
+    self._connect()
+    ~~~~~~~~~~~~~^^
+  File "C:\Users\LENOVO\Desktop\New folder (2)\pi-mining\backend\app\services\celonis_service.py", line 106, in _connect
+    raise CelonisConnectionError(
+        f"Failed to connect to Celonis: {str(e)}. Check CELONIS_BASE_URL, CELONIS_API_TOKEN, CELONIS_KEY_TYPE."
+    )
+app.services.celonis_service.CelonisConnectionError: Failed to connect to Celonis: unable to infer type for attribute "client". Check CELONIS_BASE_URL, CELONIS_API_TOKEN, CELONIS_KEY_TYPE.

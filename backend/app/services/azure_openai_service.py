@@ -24,6 +24,7 @@ class AzureOpenAIService:
         self.api_version = settings.AZURE_OPENAI_API_VERSION
         self.azure_endpoint = settings.AZURE_OPENAI_ENDPOINT.rstrip("/")
         self.deployment = settings.AZURE_OPENAI_DEPLOYMENT
+        self.timeout_seconds = max(int(getattr(settings, "AZURE_OPENAI_TIMEOUT_SECONDS", 30) or 30), 5)
         self.client = None
         self._use_sdk = True
 
@@ -34,6 +35,7 @@ class AzureOpenAIService:
                 api_key=self.api_key,
                 api_version=self.api_version,
                 azure_endpoint=self.azure_endpoint,
+                timeout=self.timeout_seconds,
             )
         except TypeError as e:
             if "proxies" in str(e):
@@ -136,7 +138,7 @@ class AzureOpenAIService:
             "Content-Type": "application/json",
         }
 
-        with httpx.Client(timeout=120.0) as client:
+        with httpx.Client(timeout=float(self.timeout_seconds)) as client:
             response = client.post(url, headers=headers, json=payload)
             response.raise_for_status()
             data = response.json()
@@ -153,7 +155,7 @@ class AzureOpenAIService:
         last_error = None
         for attempt in range(retries + 1):
             try:
-                response = self.client.chat.completions.create(**kwargs)
+                response = self.client.chat.completions.create(timeout=self.timeout_seconds, **kwargs)
                 return response.choices[0].message.content
             except Exception as e:
                 last_error = e

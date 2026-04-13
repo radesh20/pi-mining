@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "<string>", line 8, in <module>
+  File "C:\Users\LENOVO\Desktop\New folder (2)\pi-mining\backend\app\services\data_cache_service.py", line 125, in ensure_loaded
+    self._refresh_all_data_impl()
+  File "C:\Users\LENOVO\Desktop\New folder (2)\pi-mining\backend\app\services\data_cache_service.py", line 203, in _refresh_all_data_impl
+    model_context = celonis.get_data_model_context()
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'CelonisService' object has no attribute 'get_data_model_context'

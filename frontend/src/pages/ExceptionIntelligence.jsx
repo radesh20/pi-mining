@@ -9,7 +9,7 @@ import {
 import LoadingSpinner from "../components/LoadingSpinner";
 import {
   analyzeExceptionRecord, fetchExceptionCategories,
-  fetchAllExceptionRecords, sendExceptionToTeams, waitForCacheReady,
+  fetchAllExceptionRecords, sendExceptionToTeams,
 } from "../api/client";
 
 const S = "'Instrument Serif', Georgia, serif";
@@ -154,13 +154,6 @@ export default function ExceptionIntelligence() {
         let categories = (Array.isArray(pickData(categoriesRes)) ? pickData(categoriesRes) : [])
           .filter((row) => Number(row.case_count || 0) > 0)
           .sort((a, b) => Number(b.case_count || 0) - Number(a.case_count || 0));
-        if (categories.length === 0) {
-          await waitForCacheReady({ signal: abortController.signal });
-          categoriesRes = await fetchExceptionCategories();
-          categories = (Array.isArray(pickData(categoriesRes)) ? pickData(categoriesRes) : [])
-            .filter((row) => Number(row.case_count || 0) > 0)
-            .sort((a, b) => Number(b.case_count || 0) - Number(a.case_count || 0));
-        }
         const categoryMap = new Map(categories.map((category) => [category.category_id, category]));
         const recordsRes = await fetchAllExceptionRecords();
         const rows = Array.isArray(pickData(recordsRes)) ? pickData(recordsRes) : [];
@@ -183,6 +176,7 @@ export default function ExceptionIntelligence() {
           : flattened[0];
         if (preselect) setSelectedRecordId(preselect.exception_id);
       } catch (e) {
+        if (e?.name === "AbortError") return;
         if (!active) return;
         setError(e?.response?.data?.detail || e.message || "Failed to load exceptions.");
       } finally {

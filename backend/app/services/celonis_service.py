@@ -1,10 +1,16 @@
+import json
+from datetime import datetime, timezone
 import logging
 import math
+import os
 import threading
 import warnings
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from typing import Any, Dict, List, Optional, Tuple
+import json
+import re as _re
+from pathlib import Path
 
 import pandas as pd
 
@@ -117,6 +123,47 @@ class CelonisService:
                 CelonisService._shared_data_model = self.data_model
                 CelonisService._shared_initialized = True
 
+    def force_fresh_state(self, reconnect: bool = False) -> None:
+        """Clears all in-memory caches and re-initializes shared state."""
+        with CelonisService._shared_lock:
+            if reconnect:
+                CelonisService._shared_initialized = False
+                CelonisService._shared_celonis = None
+                CelonisService._shared_data_pool = None
+                CelonisService._shared_data_model = None
+            CelonisService._shared_table_names = []
+            CelonisService._shared_table_columns = {}
+            CelonisService._shared_tables_loaded_at = 0
+        self._event_log_cache = None
+        self._case_attributes_cache = None
+        self._vendor_mapping_cache = None
+        self._event_with_vendor_cache = None
+        self.__init__()
+
+    def get_data_model_context(self) -> Dict[str, Any]:
+        """Provides schema and relationship metadata for the current data model."""
+        hints = []
+        if self.data_model:
+            try:
+                tables = self.data_model.get_tables()
+                for fk in self.data_model.get_foreign_keys():
+                    source_table_name = tables.find(fk.source_table_id).name if getattr(fk, 'source_table_id', None) else "unknown_source_table"
+                    target_table_name = tables.find(fk.target_table_id).name if getattr(fk, 'target_table_id', None) else "unknown_target_table"
+                    
+                    if hasattr(fk, 'columns') and fk.columns:
+                        for col in fk.columns:
+                            hints.append(f"{source_table_name}.[col_id: {col.source_column_id}] -> {target_table_name}.[col_id: {col.target_column_id}]")
+                    else:
+                        hints.append(f"{source_table_name} -> {target_table_name}")
+            except Exception as e:
+                logger.warning("Failed to extract relationship hints: %s", str(e))
+
+        return {
+            "model_name": self.data_model.name if self.data_model else "Unknown",
+            "relationship_hints": hints,
+            "tables": self._get_table_names()
+        }
+
     def _get_data_model(self):
         try:
             if not settings.CELONIS_DATA_POOL_ID:
@@ -216,12 +263,13 @@ class CelonisService:
                     return list(cached)
 
             timeout_seconds = max(int(getattr(settings, "CELONIS_CONNECT_TIMEOUT_SECONDS", 20) or 20), 5)
-            tables = self._run_with_timeout(
-                lambda: list(self.data_model.get_tables()),
+            # Use SDK's find() which handles IDs and Aliases correctly
+            match = self._run_with_timeout(
+                lambda: self.data_model.get_tables().find(table_name),
                 timeout_seconds=timeout_seconds,
-                label="Celonis table lookup for columns",
+                label=f"Celonis table lookup ({table_name})",
             )
-            match = next((table for table in tables if table.name == table_name), None)
+            
             if match is None:
                 return []
             cols = self._run_with_timeout(
@@ -573,51 +621,405 @@ class CelonisService:
         )
         return result
 
+    # Path for the persistent JSON cache
+    _JSON_CACHE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "event_log_cache.json")
+
     def get_event_log(self) -> pd.DataFrame:
         """
-        Extract event log from t_o_custom_VimHeader.
-        Output columns:
-        - case_id, activity, timestamp, resource, resource_role, document_number, transaction_code
+        OCEL Extraction with Triple-Bridge Vendor Resolution + JSON disk cache.
+
+        OCEL-aware: iterates all tables in ACTIVITY_TABLES.
+        - Timestamp is the ONLY hard requirement to include a table.
+        - Activity name is derived from the table name if no activity column exists.
+        - case_link detection covers broad FK alias patterns across all 18 OCEL tables.
+        - source_table column added so the LLM knows which process step each row came from.
+
+        First call: extracts ALL rows from Celonis, saves to JSON.
+        Subsequent calls: loads instantly from JSON.
         """
+        expected_cols = [
+            "case_id", "activity", "timestamp", "resource", "resource_role",
+            "document_number", "transaction_code", "vendor_id", "net_value",
+            "total_net_value_local", "currency", "source_table",
+        ]
+
+        # ------------------------------------------------------------------
+        # 1. In-memory cache (fastest)
+        # ------------------------------------------------------------------
         if self._event_log_cache is not None:
             return self._event_log_cache.copy()
 
-        try:
-            source = self._discover_event_source()
-            source_table = source["table"]
-            mapping = source["mapping"]
-            source_columns = [col for col in mapping.values() if col]
-            raw_df = self._extract_table_rows_paginated(
-                table_name=source_table,
-                columns=source_columns,
-                operation_name="event log extraction",
-                max_rows=(settings.CELONIS_EVENT_LOG_MAX_ROWS if settings.CELONIS_EVENT_LOG_MAX_ROWS > 0 else None),
-            )
-            rename_map = {src: tgt for tgt, src in mapping.items() if src}
-            df = raw_df.rename(columns=rename_map)
+        # ------------------------------------------------------------------
+        # 2. JSON disk cache (sub-second)
+        # ------------------------------------------------------------------
+        if os.path.exists(self._JSON_CACHE_PATH):
+            try:
+                with open(self._JSON_CACHE_PATH, "r") as f:
+                    cache_data = json.load(f)
 
-            expected_cols = [
-                "case_id",
-                "activity",
-                "timestamp",
-                "resource",
-                "resource_role",
-                "document_number",
-                "transaction_code",
+                if isinstance(cache_data, dict) and "events" in cache_data:
+                    cached_df = pd.DataFrame(cache_data["events"])
+                    self._vendor_stats_cache = cache_data.get("vendor_stats", [])
+                else:
+                    cached_df = pd.DataFrame(cache_data)
+                    self._vendor_stats_cache = []
+
+                if not cached_df.empty:
+                    cached_df["timestamp"] = pd.to_datetime(cached_df["timestamp"], errors="coerce")
+                    for col in expected_cols:
+                        if col not in cached_df.columns:
+                            cached_df[col] = None
+                    if "vendor_id" in cached_df.columns:
+                        cached_df["vendor_id"] = (
+                            cached_df["vendor_id"]
+                            .fillna("UNKNOWN")
+                            .astype(str)
+                            .str.replace(r"\.0$", "", regex=True)
+                        )
+                    self._event_log_cache = cached_df[expected_cols]
+                    logger.info(
+                        "Loaded %d events from JSON cache (%d unique activities, %d unique cases)",
+                        len(self._event_log_cache),
+                        self._event_log_cache["activity"].nunique(),
+                        self._event_log_cache["case_id"].nunique(),
+                    )
+                    return self._event_log_cache.copy()
+            except Exception as cache_err:
+                logger.warning("JSON cache load failed: %s. Re-extracting from Celonis.", cache_err)
+
+        # ------------------------------------------------------------------
+        # 3. Full Celonis extraction
+        # ------------------------------------------------------------------
+        try:
+            from pycelonis.pql import PQL, PQLColumn
+
+            # --- 3a. Build Triple-Bridge for vendor resolution (unchanged) ---
+            master_bridge_df = pd.DataFrame(columns=["bridge_key", "bridge_ebeln", "bridge_lifnr"])
+            bridge_queries = [
+                ("Accounting bridge", '"o_custom_AccountingDocumentHeader"."ID"'),
+                ("Item bridge",       '"o_custom_PurchasingDocumentItem"."ID"'),
+                ("Header bridge",     '"o_custom_PurchasingDocumentHeader"."ID"'),
             ]
-            if df.empty:
+
+            for label, bridge_field in bridge_queries:
+                try:
+                    bq = PQL()
+                    bq += PQLColumn(query=bridge_field, name="bridge_key")
+                    bq += PQLColumn(query='"o_custom_PurchasingDocumentHeader"."EBELN"', name="bridge_ebeln")
+                    bq += PQLColumn(query='"o_custom_PurchasingDocumentHeader"."LIFNR"', name="bridge_lifnr")
+                    b_df = self._run_pql(bq, f"PQL {label}")
+                    if not b_df.empty:
+                        master_bridge_df = pd.concat([master_bridge_df, b_df], ignore_index=True)
+                        logger.info("%s: %d records", label, len(b_df))
+                except Exception as b_err:
+                    logger.warning("%s failed: %s", label, b_err)
+
+            if not master_bridge_df.empty:
+                master_bridge_df = (
+                    master_bridge_df
+                    .dropna(subset=["bridge_key"])
+                    .drop_duplicates("bridge_key")
+                )
+                master_bridge_df["bridge_lifnr"] = (
+                    master_bridge_df["bridge_lifnr"]
+                    .fillna("UNKNOWN")
+                    .astype(str)
+                    .str.replace(r"\.0$", "", regex=True)
+                )
+                logger.info(
+                    "Master bridge: %d records, %d unique vendors",
+                    len(master_bridge_df),
+                    master_bridge_df["bridge_lifnr"].nunique(),
+                )
+
+            # --- 3b. Broad alias lists for OCEL column detection ---
+            #
+            # These cover every column name pattern seen across SAP Celonis
+            # OCEL event tables (t_e_custom_*) and object tables (t_o_custom_*).
+            # Timestamp is the ONLY required column — everything else is optional.
+            #
+            TIMESTAMP_ALIASES = [
+                self.timestamp_col,
+                "EVENTTIME", "TIMESTAMP", "TIME", "CREATEDATE",
+                "AEDAT", "BEDAT", "BUDAT", "BLDAT", "CPUDT",
+                "PSTNG_DATE", "CREATED_AT", "CHANGED_AT",
+            ]
+            ACTIVITY_ALIASES = [
+                self.activity_col,
+                "ACTIVITYEN", "ACTIVITY_EN", "ACTIVITY", "ACTIVIT",
+                "STEP", "STEP_NAME", "PROCESS_STEP",
+            ]
+            RESOURCE_ALIASES = [
+                self.resource_col,
+                "USERNAME", "USER_NAME", "USER", "RESOURCE",
+                "ERNAM", "AENAM", "USNAM", "LAEDA",
+            ]
+            RESOURCE_ROLE_ALIASES = [
+                self.resource_role_col,
+                "USERTYPE", "USER_TYPE", "ROLE", "RESOURCE_ROLE",
+                "BUKRS",  # company code often doubles as org unit in some models
+            ]
+            # FK / case-link: covers _ID suffix patterns for ALL 18 OCEL object tables
+            CASE_LINK_ALIASES = [
+
+                # Standard Celonis OCEL FK patterns (_ID suffix)
+                "AccountingDocumentHeader_ID",
+                "PurchasingDocumentHeader_ID",
+                "PurchasingDocumentItem_ID",
+                "VimHeader_ID",
+                "VimWorkitem_ID",
+                "GoodsReceiptHeader_ID",
+                "GoodsReceiptItem_ID",
+                "ServiceEntrySheet_ID",
+                "ServiceEntrySheetItem_ID",
+                "InvoiceVerificationDocument_ID",
+                "PaymentDocument_ID",
+                "BankTransactionDocument_ID",
+                "RequisitionHeader_ID",
+                "RequisitionItem_ID",
+                "OutlineAgreementHeader_ID",
+                "OutlineAgreementItem_ID",
+                "ContractHeader_ID",
+                "ContractItem_ID",
+                "POApprovalLevel01_ID",
+                "POApprovalLevel02_ID",
+                # SAP business key fallbacks
+                "CASEKEY", "EBELN", "BELNR", "MBLNR", "LIFNR",
+                "ID", "CASE_ID", "OBJECT_ID",
+            ]
+            NETVAL_ALIASES  = ["NETWR", "WRBTR", "DMBTR", "VALUE", "NET_VALUE", "AMOUNT"]
+            CURRENCY_ALIASES = ["WAERS", "CURRENCY", "CURR"]
+            TXCODE_ALIASES  = ["TCODE", "TRANSACTIONCODE", "TRANSACTION_CODE", "TRANSCODE"]
+            DOCNUM_ALIASES  = ["EBELN", "BELNR", "MBLNR", "DOCUMENT_NUMBER", "DOC_NUMBER"]
+
+            # --- 3c. Derive a clean human-readable activity label from a table name ---
+            def _activity_from_table(table_name: str) -> str:
+                """
+                'T_E_CUSTOM_PostInvoice'  -> 'Post Invoice'
+                't_e_custom_post_invoice' -> 'Post Invoice'
+                't_o_custom_VimHeader'    -> 'Vim Header'
+                """
+                stem = (
+                    table_name
+                    .replace("t_e_custom_", "")
+                    .replace("t_o_custom_", "")
+                    .replace("T_E_CUSTOM_", "")
+                    .replace("T_O_CUSTOM_", "")
+                )
+                # CamelCase -> "Camel Case"
+                import re as _re
+                stem = _re.sub(r"([a-z])([A-Z])", r"\1 \2", stem)
+                # snake_case -> "Snake Case"
+                stem = stem.replace("_", " ").title()
+                return stem.strip() or table_name
+
+            # --- 3d. Iterate all OCEL tables ---
+            frames = []
+            skipped_tables = []
+            candidate_tables = list(self.activity_tables)
+
+            for table_name in candidate_tables:
+                try:
+                    # Celonis PQL uses the alias name (without t_ prefix) even though
+                    # get_tables() / _table_columns_safe() returns the full storage name.
+                    # Use pql_name for all PQL queries; table_name for SDK table lookups.
+                    pql_name = table_name[2:] if table_name.startswith("t_") else table_name
+
+                    # Get column names (uses shared cache, very fast after first call)
+                    cols = self._table_columns_safe(table_name)
+                    if not cols:
+                        logger.warning("Table %s: no columns found, skipping", table_name)
+                        skipped_tables.append((table_name, "no columns"))
+                        continue
+
+                    # -- Column detection --
+                    ts_col       = self._find_col_by_aliases(cols, TIMESTAMP_ALIASES)
+                    act_col      = self._find_col_by_aliases(cols, ACTIVITY_ALIASES)
+                    res_col      = self._find_col_by_aliases(cols, RESOURCE_ALIASES)
+                    role_col     = self._find_col_by_aliases(cols, RESOURCE_ROLE_ALIASES)
+                    case_lnk_col = self._find_col_by_aliases(cols, CASE_LINK_ALIASES)
+                    net_val_col  = self._find_col_by_aliases(cols, NETVAL_ALIASES)
+                    curr_col     = self._find_col_by_aliases(cols, CURRENCY_ALIASES)
+                    txcode_col   = self._find_col_by_aliases(cols, TXCODE_ALIASES)
+                    docnum_col   = self._find_col_by_aliases(cols, DOCNUM_ALIASES)
+
+                    # TIMESTAMP IS THE ONLY HARD REQUIREMENT
+                    if not ts_col:
+                        logger.debug("Table %s: no timestamp column, skipping", table_name)
+                        skipped_tables.append((table_name, "no timestamp"))
+                        continue
+
+                    # Build the column list to extract
+                    source_columns = [ts_col]
+                    for c in [act_col, res_col, role_col, case_lnk_col,
+                               net_val_col, curr_col, txcode_col, docnum_col]:
+                        if c and c not in source_columns:
+                            source_columns.append(c)
+
+                    limit = (
+                        settings.CELONIS_EVENT_LOG_MAX_ROWS
+                        if settings.CELONIS_EVENT_LOG_MAX_ROWS > 0
+                        else None
+                    )
+
+                    df = self._extract_table_rows_paginated(
+                        table_name=table_name,
+                        columns=source_columns,
+                        operation_name=f"event extraction ({table_name})",
+                        max_rows=limit,
+                    )
+
+                    if df.empty:
+                        logger.info("Table %s: 0 rows returned, skipping", table_name)
+                        skipped_tables.append((table_name, "empty result"))
+                        continue
+
+                    # -- Rename extracted columns to standard names --
+                    rename_map: dict = {}
+                    if ts_col:        rename_map[ts_col]       = "timestamp"
+                    if act_col:       rename_map[act_col]       = "activity"
+                    if res_col:       rename_map[res_col]       = "resource"
+                    if role_col:      rename_map[role_col]      = "resource_role"
+                    if case_lnk_col:  rename_map[case_lnk_col]  = "case_link"
+                    if net_val_col:   rename_map[net_val_col]   = "net_value"
+                    if curr_col:      rename_map[curr_col]      = "currency"
+                    if txcode_col:    rename_map[txcode_col]    = "transaction_code"
+                    if docnum_col:    rename_map[docnum_col]    = "document_number"
+
+                    df = df.rename(columns=rename_map)
+
+                    # -- Derive activity from table name if column not present --
+                    if "activity" not in df.columns or df["activity"].isnull().all():
+                        df["activity"] = _activity_from_table(table_name)
+
+                    # -- Tag source table so LLM can reference process step origin --
+                    df["source_table"] = table_name
+
+                    # -- Vendor resolution via master bridge --
+                    if "case_link" in df.columns and not master_bridge_df.empty:
+                        df = df.merge(
+                            master_bridge_df,
+                            left_on="case_link",
+                            right_on="bridge_key",
+                            how="left",
+                        )
+                        df["case_id"]         = df["bridge_ebeln"].fillna(df["case_link"])
+                        df["document_number"] = df.get("document_number", df["bridge_ebeln"].fillna(df["case_link"]))
+                        df["vendor_id"]       = df["bridge_lifnr"]
+                    else:
+                        df["case_id"]         = df.get("case_link", "UNKNOWN")
+                        df["document_number"] = df.get("document_number", df.get("case_link"))
+                        df["vendor_id"]       = None
+
+                    # -- Clean vendor_id --
+                    df["vendor_id"] = (
+                        df["vendor_id"]
+                        .fillna("UNKNOWN")
+                        .astype(str)
+                        .str.replace(r"\.0$", "", regex=True)
+                    )
+
+                    # -- Ensure all expected columns exist --
+                    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+                    for col in expected_cols:
+                        if col not in df.columns:
+                            df[col] = None
+
+                    frames.append(df[expected_cols])
+                    logger.info(
+                        "Table %-45s → %5d rows  activity='%s'  case_link_col=%s",
+                        table_name, len(df),
+                        _activity_from_table(table_name),
+                        case_lnk_col or "NONE",
+                    )
+
+                except Exception as ex:
+                    logger.warning("Error processing table %s: %s", table_name, ex)
+                    skipped_tables.append((table_name, str(ex)))
+
+            # -- Summary log --
+            if skipped_tables:
+                logger.info(
+                    "Skipped %d tables: %s",
+                    len(skipped_tables),
+                    ", ".join(f"{t}({r})" for t, r in skipped_tables),
+                )
+
+            if not frames:
+                logger.error(
+                    "No event data extracted from any of %d candidate tables. "
+                    "Check ACTIVITY_TABLES in .env and that tables have a timestamp column.",
+                    len(candidate_tables),
+                )
                 return pd.DataFrame(columns=expected_cols)
 
-            for col in expected_cols:
-                if col not in df.columns:
-                    df[col] = None
+            # -- Concatenate, sort, deduplicate --
+            final_df = pd.concat(frames, ignore_index=True)
+            final_df = (
+                final_df
+                .sort_values(["case_id", "timestamp"], na_position="last")
+                .reset_index(drop=True)
+            )
 
-            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-            df = df.sort_values(["case_id", "timestamp"], na_position="last").reset_index(drop=True)
-            self._event_log_cache = df[expected_cols]
-            return self._event_log_cache.copy()
+            logger.info(
+                "OCEL union complete: %d total events | %d unique activities | "
+                "%d unique cases | %d unique vendors | tables contributed: %d/%d",
+                len(final_df),
+                final_df["activity"].nunique(),
+                final_df["case_id"].nunique(),
+                (final_df["vendor_id"] != "UNKNOWN").sum() and final_df["vendor_id"].nunique(),
+                len(frames),
+                len(candidate_tables),
+            )
+
+            # -- Pre-calculate vendor stats --
+            self._vendor_stats_cache = self._compute_internal_vendor_stats(final_df)
+            self._event_log_cache = final_df.copy()
+
+            # -- Save to JSON disk cache --
+            try:
+                cache_payload = {
+                    "events": final_df.to_dict(orient="records"),
+                    "vendor_stats": self._vendor_stats_cache,
+                    "extracted_at": datetime.now(timezone.utc).isoformat(),
+                    "table_count": len(frames),
+                    "activity_count": int(final_df["activity"].nunique()),
+                }
+                with open(self._JSON_CACHE_PATH, "w") as f:
+                    json.dump(cache_payload, f, default=str)
+                logger.info("Saved %d events to JSON cache (%s)", len(final_df), self._JSON_CACHE_PATH)
+            except Exception as save_err:
+                logger.warning("Failed to save JSON cache: %s", save_err)
+
+            return final_df
+
         except Exception as e:
-            raise Exception(f"Event log extraction failed: {str(e)}")
+            logger.error("Full Celonis event log extraction failed: %s", e)
+            return pd.DataFrame(columns=expected_cols)
+
+    def _compute_internal_vendor_stats(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
+        """Compute vendor metrics from the event log for inclusion in process_context."""
+        if df.empty or "vendor_id" not in df.columns:
+            return []
+            
+        stats = []
+        vendor_groups = df.groupby("vendor_id")
+        for vid, group in vendor_groups:
+            if vid == "UNKNOWN":
+                continue
+            case_count = group["case_id"].nunique()
+            activities = group["activity"].unique().tolist()
+            stats.append({
+                "vendor_id": str(vid),
+                "case_count": int(case_count),
+                "activity_count": len(activities),
+                "last_active": group["timestamp"].max().isoformat() if not group["timestamp"].isnull().all() else None
+            })
+        return sorted(stats, key=lambda x: x["case_count"], reverse=True)
+
+    def get_event_log_with_vendor(self) -> pd.DataFrame:
+        """Standardized version that uses the enriched event log directly."""
+        return self.get_event_log()
 
     def get_case_attributes(self) -> pd.DataFrame:
         """
@@ -669,113 +1071,6 @@ class CelonisService:
         except Exception as e:
             raise Exception(f"Vendor mapping extraction failed: {str(e)}")
 
-    def get_event_log_with_vendor(self) -> pd.DataFrame:
-        if self._event_with_vendor_cache is not None:
-            return self._event_with_vendor_cache.copy()
-
-        try:
-            events = self.get_event_log()
-            vendor_map = self.get_vendor_mapping()[["case_id", "document_number", "vendor_id", "payment_terms", "currency"]]
-
-            enriched = events.merge(
-                vendor_map,
-                on=["case_id", "document_number"],
-                how="left",
-            )
-            enriched["vendor_id"] = enriched["vendor_id"].fillna("UNKNOWN")
-            self._event_with_vendor_cache = enriched
-            return self._event_with_vendor_cache.copy()
-        except Exception as e:
-            raise Exception(f"Event log enrichment with vendor failed: {str(e)}")
-
-    def get_vendor_stats_api(self) -> List[Dict[str, Any]]:
-     try:
-        stats_df = self.get_vendor_statistics()
-        case_durations = self.get_case_durations()
-        vendor_map = self.get_vendor_mapping()[["case_id", "vendor_id"]].drop_duplicates()
-
-        case_table_df = self.get_table_data(self.case_table)
-        total_value_by_vendor: Dict[str, float] = {}
-        vendor_lifnr_by_vendor: Dict[str, str] = {}
-        if not case_table_df.empty:
-            renamed = case_table_df.rename(columns={self.vendor_col: "vendor_id"})
-            if "vendor_id" in renamed.columns:
-                renamed["vendor_id"] = renamed["vendor_id"].astype(str).str.strip()
-                vendor_lifnr_by_vendor = (
-                    renamed.groupby("vendor_id")["vendor_id"]
-                    .first().astype(str).to_dict()
-                )
-                amount_col = self._pick_best_amount_column(renamed)
-                if amount_col:
-                    work = renamed[["vendor_id", amount_col]].copy()
-                    work[amount_col] = pd.to_numeric(work[amount_col], errors="coerce").fillna(0.0)
-                    total_value_by_vendor = (
-                        work.groupby("vendor_id")[amount_col].sum().round(2).to_dict()
-                    )
-
-        avg_dpo_by_vendor = {}
-        if not case_durations.empty and not vendor_map.empty:
-            duration_map = case_durations.merge(vendor_map, on="case_id", how="left")
-            avg_dpo_by_vendor = (
-                duration_map.groupby("vendor_id")["duration_days"].mean().round(2).to_dict()
-            )
-
-        # ── NEW: derive payment behavior from case-level event log ──────────
-        try:
-            from app.services.data_cache_service import DataCacheService
-            event_log = self.get_event_log_with_vendor()
-            payment_behavior_by_vendor = (
-                DataCacheService._derive_payment_behavior_from_case_level(event_log)
-                if not event_log.empty else {}
-            )
-        except Exception as pb_err:
-            logger.warning("Payment behavior derivation failed: %s", pb_err)
-            payment_behavior_by_vendor = {}
-        # ────────────────────────────────────────────────────────────────────
-
-        rows: List[Dict[str, Any]] = []
-        if not stats_df.empty:
-            for _, row in stats_df.iterrows():
-                vendor_id = str(row.get("vendor_id", "UNKNOWN"))
-                exception_rate = float(row.get("exception_rate_pct", 0) or 0)
-                avg_dpo = float(avg_dpo_by_vendor.get(vendor_id, 0) or 0)
-
-                risk = "LOW"
-                if exception_rate >= 60 or avg_dpo >= 60:
-                    risk = "CRITICAL"
-                elif exception_rate >= 40 or avg_dpo >= 40:
-                    risk = "HIGH"
-                elif exception_rate >= 20 or avg_dpo >= 20:
-                    risk = "MEDIUM"
-
-                # Real payment behavior from case-level data, or explicit null fallback
-                pb = payment_behavior_by_vendor.get(vendor_id)
-                if pb:
-                    payment_behavior = {**pb, "_source": "celonis"}
-                else:
-                    payment_behavior = {
-                        "on_time_pct": None,
-                        "early_pct": None,
-                        "late_pct": None,
-                        "open_pct": None,
-                        "_source": "unavailable",
-                    }
-
-                rows.append({
-                    "vendor_id": vendor_id,
-                    "vendor_lifnr": vendor_lifnr_by_vendor.get(vendor_id, vendor_id),
-                    "total_cases": int(row.get("case_count", 0) or 0),
-                    "total_value": float(total_value_by_vendor.get(vendor_id, 0.0)),
-                    "exception_rate": round(exception_rate, 2),
-                    "avg_dpo": round(avg_dpo, 2),
-                    "payment_behavior": payment_behavior,
-                    "risk_score": risk,
-                })
-
-        rows.sort(key=lambda x: (x["total_value"], x["total_cases"]), reverse=True)
-        return rows
-     except Exception as e:
-        raise Exception(f"Vendor stats API payload generation failed: {str(e)}")
 
     def get_table_data(
         self,
@@ -1511,11 +1806,37 @@ class CelonisService:
     def get_vendor_stats_api(self) -> List[Dict[str, Any]]:
         """
         API-ready vendor stats used by /process/vendor-stats.
+        Derives statistics directly from the OCEL event log (Phase 0 data).
         """
         try:
-            stats_df = self.get_vendor_statistics()
+            # Derive vendor stats from the OCEL event log directly
+            # (get_vendor_statistics() was removed — vendor_id is now in the event log)
+            event_log = self.get_event_log()
+            if event_log.empty or "vendor_id" not in event_log.columns:
+                return []
+
+            exc_pattern = r"exception|block|due date|parked|stuck|overdue"
+            known_vendors = event_log[event_log["vendor_id"] != "UNKNOWN"]
+            if known_vendors.empty:
+                return []
+
+            stats_df = (
+                known_vendors
+                .groupby("vendor_id")
+                .agg(
+                    case_count=("case_id", "nunique"),
+                    exception_rate_pct=(
+                        "activity",
+                        lambda x: round(
+                            x.str.contains(exc_pattern, case=False, na=False).mean() * 100, 2
+                        ),
+                    ),
+                )
+                .reset_index()
+            )
+
             case_durations = self.get_case_durations()
-            vendor_map = self.get_vendor_mapping()[["case_id", "vendor_id"]].drop_duplicates()
+            vendor_map = event_log[["case_id", "vendor_id"]].drop_duplicates()
 
             case_table_df = self.get_table_data(self.case_table)
             total_value_by_vendor: Dict[str, float] = {}
@@ -1928,3 +2249,157 @@ class CelonisService:
             "case_table": self.case_table,
             "vendor_column": self.vendor_col,
         }
+
+    _ENTITY_GRAPH_PATH = Path(__file__).resolve().parent.parent.parent / "entity_graph.json"
+    _ENTITY_GRAPH_TTL_SECONDS = 86400  # 24 hours
+
+    _ENTITY_CONFIG = {
+        "PurchasingDocumentHeader": {
+            "table_hint": "t_o_custom_PurchasingDocumentHeader",
+            "id_column": "EBELN",
+            "pattern": r"\b\d{10}\b",
+        },
+        "AccountingDocumentHeader": {
+            "table_hint": "t_o_custom_AccountingDocumentHeader",
+            "id_column": "BELNR",
+            "pattern": r"\b\d{10}\b",
+        },
+        "VendorMaster": {
+            "table_hint": "t_o_custom_VendorMaster",
+            "id_column": "LIFNR",
+            "pattern": r"\b\d{7,12}\b",
+        },
+        "PurchasingDocumentItem": {
+            "table_hint": "t_o_custom_PurchasingDocumentItem",
+            "id_column": "EBELP",
+            "pattern": r"\b\d{5,10}\b",
+        },
+        "VimHeader": {
+            "table_hint": "t_o_custom_VimHeader",
+            "id_column": "ID",
+            "pattern": r"\b[A-Z0-9]{5,20}\b",
+        },
+        "ApVimHeader": {
+            "table_hint": "t_o_custom_ApVimHeader",
+            "id_column": "ID",
+            "pattern": r"\b[A-Z0-9]{5,20}\b",
+        },
+        "AccountingDocumentSegment": {
+            "table_hint": "t_o_custom_AccountingDocumentSegment",
+            "id_column": "BELNR",
+            "pattern": r"\b\d{10}\b",
+        },
+    }
+
+    def build_entity_fingerprints(self) -> dict:
+        """
+        Build (or load from cache) an entity fingerprint index from Celonis data.
+        Saves result to entity_graph.json next to the backend/ root.
+        Returns the fingerprints dict.
+
+        Schema of the returned dict:
+          {
+            "PurchasingDocumentHeader": {
+              "id_column": "EBELN",
+              "table_name": "t_o_custom_PurchasingDocumentHeader",
+              "pql_name": "o_custom_PurchasingDocumentHeader",
+              "samples": ["4500012345", ...],
+              "pattern": "\\b\\d{10}\\b"
+            },
+            ...
+          }
+        """
+        import json as _json
+        from pathlib import Path as _Path
+
+        graph_path = self._ENTITY_GRAPH_PATH
+
+        # Load from disk if fresh enough
+        if graph_path.exists():
+            try:
+                age = time.time() - graph_path.stat().st_mtime
+                if age < self._ENTITY_GRAPH_TTL_SECONDS:
+                    with graph_path.open("r", encoding="utf-8") as fh:
+                        fingerprints = _json.load(fh)
+                    logger.info(
+                        "Loaded entity fingerprints from cache (%s, age=%.0fs)",
+                        graph_path,
+                        age,
+                    )
+                    return fingerprints
+            except Exception as e:
+                logger.warning("Failed to load entity_graph.json, rebuilding: %s", e)
+
+        logger.info("Building entity fingerprint index from Celonis data...")
+        known_tables = set(self._get_table_names())
+        fingerprints: dict = {}
+
+        for entity_type, cfg in self._ENTITY_CONFIG.items():
+            hint = cfg["table_hint"]
+            id_col = cfg["id_column"]
+
+            # Resolve actual table name (hint may differ slightly)
+            table_name = None
+            if hint in known_tables:
+                table_name = hint
+            else:
+                suffix = hint.split("_custom_")[-1].lower()
+                for name in known_tables:
+                    if name.lower().endswith(suffix):
+                        table_name = name
+                        break
+
+            if table_name is None:
+                logger.debug(
+                    "Entity %s: table hint '%s' not found in data model, skipping.",
+                    entity_type, hint,
+                )
+                continue
+
+            cols = self._table_columns_safe(table_name)
+            if id_col not in cols:
+                logger.debug(
+                    "Entity %s: id column '%s' not in table '%s', skipping.",
+                    entity_type, id_col, table_name,
+                )
+                continue
+
+            # PQL name: strip leading t_ (Celonis PQL engine requirement)
+            pql_name = table_name[2:] if table_name.startswith("t_") else table_name
+
+            samples: list = []
+            try:
+                from pycelonis.pql import PQL, PQLColumn
+                query = PQL(limit=300, offset=0)
+                query += PQLColumn(name=id_col, query=f'"{pql_name}"."{id_col}"')
+                df = self._run_pql(query, f"entity_fingerprint({entity_type})")
+                if df is not None and not df.empty:
+                    raw = df.iloc[:, 0].dropna().astype(str).str.strip()
+                    samples = [v for v in raw.unique().tolist() if v][:300]
+            except Exception as e:
+                logger.warning("Failed to fetch samples for entity %s: %s", entity_type, e)
+
+            fingerprints[entity_type] = {
+                "id_column": id_col,
+                "table_name": table_name,
+                "pql_name": pql_name,
+                "samples": samples,
+                "pattern": cfg["pattern"],
+            }
+            logger.info(
+                "Entity %s: %d sample IDs collected from %s",
+                entity_type, len(samples), table_name,
+            )
+
+        # Persist to disk
+        try:
+            graph_path.parent.mkdir(parents=True, exist_ok=True)
+            with graph_path.open("w", encoding="utf-8") as fh:
+                _json.dump(fingerprints, fh, indent=2, default=str)
+            logger.info(
+                "Entity fingerprints saved to %s (%d entities)", graph_path, len(fingerprints)
+            )
+        except Exception as e:
+            logger.warning("Could not save entity_graph.json: %s", e)
+
+        return fingerprints
